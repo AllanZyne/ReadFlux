@@ -136,7 +136,7 @@ function safeHtml(html: string) {
     if (!/^https?:\/\//i.test(image.getAttribute("src") ?? "")) image.remove();
     else {
       image.setAttribute("loading", "lazy");
-      image.setAttribute("referrerpolicy", "no-referrer");
+      image.setAttribute("referrerpolicy", "origin");
     }
   });
   return parsed.body.innerHTML;
