@@ -915,11 +915,12 @@ export default function App() {
     setContentError(null);
     try {
       const remote = await minifluxFetch<Entry>(config, `/v1/entries/${id}`);
-      setEntries((all) => all.map((entry) => {
-        if (entry.id !== id) return entry;
-        return { ...entry, ...remote, status: entry.status, starred: entry.starred };
-      }));
-      await putCachedEntries(config, [remote]);
+      const local = entries.find((entry) => entry.id === id);
+      const merged = local
+        ? { ...local, ...remote, status: local.status, starred: local.starred }
+        : remote;
+      setEntries((all) => all.map((entry) => entry.id === id ? merged : entry));
+      await putCachedEntries(config, [merged]);
     } catch (cause) {
       setContentError({
         id,
@@ -928,7 +929,7 @@ export default function App() {
     } finally {
       setContentLoadingId((current) => current === id ? null : current);
     }
-  }, [config]);
+  }, [config, entries]);
 
   const choose = useCallback((story: Story, origin?: ReadingEvent["origin"]) => {
     void persistActive();

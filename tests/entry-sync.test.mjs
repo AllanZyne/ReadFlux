@@ -28,9 +28,17 @@ test("later refreshes use the Miniflux changed-after filter", () => {
 test("sync data can be reset without deleting profile data or credentials", () => {
   assert.match(client, /export async function resetEntrySync/);
   assert.match(client, /db\.transaction\(\[ENTRY_CACHE,\s*SETTINGS\],\s*"readwrite"\)/);
+  assert.match(client, /\.openCursor\(IDBKeyRange\.only\(scope\)\)/);
+  assert.doesNotMatch(client, /getAllKeys\(scope\)/);
   assert.match(client, /delete\(`entry-sync-state:\$\{scope\}`\)/);
   assert.match(app, /重置同步数据/);
   assert.match(app, /syncResetInProgress\.current\s*=\s*true/);
   assert.match(app, /while\s*\(syncInFlight\.current\)/);
   assert.match(app, /await resetEntrySync\(config\)/);
+});
+
+test("on-demand content caches the same local status and starred state shown in the UI", () => {
+  assert.match(app, /const merged = local[\s\S]*status:\s*local\.status,\s*starred:\s*local\.starred/);
+  assert.match(app, /putCachedEntries\(config,\s*\[merged\]\)/);
+  assert.doesNotMatch(app, /putCachedEntries\(config,\s*\[remote\]\)/);
 });
