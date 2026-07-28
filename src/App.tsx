@@ -15,6 +15,7 @@ import {
   ProfileSettings,
   putReadingEvent,
   ReadingEvent,
+  resetEntrySync,
   saveConnection,
   saveEntrySyncState,
   saveProfileSettings,
@@ -177,6 +178,7 @@ function emptyEventDraft(): EventDraft {
 }
 
 function SettingsDialog({
+  config,
   events,
   settings,
   sourceWeights,
@@ -187,8 +189,11 @@ function SettingsDialog({
   onSettingsChange,
   onEventsChange,
   onDisconnect,
+  onResetSync,
+  syncBusy,
   notify,
 }: {
+  config: ConnectionConfig;
   events: ReadingEvent[];
   settings: ProfileSettings;
   sourceWeights: Map<number, number>;
@@ -199,11 +204,14 @@ function SettingsDialog({
   onSettingsChange: (settings: ProfileSettings) => void;
   onEventsChange: (events: ReadingEvent[]) => void;
   onDisconnect: () => void;
+  onResetSync: () => Promise<void>;
+  syncBusy: boolean;
   notify: (message: string) => void;
 }) {
   const [tab, setTab] = useState<"general" | "sync" | "recommendation">("general");
   const [webdav, setWebdav] = useState<WebDavConfig>(settings.webdav ?? EMPTY_WEBDAV);
   const [syncing, setSyncing] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [eventQuery, setEventQuery] = useState("");
   const [draft, setDraft] = useState<EventDraft | null>(null);
 
@@ -234,6 +242,16 @@ function SettingsDialog({
     onSettingsChange(next);
     await saveProfileSettings(next);
     notify("WebDAV 设置已保存在此设备");
+  };
+
+  const resetSync = async () => {
+    if (!window.confirm("清除当前 Miniflux 连接的文章缓存和同步进度，并重新执行首次加载？阅读画像和连接凭据会保留。")) return;
+    setResetting(true);
+    try {
+      await onResetSync();
+    } finally {
+      setResetting(false);
+    }
   };
 
   const sync = async () => {
@@ -333,40 +351,53 @@ function SettingsDialog({
                 ))}
               </div>
             </section>
-            <section>
-              <div className="settingTitle"><div><h3>文章加载范围</h3><p>未读和普通已读文章按此范围同步；收藏文章始终加载全部历史。</p></div></div>
-              <label className="lookbackSetting">
-                <span>加载文章</span>
-                <select value={settings.entryLookbackDays ?? "all"} onChange={(event) => void setEntryLookback(event.target.value)}>
-                  {LOOKBACK_OPTIONS.map((option) => <option key={option.value ?? "all"} value={option.value ?? "all"}>{option.label}</option>)}
-                </select>
-              </label>
-            </section>
             <section className="privacyBox">
               <strong>本地数据边界</strong>
               <p>“批量已读”只写回 Miniflux，不会成为兴趣信号。只有实际打开、前台停留、滚动深度、收藏和明确反馈会影响推荐。</p>
             </section>
-            <button className="disconnect" onClick={onDisconnect}>断开此设备上的 Miniflux</button>
           </>}
 
-          {tab === "sync" && <section>
-            <div className="settingTitle">
-              <div><h3>加密 WebDAV 同步</h3><p>只同步阅读事件、反馈和主题；不会上传 Miniflux Key 或 WebDAV 凭据。</p></div>
-              <span>可选</span>
-            </div>
-            <div className="settingsForm">
-              <label><span>WebDAV 目录或文件地址</span><input value={webdav.url} onChange={(event) => setWebdav({ ...webdav, url: event.target.value })} placeholder="https://dav.example.com/signal/" /></label>
-              <div>
-                <label><span>用户名</span><input value={webdav.username} onChange={(event) => setWebdav({ ...webdav, username: event.target.value })} /></label>
-                <label><span>密码</span><input type="password" value={webdav.password} onChange={(event) => setWebdav({ ...webdav, password: event.target.value })} /></label>
+          {tab === "sync" && <>
+            <section>
+              <div className="settingTitle">
+                <div><h3>Miniflux 同步</h3><p>管理文章加载范围、当前连接和本地同步数据。</p></div>
+                <span>已连接</span>
               </div>
-              <label><span>同步加密口令</span><input type="password" value={webdav.passphrase} onChange={(event) => setWebdav({ ...webdav, passphrase: event.target.value })} placeholder="所有设备需填写同一口令" /></label>
-              <div className="settingsActions">
-                <button onClick={() => void saveWebDav()}>仅保存</button>
-                <button className="primary" disabled={syncing || !webdav.url || !webdav.passphrase} onClick={() => void sync()}>{syncing ? "正在合并与加密…" : "立即双向同步"}</button>
+              <div className="settingsForm minifluxSettings">
+                <label><span>服务器</span><input value={config.url} readOnly /></label>
+                <label className="lookbackSetting">
+                  <span>文章加载范围</span>
+                  <select value={settings.entryLookbackDays ?? "all"} onChange={(event) => void setEntryLookback(event.target.value)}>
+                    {LOOKBACK_OPTIONS.map((option) => <option key={option.value ?? "all"} value={option.value ?? "all"}>{option.label}</option>)}
+                  </select>
+                  <small>未读和普通已读按此范围加载；收藏始终加载全部历史。</small>
+                </label>
+                <div className="syncDataActions">
+                  <div><strong>重新测试首次加载</strong><p>清除当前连接的文章缓存与同步进度，保留阅读画像、偏好和连接凭据。</p></div>
+                  <button className="dangerAction" disabled={syncBusy || resetting} onClick={() => void resetSync()}>{resetting ? "正在重置…" : "重置同步数据"}</button>
+                </div>
+                <button className="disconnect" onClick={onDisconnect}>断开此设备上的 Miniflux</button>
               </div>
-            </div>
-          </section>}
+            </section>
+            <section>
+              <div className="settingTitle">
+                <div><h3>加密 WebDAV 同步</h3><p>只同步阅读事件、反馈和主题；不会上传 Miniflux Key 或 WebDAV 凭据。</p></div>
+                <span>可选</span>
+              </div>
+              <div className="settingsForm">
+                <label><span>WebDAV 目录或文件地址</span><input value={webdav.url} onChange={(event) => setWebdav({ ...webdav, url: event.target.value })} placeholder="https://dav.example.com/signal/" /></label>
+                <div>
+                  <label><span>用户名</span><input value={webdav.username} onChange={(event) => setWebdav({ ...webdav, username: event.target.value })} /></label>
+                  <label><span>密码</span><input type="password" value={webdav.password} onChange={(event) => setWebdav({ ...webdav, password: event.target.value })} /></label>
+                </div>
+                <label><span>同步加密口令</span><input type="password" value={webdav.passphrase} onChange={(event) => setWebdav({ ...webdav, passphrase: event.target.value })} placeholder="所有设备需填写同一口令" /></label>
+                <div className="settingsActions">
+                  <button onClick={() => void saveWebDav()}>仅保存</button>
+                  <button className="primary" disabled={syncing || !webdav.url || !webdav.passphrase} onClick={() => void sync()}>{syncing ? "正在合并与加密…" : "立即双向同步"}</button>
+                </div>
+              </div>
+            </section>
+          </>}
 
           {tab === "recommendation" && <div className="recommendationData">
             <section className="dataIntro">
@@ -531,6 +562,7 @@ export default function App() {
   const readerRef = useRef<HTMLDivElement | null>(null);
   const syncInFlight = useRef(false);
   const syncQueued = useRef(false);
+  const syncResetInProgress = useRef(false);
   const loadRef = useRef<() => Promise<void>>(async () => {});
 
   const notify = useCallback((message: string) => {
@@ -595,7 +627,7 @@ export default function App() {
 
   const load = useCallback(async () => {
     if (!config) return;
-    if (syncInFlight.current) {
+    if (syncResetInProgress.current || syncInFlight.current) {
       syncQueued.current = true;
       return;
     }
@@ -1166,6 +1198,7 @@ export default function App() {
       </div>
 
       {settingsOpen && <SettingsDialog
+        config={config}
         events={events}
         settings={settings}
         sourceWeights={interest.sources}
@@ -1183,6 +1216,27 @@ export default function App() {
           setSettingsOpen(false);
           setConfig(null);
         }}
+        onResetSync={async () => {
+          syncResetInProgress.current = true;
+          try {
+            while (syncInFlight.current) {
+              await new Promise((resolve) => window.setTimeout(resolve, 50));
+            }
+            await resetEntrySync(config);
+            setEntries([]);
+            setListReadSnapshot(new Map());
+            setSelectedId(null);
+            setSyncedAt(null);
+            setSyncProgress(null);
+            setContentError(null);
+            setSettingsOpen(false);
+            notify("同步数据已重置，正在重新执行首次加载");
+          } finally {
+            syncResetInProgress.current = false;
+          }
+          await load();
+        }}
+        syncBusy={loading}
         notify={notify}
       />}
       {toast && <div className="toast">✓　{toast}</div>}

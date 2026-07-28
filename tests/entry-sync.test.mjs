@@ -24,3 +24,13 @@ test("later refreshes use the Miniflux changed-after filter", () => {
   assert.match(app, /changed_after:\s*String\(changedAfter\)/);
   assert.match(app, /5\s*\*\s*60_000/);
 });
+
+test("sync data can be reset without deleting profile data or credentials", () => {
+  assert.match(client, /export async function resetEntrySync/);
+  assert.match(client, /db\.transaction\(\[ENTRY_CACHE,\s*SETTINGS\],\s*"readwrite"\)/);
+  assert.match(client, /delete\(`entry-sync-state:\$\{scope\}`\)/);
+  assert.match(app, /重置同步数据/);
+  assert.match(app, /syncResetInProgress\.current\s*=\s*true/);
+  assert.match(app, /while\s*\(syncInFlight\.current\)/);
+  assert.match(app, /await resetEntrySync\(config\)/);
+});
