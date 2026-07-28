@@ -1061,6 +1061,11 @@ export default function App() {
   };
   const unreadCount = entries.filter((entry) => entry.status === "unread").length;
   const savedCount = entries.filter((entry) => entry.starred).length;
+  const syncProgressLabel = syncProgress
+    ? `${syncProgress.kind === "initial"
+      ? `首次同步 · ${syncProgress.phase === "unread" ? "未读" : syncProgress.phase === "starred" ? "全部收藏" : "已读"}`
+      : syncProgress.kind === "search" ? "搜索 Miniflux" : "获取最新文章"}${syncProgress.total ? ` ${syncProgress.loaded} / ${syncProgress.total}` : ""}`
+    : "";
   if (!ready) return <main className="boot" data-theme="day"><span className="wave">▁▅█▃▇▂</span><p>正在启动阅读器…</p></main>;
   if (!config) return <ConnectScreen onConnected={(nextConfig, nextSettings) => {
     setSettings(nextSettings);
@@ -1079,9 +1084,11 @@ export default function App() {
         <label className="search"><span>⌕</span><input id="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文章" /><kbd>/</kbd></label>
         <div className="topActions">
           {error && <span className="syncError">同步失败</span>}
+          {syncProgress && <span className="syncLabel" role="status">{syncProgressLabel}</span>}
           <button className={`toolbarButton ${loading ? "spinning" : ""}`} disabled={loading} onClick={async () => { try { await minifluxFetch(config, "/v1/feeds/refresh", { method: "PUT" }); await load(); notify("Miniflux 已刷新"); } catch (cause) { notify(cause instanceof Error ? cause.message : "刷新失败"); } }} aria-label="刷新订阅" title="刷新订阅">↻</button>
           <button className="settingsButton" onClick={() => setSettingsOpen(true)} aria-label="打开设置对话框" title="设置">⚙</button>
         </div>
+        {syncProgress && <div className="topbarProgress" aria-hidden="true"><i style={{ width: `${syncProgress.total ? Math.min(100, syncProgress.loaded / syncProgress.total * 100) : 8}%` }} /></div>}
       </header>
 
       <div className={`workspace ${collapsedSidebar ? "sidebarCollapsed" : ""} mobile-${mobileView}`} style={{ "--sidebar-width": `${sidebarWidth}px`, "--list-width": `${listWidth}px` } as CSSProperties}>
@@ -1120,7 +1127,6 @@ export default function App() {
           <header className="feedTitle"><button className="mobileBack" onClick={() => setMobileView("sources")}>‹ 订阅源</button><div><h1>{topicTitle || (mode === "today" ? "今天" : "已收藏")}</h1><small>{visible.length} 篇文章{error && entries.length ? " · 离线缓存" : syncedAt ? ` · ${syncedAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} 已同步` : ""}</small></div></header>
           <div className="feedTools"><label><input type="checkbox" checked={hideRead} onChange={(event) => { setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead(event.target.checked); }} /> 隐藏已读</label><button onClick={() => void markVisibleRead()} disabled={!visible.some((story) => story.status === "unread")}>全部标为已读</button></div>
           <div className="storyList">
-            {syncProgress && <div className="syncProgress" role="status"><span><i style={{ width: `${syncProgress.total ? Math.min(100, syncProgress.loaded / syncProgress.total * 100) : 8}%` }} /></span><small>{syncProgress.kind === "initial" ? `首次同步 · ${syncProgress.phase === "unread" ? "未读" : syncProgress.phase === "starred" ? "全部收藏" : "已读"}` : syncProgress.kind === "search" ? "搜索 Miniflux" : "获取最新文章"}{syncProgress.total ? `　${syncProgress.loaded} / ${syncProgress.total}` : ""}</small></div>}
             {loading && !entries.length ? <div className="empty"><b className="loadingMark">↻</b><h2>正在同步文章</h2><p>未读文章会优先显示，随后加载收藏和已读文章。</p></div>
               : error && !entries.length ? <div className="empty errorState"><b>!</b><h2>连接失败</h2><p>{error}</p><button onClick={() => void load()}>重新连接</button></div>
               : visible.length ? visible.map((story) => <article key={story.id} tabIndex={0} className={`story ${selected?.id === story.id ? "selected" : ""} ${story.status === "read" ? "read" : ""}`} onClick={() => { choose(story); setMobileView("reader"); }} onKeyDown={(event) => { if (event.key === "Enter") { choose(story); setMobileView("reader"); } }}>
