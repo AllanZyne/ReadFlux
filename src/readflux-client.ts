@@ -16,7 +16,18 @@ export type ThemeName = "day" | "night";
 export type ProfileSettings = {
   theme: ThemeName;
   webdav?: WebDavConfig;
+  entryLookbackDays?: number | null;
   updatedAt: string;
+};
+
+export type EntrySyncPhase = "unread" | "starred" | "read";
+
+export type EntrySyncState = {
+  initialSyncComplete: boolean;
+  lookbackDays: number | null;
+  phase?: EntrySyncPhase;
+  offset?: number;
+  updatedAt?: string;
 };
 
 export type ReadingEvent = {
@@ -37,9 +48,20 @@ export type ReadingEvent = {
 const LOCAL_CONFIG = "readflux.miniflux.local";
 const SESSION_CONFIG = "readflux.miniflux.session";
 const DB_NAME = "readflux-profile";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const EVENTS = "reading-events";
 const SETTINGS = "settings";
+const ENTRY_CACHE = "entry-cache";
+
+type CacheableEntry = {
+  id: number;
+};
+
+type EntryCacheRecord<T extends CacheableEntry = CacheableEntry> = {
+  key: string;
+  scope: string;
+  entry: T;
+};
 
 export function getConnection(): ConnectionConfig | null {
   if (typeof window === "undefined") return null;
@@ -99,10 +121,85 @@ function openDb(): Promise<IDBDatabase> {
         store.createIndex("openedAt", "openedAt");
       }
       if (!db.objectStoreNames.contains(SETTINGS)) db.createObjectStore(SETTINGS);
+      if (!db.objectStoreNames.contains(ENTRY_CACHE)) {
+        const store = db.createObjectStore(ENTRY_CACHE, { keyPath: "key" });
+        store.createIndex("scope", "scope");
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
+}
+
+async function entryCacheScope(config: ConnectionConfig) {
+  const value = new TextEncoder().encode(`${config.url.replace(/\/+$/, "")}\n${config.apiKey}`);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", value));
+  return bytesToBase64(digest);
+}
+
+function transactionComplete(transaction: IDBTransaction) {
+  return new Promise<void>((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
+  });
+}
+
+export async function getCachedEntries<T extends CacheableEntry>(config: ConnectionConfig): Promise<T[]> {
+  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
+  const records = await requestResult(
+    db.transaction(ENTRY_CACHE).objectStore(ENTRY_CACHE).index("scope").getAll(scope),
+  ) as EntryCacheRecord<T>[];
+  db.close();
+  return records.map((record) => record.entry);
+}
+
+export async function putCachedEntries<T extends CacheableEntry>(config: ConnectionConfig, entries: T[]) {
+  if (!entries.length) return;
+  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
+  const transaction = db.transaction(ENTRY_CACHE, "readwrite");
+  const store = transaction.objectStore(ENTRY_CACHE);
+  entries.forEach((entry) => {
+    const record: EntryCacheRecord<T> = { key: `${scope}:${entry.id}`, scope, entry };
+    store.put(record);
+  });
+  await transactionComplete(transaction);
+  db.close();
+}
+
+export async function getEntrySyncState(config: ConnectionConfig): Promise<EntrySyncState | null> {
+  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
+  const value = await requestResult(
+    db.transaction(SETTINGS).objectStore(SETTINGS).get(`entry-sync-state:${scope}`),
+  );
+  db.close();
+  return value && typeof value === "object" ? value as EntrySyncState : null;
+}
+
+export async function saveEntrySyncState(config: ConnectionConfig, state: EntrySyncState) {
+  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
+  const transaction = db.transaction(SETTINGS, "readwrite");
+  transaction.objectStore(SETTINGS).put(state, `entry-sync-state:${scope}`);
+  await transactionComplete(transaction);
+  db.close();
+}
+
+export async function resetEntrySync(config: ConnectionConfig) {
+  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
+  const transaction = db.transaction([ENTRY_CACHE, SETTINGS], "readwrite");
+  const cursorRequest = transaction.objectStore(ENTRY_CACHE)
+    .index("scope")
+    .openCursor(IDBKeyRange.only(scope));
+  cursorRequest.onsuccess = () => {
+    const cursor = cursorRequest.result;
+    if (!cursor) return;
+    cursor.delete();
+    cursor.continue();
+  };
+  cursorRequest.onerror = () => transaction.abort();
+  transaction.objectStore(SETTINGS).delete(`entry-sync-state:${scope}`);
+  await transactionComplete(transaction);
+  db.close();
 }
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
@@ -145,8 +242,13 @@ export async function getProfileSettings(): Promise<ProfileSettings> {
   const db = await openDb();
   const value = await requestResult(db.transaction(SETTINGS).objectStore(SETTINGS).get("profile"));
   db.close();
-  return (value as ProfileSettings | undefined) ?? {
+  const settings = value as ProfileSettings | undefined;
+  return settings ? {
+    ...settings,
+    entryLookbackDays: settings.entryLookbackDays === undefined ? 30 : settings.entryLookbackDays,
+  } : {
     theme: "day",
+    entryLookbackDays: 30,
     updatedAt: new Date(0).toISOString(),
   };
 }

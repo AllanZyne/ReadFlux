@@ -3,15 +3,21 @@ import {
   clearConnection,
   ConnectionConfig,
   deleteReadingEvent,
+  EntrySyncPhase,
+  getCachedEntries,
   getConnection,
+  getEntrySyncState,
   getProfileSettings,
   getReadingEvents,
   minifluxFetch,
   newReadingEvent,
+  putCachedEntries,
   ProfileSettings,
   putReadingEvent,
   ReadingEvent,
+  resetEntrySync,
   saveConnection,
+  saveEntrySyncState,
   saveProfileSettings,
   syncWithWebDav,
   ThemeName,
@@ -52,6 +58,22 @@ type Story = Entry & {
 type EntryPage = { total: number; entries: Entry[] };
 type ListMode = "today" | "saved";
 type Topic = { kind: "category" | "feed"; id: number } | null;
+type SyncProgress = {
+  kind: "initial" | "incremental" | "search";
+  phase?: EntrySyncPhase;
+  loaded: number;
+  total: number;
+};
+
+const ENTRY_PAGE_SIZE = 100;
+const DEFAULT_LOOKBACK_DAYS = 30;
+const LOOKBACK_OPTIONS = [
+  { value: 7, label: "最近 7 天" },
+  { value: 30, label: "最近 30 天" },
+  { value: 90, label: "最近 90 天" },
+  { value: 365, label: "最近 1 年" },
+  { value: null, label: "全部文章" },
+] as const;
 
 const toText = (html: string) => html
   .replace(/<[^>]*>/g, " ")
@@ -68,15 +90,18 @@ const termsOf = (value: string) => value
   .filter((word) => word.length > 2)
   .slice(0, 80);
 
-async function loadEntryPages(config: ConnectionConfig, filters: Record<string, string>) {
-  const pageSize = 1000;
-  const all: Entry[] = [];
-  let offset = 0;
+async function loadEntryPages(
+  config: ConnectionConfig,
+  filters: Record<string, string>,
+  onPage: (entries: Entry[], loaded: number, total: number, nextOffset: number) => Promise<void>,
+  startOffset = 0,
+) {
+  let offset = startOffset;
   let total = Number.POSITIVE_INFINITY;
 
   while (offset < total) {
     const params = new URLSearchParams({
-      limit: String(pageSize),
+      limit: String(ENTRY_PAGE_SIZE),
       offset: String(offset),
       order: "published_at",
       direction: "desc",
@@ -84,13 +109,13 @@ async function loadEntryPages(config: ConnectionConfig, filters: Record<string, 
     });
     const page = await minifluxFetch<EntryPage>(config, `/v1/entries?${params}`);
     const batch = page.entries ?? [];
-    all.push(...batch);
-    total = page.total ?? all.length;
-    if (!batch.length || all.length >= total) break;
-    offset += batch.length;
+    total = page.total ?? offset + batch.length;
+    const nextOffset = offset + batch.length;
+    await onPage(batch, Math.min(nextOffset, total), total, nextOffset);
+    if (!batch.length || nextOffset >= total) break;
+    offset = nextOffset;
   }
 
-  return all;
 }
 
 function safeHtml(html: string) {
@@ -112,7 +137,7 @@ function safeHtml(html: string) {
     if (!/^https?:\/\//i.test(image.getAttribute("src") ?? "")) image.remove();
     else {
       image.setAttribute("loading", "lazy");
-      image.setAttribute("referrerpolicy", "no-referrer");
+      image.setAttribute("referrerpolicy", "origin");
     }
   });
   return parsed.body.innerHTML;
@@ -153,6 +178,7 @@ function emptyEventDraft(): EventDraft {
 }
 
 function SettingsDialog({
+  config,
   events,
   settings,
   sourceWeights,
@@ -163,8 +189,11 @@ function SettingsDialog({
   onSettingsChange,
   onEventsChange,
   onDisconnect,
+  onResetSync,
+  syncBusy,
   notify,
 }: {
+  config: ConnectionConfig;
   events: ReadingEvent[];
   settings: ProfileSettings;
   sourceWeights: Map<number, number>;
@@ -175,11 +204,14 @@ function SettingsDialog({
   onSettingsChange: (settings: ProfileSettings) => void;
   onEventsChange: (events: ReadingEvent[]) => void;
   onDisconnect: () => void;
+  onResetSync: () => Promise<void>;
+  syncBusy: boolean;
   notify: (message: string) => void;
 }) {
   const [tab, setTab] = useState<"general" | "sync" | "recommendation">("general");
   const [webdav, setWebdav] = useState<WebDavConfig>(settings.webdav ?? EMPTY_WEBDAV);
   const [syncing, setSyncing] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [eventQuery, setEventQuery] = useState("");
   const [draft, setDraft] = useState<EventDraft | null>(null);
 
@@ -197,11 +229,29 @@ function SettingsDialog({
     await saveProfileSettings(next);
   };
 
+  const setEntryLookback = async (value: string) => {
+    const entryLookbackDays = value === "all" ? null : Number(value);
+    const next = { ...settings, entryLookbackDays, updatedAt: new Date().toISOString() };
+    onSettingsChange(next);
+    await saveProfileSettings(next);
+    notify(entryLookbackDays === null ? "将同步全部文章，收藏始终不受限制" : `将同步最近 ${entryLookbackDays} 天，收藏始终不受限制`);
+  };
+
   const saveWebDav = async () => {
     const next = { ...settings, webdav, updatedAt: new Date().toISOString() };
     onSettingsChange(next);
     await saveProfileSettings(next);
     notify("WebDAV 设置已保存在此设备");
+  };
+
+  const resetSync = async () => {
+    if (!window.confirm("清除当前 Miniflux 连接的文章缓存和同步进度，并重新执行首次加载？阅读画像和连接凭据会保留。")) return;
+    setResetting(true);
+    try {
+      await onResetSync();
+    } finally {
+      setResetting(false);
+    }
   };
 
   const sync = async () => {
@@ -305,27 +355,49 @@ function SettingsDialog({
               <strong>本地数据边界</strong>
               <p>“批量已读”只写回 Miniflux，不会成为兴趣信号。只有实际打开、前台停留、滚动深度、收藏和明确反馈会影响推荐。</p>
             </section>
-            <button className="disconnect" onClick={onDisconnect}>断开此设备上的 Miniflux</button>
           </>}
 
-          {tab === "sync" && <section>
-            <div className="settingTitle">
-              <div><h3>加密 WebDAV 同步</h3><p>只同步阅读事件、反馈和主题；不会上传 Miniflux Key 或 WebDAV 凭据。</p></div>
-              <span>可选</span>
-            </div>
-            <div className="settingsForm">
-              <label><span>WebDAV 目录或文件地址</span><input value={webdav.url} onChange={(event) => setWebdav({ ...webdav, url: event.target.value })} placeholder="https://dav.example.com/signal/" /></label>
-              <div>
-                <label><span>用户名</span><input value={webdav.username} onChange={(event) => setWebdav({ ...webdav, username: event.target.value })} /></label>
-                <label><span>密码</span><input type="password" value={webdav.password} onChange={(event) => setWebdav({ ...webdav, password: event.target.value })} /></label>
+          {tab === "sync" && <>
+            <section>
+              <div className="settingTitle">
+                <div><h3>Miniflux 同步</h3><p>管理文章加载范围、当前连接和本地同步数据。</p></div>
+                <span>已连接</span>
               </div>
-              <label><span>同步加密口令</span><input type="password" value={webdav.passphrase} onChange={(event) => setWebdav({ ...webdav, passphrase: event.target.value })} placeholder="所有设备需填写同一口令" /></label>
-              <div className="settingsActions">
-                <button onClick={() => void saveWebDav()}>仅保存</button>
-                <button className="primary" disabled={syncing || !webdav.url || !webdav.passphrase} onClick={() => void sync()}>{syncing ? "正在合并与加密…" : "立即双向同步"}</button>
+              <div className="settingsForm minifluxSettings">
+                <label><span>服务器</span><input value={config.url} readOnly /></label>
+                <label className="lookbackSetting">
+                  <span>文章加载范围</span>
+                  <select value={settings.entryLookbackDays ?? "all"} onChange={(event) => void setEntryLookback(event.target.value)}>
+                    {LOOKBACK_OPTIONS.map((option) => <option key={option.value ?? "all"} value={option.value ?? "all"}>{option.label}</option>)}
+                  </select>
+                  <small>未读和普通已读按此范围加载；收藏始终加载全部历史。</small>
+                </label>
+                <div className="syncDataActions">
+                  <div><strong>重新测试首次加载</strong><p>清除当前连接的文章缓存与同步进度，保留阅读画像、偏好和连接凭据。</p></div>
+                  <button className="dangerAction" disabled={syncBusy || resetting} onClick={() => void resetSync()}>{resetting ? "正在重置…" : "重置同步数据"}</button>
+                </div>
+                <button className="disconnect" onClick={onDisconnect}>断开此设备上的 Miniflux</button>
               </div>
-            </div>
-          </section>}
+            </section>
+            <section>
+              <div className="settingTitle">
+                <div><h3>加密 WebDAV 同步</h3><p>只同步阅读事件、反馈和主题；不会上传 Miniflux Key 或 WebDAV 凭据。</p></div>
+                <span>可选</span>
+              </div>
+              <div className="settingsForm">
+                <label><span>WebDAV 目录或文件地址</span><input value={webdav.url} onChange={(event) => setWebdav({ ...webdav, url: event.target.value })} placeholder="https://dav.example.com/signal/" /></label>
+                <div>
+                  <label><span>用户名</span><input value={webdav.username} onChange={(event) => setWebdav({ ...webdav, username: event.target.value })} /></label>
+                  <label><span>密码</span><input type="password" value={webdav.password} onChange={(event) => setWebdav({ ...webdav, password: event.target.value })} /></label>
+                </div>
+                <label><span>同步加密口令</span><input type="password" value={webdav.passphrase} onChange={(event) => setWebdav({ ...webdav, passphrase: event.target.value })} placeholder="所有设备需填写同一口令" /></label>
+                <div className="settingsActions">
+                  <button onClick={() => void saveWebDav()}>仅保存</button>
+                  <button className="primary" disabled={syncing || !webdav.url || !webdav.passphrase} onClick={() => void sync()}>{syncing ? "正在合并与加密…" : "立即双向同步"}</button>
+                </div>
+              </div>
+            </section>
+          </>}
 
           {tab === "recommendation" && <div className="recommendationData">
             <section className="dataIntro">
@@ -392,10 +464,11 @@ function SettingsDialog({
   );
 }
 
-function ConnectScreen({ onConnected }: { onConnected: (config: ConnectionConfig) => void }) {
+function ConnectScreen({ onConnected }: { onConnected: (config: ConnectionConfig, settings: ProfileSettings) => void }) {
   const [url, setUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [remember, setRemember] = useState(true);
+  const [entryLookbackDays, setEntryLookbackDays] = useState<number | null>(DEFAULT_LOOKBACK_DAYS);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState("");
 
@@ -407,7 +480,10 @@ function ConnectScreen({ onConnected }: { onConnected: (config: ConnectionConfig
     try {
       await minifluxFetch(config, "/v1/me");
       saveConnection(config);
-      onConnected(config);
+      const currentSettings = await getProfileSettings();
+      const nextSettings = { ...currentSettings, entryLookbackDays, updatedAt: new Date().toISOString() };
+      await saveProfileSettings(nextSettings);
+      onConnected(config, nextSettings);
     } catch (cause) {
       setError(cause instanceof TypeError
         ? "浏览器无法直连该地址。请检查 HTTPS、地址是否正确，以及反向代理是否允许 CORS 和 X-Auth-Token。"
@@ -428,6 +504,7 @@ function ConnectScreen({ onConnected }: { onConnected: (config: ConnectionConfig
         <form onSubmit={connect}>
           <label><span>Miniflux 地址</span><input type="url" required value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://rss.example.com" autoComplete="url" /></label>
           <label><span>API Key</span><input type="password" required value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="粘贴专用 API Key" autoComplete="off" /></label>
+          <label className="connectLookback"><span>首次加载</span><select value={entryLookbackDays ?? "all"} onChange={(event) => setEntryLookbackDays(event.target.value === "all" ? null : Number(event.target.value))}>{LOOKBACK_OPTIONS.map((option) => <option key={option.value ?? "all"} value={option.value ?? "all"}>{option.label}</option>)}</select><small>收藏文章始终加载全部历史</small></label>
           <label className="remember"><input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /><span>记住在此设备</span><small>{remember ? "保存在此浏览器" : "关闭标签页后清除"}</small></label>
           {error && <p className="formError">{error}</p>}
           <button className="connectButton" disabled={testing}>{testing ? "正在验证连接…" : "连接 Miniflux →"}</button>
@@ -450,7 +527,7 @@ export default function App() {
   const [feeds, setFeeds] = useState<Feed[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [events, setEvents] = useState<ReadingEvent[]>([]);
-  const [settings, setSettings] = useState<ProfileSettings>({ theme: "day", updatedAt: new Date(0).toISOString() });
+  const [settings, setSettings] = useState<ProfileSettings>({ theme: "day", entryLookbackDays: DEFAULT_LOOKBACK_DAYS, updatedAt: new Date(0).toISOString() });
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [mode, setMode] = useState<ListMode>("today");
   const [topic, setTopic] = useState<Topic>(null);
@@ -477,9 +554,16 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [syncedAt, setSyncedAt] = useState<Date | null>(null);
   const [loading, setLoading] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
+  const [contentLoadingId, setContentLoadingId] = useState<number | null>(null);
+  const [contentError, setContentError] = useState<{ id: number; message: string } | null>(null);
   const [error, setError] = useState("");
   const activeEvent = useRef<ReadingEvent | null>(null);
   const readerRef = useRef<HTMLDivElement | null>(null);
+  const syncInFlight = useRef(false);
+  const syncQueued = useRef(false);
+  const syncResetInProgress = useRef(false);
+  const loadRef = useRef<() => Promise<void>>(async () => {});
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -513,46 +597,187 @@ export default function App() {
     };
   }, []);
 
-  const load = useCallback(async (search = "") => {
+  const mergeEntryBatch = useCallback(async (batch: Entry[]) => {
+    if (!config || !batch.length) return;
+    setEntries((current) => {
+      const merged = new Map(current.map((entry) => [entry.id, entry]));
+      batch.forEach((entry) => {
+        const cached = merged.get(entry.id);
+        merged.set(entry.id, {
+          ...cached,
+          ...entry,
+          content: entry.content || cached?.content || "",
+        });
+      });
+      return [...merged.values()];
+    });
+    setListReadSnapshot((current) => {
+      const next = new Map(current);
+      batch.forEach((entry) => {
+        if (!next.has(entry.id)) next.set(entry.id, entry.status);
+      });
+      return next;
+    });
+    await putCachedEntries(config, batch);
+  }, [config]);
+
+  const lookbackDays = settings.entryLookbackDays === undefined
+    ? DEFAULT_LOOKBACK_DAYS
+    : settings.entryLookbackDays;
+
+  const load = useCallback(async () => {
     if (!config) return;
+    if (syncResetInProgress.current || syncInFlight.current) {
+      syncQueued.current = true;
+      return;
+    }
+    syncInFlight.current = true;
     setLoading(true);
     setError("");
+    const syncStartedAt = new Date().toISOString();
     try {
-      const params = new URLSearchParams({ limit: "250", order: "published_at", direction: "desc" });
-      if (search) params.set("search", search);
-      const [entryData, unreadEntries, savedEntries, feedData, categoryData] = await Promise.all([
-        minifluxFetch<EntryPage>(config, `/v1/entries?${params}`),
-        loadEntryPages(config, { status: "unread" }),
-        loadEntryPages(config, { starred: "true" }),
+      const [cached, storedState] = await Promise.all([
+        getCachedEntries<Entry>(config),
+        getEntrySyncState(config),
+      ]);
+      const cutoff = lookbackDays === null
+        ? null
+        : Date.now() - lookbackDays * 86_400_000;
+      const scopedCache = cached.filter((entry) =>
+        entry.starred || cutoff === null || new Date(entry.published_at).getTime() >= cutoff);
+      setEntries(scopedCache);
+      setListReadSnapshot(new Map(scopedCache.map((entry) => [entry.id, entry.status])));
+      const [feedData, categoryData] = await Promise.all([
         minifluxFetch<Feed[]>(config, "/v1/feeds"),
         minifluxFetch<Category[]>(config, "/v1/categories"),
       ]);
-      const merged = new Map<number, Entry>();
-      [...(entryData.entries ?? []), ...unreadEntries, ...savedEntries].forEach((entry) => merged.set(entry.id, entry));
-      const nextEntries = [...merged.values()];
-      setEntries(nextEntries);
-      setListReadSnapshot(new Map(nextEntries.map((entry) => [entry.id, entry.status])));
       setFeeds(feedData ?? []);
       setCategories(categoryData ?? []);
+      setSelectedId((current) => current && scopedCache.some((entry) => entry.id === current) ? current : null);
+
+      const needsInitialSync = !storedState?.initialSyncComplete
+        || storedState.lookbackDays !== lookbackDays;
+      if (needsInitialSync) {
+        const publishedAfter: Record<string, string> = lookbackDays === null
+          ? {}
+          : { published_after: String(Math.floor((Date.now() - lookbackDays * 86_400_000) / 1000)) };
+        const phases: { id: EntrySyncPhase; filters: Record<string, string> }[] = [
+          { id: "unread", filters: { status: "unread", ...publishedAfter } },
+          { id: "starred", filters: { starred: "true" } },
+          { id: "read", filters: { status: "read", starred: "false", ...publishedAfter } },
+        ];
+        const resumeIndex = storedState?.lookbackDays === lookbackDays && storedState.phase
+          ? Math.max(0, phases.findIndex((phase) => phase.id === storedState.phase))
+          : 0;
+        for (let index = resumeIndex; index < phases.length; index += 1) {
+          const phase = phases[index];
+          const startOffset = index === resumeIndex
+            && storedState?.lookbackDays === lookbackDays
+            && storedState.phase === phase.id
+            ? storedState.offset ?? 0
+            : 0;
+          await loadEntryPages(config, phase.filters, async (batch, loaded, total, nextOffset) => {
+            setSyncProgress({ kind: "initial", phase: phase.id, loaded, total });
+            await mergeEntryBatch(batch);
+            await saveEntrySyncState(config, {
+              initialSyncComplete: false,
+              lookbackDays,
+              phase: phase.id,
+              offset: nextOffset,
+            });
+          }, startOffset);
+          const nextPhase = phases[index + 1]?.id;
+          if (nextPhase) {
+            await saveEntrySyncState(config, {
+              initialSyncComplete: false,
+              lookbackDays,
+              phase: nextPhase,
+              offset: 0,
+            });
+          }
+        }
+      } else if (storedState.updatedAt) {
+        const changedAfter = Math.max(0, Math.floor(new Date(storedState.updatedAt).getTime() / 1000) - 1);
+        await loadEntryPages(config, { changed_after: String(changedAfter) }, async (batch, loaded, total) => {
+          setSyncProgress({ kind: "incremental", loaded, total });
+          const visibleBatch = batch.filter((entry) =>
+            entry.starred || cutoff === null || new Date(entry.published_at).getTime() >= cutoff);
+          const hiddenIds = new Set(batch.filter((entry) => !visibleBatch.includes(entry)).map((entry) => entry.id));
+          if (hiddenIds.size) setEntries((current) => current.filter((entry) => !hiddenIds.has(entry.id)));
+          await mergeEntryBatch(visibleBatch);
+          await putCachedEntries(config, batch);
+        });
+      }
+
+      await saveEntrySyncState(config, {
+        initialSyncComplete: true,
+        lookbackDays,
+        updatedAt: syncStartedAt,
+      });
       setSyncedAt(new Date());
-      setSelectedId((current) => current && nextEntries.some((entry) => entry.id === current) ? current : null);
     } catch (cause) {
       setError(cause instanceof TypeError
         ? "浏览器无法直连 Miniflux，请检查网络与 CORS 配置。"
         : cause instanceof Error ? cause.message : "无法连接 Miniflux");
     } finally {
       setLoading(false);
+      setSyncProgress(null);
+      syncInFlight.current = false;
+      if (syncQueued.current) {
+        syncQueued.current = false;
+        queueMicrotask(() => void loadRef.current());
+      }
     }
-  }, [config]);
+  }, [config, lookbackDays, mergeEntryBatch]);
+  useEffect(() => {
+    loadRef.current = load;
+  }, [load]);
 
   useEffect(() => {
     if (config) queueMicrotask(() => void load());
   }, [config, load]);
+
+  useEffect(() => {
+    if (!config || !query.trim() || loading) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      const params = new URLSearchParams({
+        limit: "250",
+        order: "published_at",
+        direction: "desc",
+        search: query.trim(),
+      });
+      setSyncProgress({ kind: "search", loaded: 0, total: 0 });
+      void minifluxFetch<EntryPage>(config, `/v1/entries?${params}`)
+        .then(async (page) => {
+          if (cancelled) return;
+          const batch = page.entries ?? [];
+          await mergeEntryBatch(batch);
+          if (!cancelled) setSyncProgress({ kind: "search", loaded: batch.length, total: page.total ?? batch.length });
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (!cancelled) setSyncProgress((current) => current?.kind === "search" ? null : current);
+        });
+    }, 500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [query, config, mergeEntryBatch, loading]);
+
   useEffect(() => {
     if (!config) return;
-    const timer = window.setTimeout(() => void load(query.trim()), 500);
-    return () => window.clearTimeout(timer);
-  }, [query, config, load]);
+    const refresh = () => {
+      if (document.visibilityState === "visible") void loadRef.current();
+    };
+    const timer = window.setInterval(refresh, 5 * 60_000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [config]);
 
   useEffect(() => {
     if (!config || !feeds.length) return;
@@ -675,6 +900,8 @@ export default function App() {
     setEntries((all) => all.map((entry) => entry.id === id ? { ...entry, ...patch } : entry));
     try {
       await request();
+      const cached = before.find((entry) => entry.id === id);
+      if (config && cached) await putCachedEntries(config, [{ ...cached, ...patch }]);
       notify(success);
     } catch (cause) {
       setEntries(before);
@@ -682,9 +909,33 @@ export default function App() {
     }
   };
 
+  const loadEntryContent = useCallback(async (id: number) => {
+    if (!config) return;
+    setContentLoadingId(id);
+    setContentError(null);
+    try {
+      const remote = await minifluxFetch<Entry>(config, `/v1/entries/${id}`);
+      const local = entries.find((entry) => entry.id === id);
+      const merged = local
+        ? { ...local, ...remote, status: local.status, starred: local.starred }
+        : remote;
+      setEntries((all) => all.map((entry) => entry.id === id ? merged : entry));
+      await putCachedEntries(config, [merged]);
+    } catch (cause) {
+      setContentError({
+        id,
+        message: cause instanceof Error ? cause.message : "文章正文加载失败",
+      });
+    } finally {
+      setContentLoadingId((current) => current === id ? null : current);
+    }
+  }, [config, entries]);
+
   const choose = useCallback((story: Story, origin?: ReadingEvent["origin"]) => {
     void persistActive();
     setSelectedId(story.id);
+    setContentError(null);
+    if (!story.content.trim()) void loadEntryContent(story.id);
     readerRef.current?.scrollTo({ top: 0 });
     activeEvent.current = newReadingEvent({
       entryId: story.id,
@@ -703,7 +954,7 @@ export default function App() {
       }), "已标为已读");
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, mode, query, persistActive]);
+  }, [config, mode, query, persistActive, loadEntryContent]);
 
   const move = useCallback((delta: number) => {
     if (!visible.length) return;
@@ -734,6 +985,7 @@ export default function App() {
         method: "PUT",
         body: JSON.stringify({ entry_ids: ids, status: "read" }),
       });
+      await putCachedEntries(config, after.filter((entry) => ids.includes(entry.id)));
       notify(`已将 ${ids.length} 篇文章标为已读`);
     } catch (cause) {
       setEntries(before);
@@ -842,8 +1094,16 @@ export default function App() {
   };
   const unreadCount = entries.filter((entry) => entry.status === "unread").length;
   const savedCount = entries.filter((entry) => entry.starred).length;
+  const syncProgressLabel = syncProgress
+    ? `${syncProgress.kind === "initial"
+      ? `首次同步 · ${syncProgress.phase === "unread" ? "未读" : syncProgress.phase === "starred" ? "全部收藏" : "已读"}`
+      : syncProgress.kind === "search" ? "搜索 Miniflux" : "获取最新文章"}${syncProgress.total ? ` ${syncProgress.loaded} / ${syncProgress.total}` : ""}`
+    : "";
   if (!ready) return <main className="boot" data-theme="day"><span className="wave">▁▅█▃▇▂</span><p>正在启动阅读器…</p></main>;
-  if (!config) return <ConnectScreen onConnected={setConfig} />;
+  if (!config) return <ConnectScreen onConnected={(nextConfig, nextSettings) => {
+    setSettings(nextSettings);
+    setConfig(nextConfig);
+  }} />;
 
   const nav = [
     ["today", "◷", "今天", unreadCount],
@@ -857,9 +1117,11 @@ export default function App() {
         <label className="search"><span>⌕</span><input id="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文章" /><kbd>/</kbd></label>
         <div className="topActions">
           {error && <span className="syncError">同步失败</span>}
-          <button className="toolbarButton" onClick={async () => { try { await minifluxFetch(config, "/v1/feeds/refresh", { method: "PUT" }); await load(query); notify("Miniflux 已刷新"); } catch (cause) { notify(cause instanceof Error ? cause.message : "刷新失败"); } }} aria-label="刷新订阅" title="刷新订阅">↻</button>
+          {syncProgress && <span className="syncLabel" role="status">{syncProgressLabel}</span>}
+          <button className={`toolbarButton ${loading ? "spinning" : ""}`} disabled={loading} onClick={async () => { try { await minifluxFetch(config, "/v1/feeds/refresh", { method: "PUT" }); await load(); notify("Miniflux 已刷新"); } catch (cause) { notify(cause instanceof Error ? cause.message : "刷新失败"); } }} aria-label="刷新订阅" title="刷新订阅">↻</button>
           <button className="settingsButton" onClick={() => setSettingsOpen(true)} aria-label="打开设置对话框" title="设置">⚙</button>
         </div>
+        {syncProgress && <div className="topbarProgress" aria-hidden="true"><i style={{ width: `${syncProgress.total ? Math.min(100, syncProgress.loaded / syncProgress.total * 100) : 8}%` }} /></div>}
       </header>
 
       <div className={`workspace ${collapsedSidebar ? "sidebarCollapsed" : ""} mobile-${mobileView}`} style={{ "--sidebar-width": `${sidebarWidth}px`, "--list-width": `${listWidth}px` } as CSSProperties}>
@@ -895,11 +1157,11 @@ export default function App() {
         <div className="resizeHandle sidebarHandle" onPointerDown={(event) => startResize("sidebar", event)} onDoubleClick={() => setSidebarWidth(250)} />
 
         <section className="feed">
-          <header className="feedTitle"><button className="mobileBack" onClick={() => setMobileView("sources")}>‹ 订阅源</button><div><h1>{topicTitle || (mode === "today" ? "今天" : "已收藏")}</h1><small>{visible.length} 篇文章</small></div></header>
+          <header className="feedTitle"><button className="mobileBack" onClick={() => setMobileView("sources")}>‹ 订阅源</button><div><h1>{topicTitle || (mode === "today" ? "今天" : "已收藏")}</h1><small>{visible.length} 篇文章{error && entries.length ? " · 离线缓存" : syncedAt ? ` · ${syncedAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} 已同步` : ""}</small></div></header>
           <div className="feedTools"><label><input type="checkbox" checked={hideRead} onChange={(event) => { setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead(event.target.checked); }} /> 隐藏已读</label><button onClick={() => void markVisibleRead()} disabled={!visible.some((story) => story.status === "unread")}>全部标为已读</button></div>
           <div className="storyList">
-            {loading ? <div className="empty"><b className="loadingMark">↻</b><h2>正在刷新</h2><p>从 Miniflux 拉取最新文章…</p></div>
-              : error ? <div className="empty errorState"><b>!</b><h2>连接失败</h2><p>{error}</p><button onClick={() => void load(query)}>重新连接</button></div>
+            {loading && !entries.length ? <div className="empty"><b className="loadingMark">↻</b><h2>正在同步文章</h2><p>未读文章会优先显示，随后加载收藏和已读文章。</p></div>
+              : error && !entries.length ? <div className="empty errorState"><b>!</b><h2>连接失败</h2><p>{error}</p><button onClick={() => void load()}>重新连接</button></div>
               : visible.length ? visible.map((story) => <article key={story.id} tabIndex={0} className={`story ${selected?.id === story.id ? "selected" : ""} ${story.status === "read" ? "read" : ""}`} onClick={() => { choose(story); setMobileView("reader"); }} onKeyDown={(event) => { if (event.key === "Enter") { choose(story); setMobileView("reader"); } }}>
                 <div className="storySource"><SourceIcon src={feedIcons.get(story.feed_id)}>{story.mark}</SourceIcon><span>{story.source}</span><time>{new Date(story.published_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time>{story.starred && <b>★</b>}</div>
                 <h2>{story.title}</h2><p>{story.summary}</p>
@@ -924,7 +1186,11 @@ export default function App() {
                 <button className="reasonHead" onClick={() => setReasonOpen(!reasonOpen)}><span>推荐依据</span><small>{reasonOpen ? "收起 −" : "查看 +"}</small></button>
                 {reasonOpen && <><p>{selected.reason}</p><div className="tags">{[selected.category, selected.source, ...(selected.tags ?? [])].slice(0, 4).map((tag) => <span key={tag}>{tag}</span>)}</div></>}
               </section>
-              <div className="body articleContent" dangerouslySetInnerHTML={{ __html: safeHtml(selected.content) }} />
+              {contentLoadingId === selected.id
+                ? <div className="articleLoading" role="status"><b className="loadingMark">↻</b><p>正在加载文章正文…</p></div>
+                : contentError?.id === selected.id
+                  ? <div className="articleLoading errorState"><b>!</b><p>{contentError.message}</p><button onClick={() => void loadEntryContent(selected.id)}>重试</button></div>
+                  : <div className="body articleContent" dangerouslySetInnerHTML={{ __html: safeHtml(selected.content) }} />}
               <div className="feedback"><span>这篇文章符合你的兴趣吗？</span><button onClick={() => void setFeedback("helpful")}>有帮助</button><button onClick={() => void setFeedback("not_interested")}>不感兴趣</button></div>
             </div>
             <footer className="readerFoot"><span><kbd>J</kbd><kbd>K</kbd> 上下篇　<kbd>S</kbd> 收藏　<kbd>U</kbd> 已读</span><div><button onClick={() => move(-1)}>← 上一篇</button><button onClick={() => move(1)}>下一篇 →</button></div></footer>
@@ -933,6 +1199,7 @@ export default function App() {
       </div>
 
       {settingsOpen && <SettingsDialog
+        config={config}
         events={events}
         settings={settings}
         sourceWeights={interest.sources}
@@ -950,6 +1217,27 @@ export default function App() {
           setSettingsOpen(false);
           setConfig(null);
         }}
+        onResetSync={async () => {
+          syncResetInProgress.current = true;
+          try {
+            while (syncInFlight.current) {
+              await new Promise((resolve) => window.setTimeout(resolve, 50));
+            }
+            await resetEntrySync(config);
+            setEntries([]);
+            setListReadSnapshot(new Map());
+            setSelectedId(null);
+            setSyncedAt(null);
+            setSyncProgress(null);
+            setContentError(null);
+            setSettingsOpen(false);
+            notify("同步数据已重置，正在重新执行首次加载");
+          } finally {
+            syncResetInProgress.current = false;
+          }
+          await load();
+        }}
+        syncBusy={loading}
         notify={notify}
       />}
       {toast && <div className="toast">✓　{toast}</div>}
