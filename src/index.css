@@ -127,6 +127,24 @@ kbd{padding:2px 6px;border:1px solid #33423e;border-radius:4px;background:#1a252
 @media(max-width:900px){.metricGrid{grid-template-columns:repeat(4,1fr)}.derivedData{grid-template-columns:1fr 1fr}.derivedData>div:first-child{grid-column:1/-1}.eventForm{grid-template-columns:repeat(2,1fr)}.eventTableHead{display:none}.eventRow{grid-template-columns:1.4fr .7fr 1fr auto}.eventRecords>header input{width:220px}}
 @media(max-width:700px){.settingsBackdrop{padding:0}.settingsDialog{width:100vw;height:100vh;min-height:0;border:0;border-radius:0}.settingsDialogBody{padding:18px}.settingsTabs{overflow-x:auto}.settingsTabs button{white-space:nowrap}.metricGrid{grid-template-columns:repeat(2,1fr)}.derivedData{grid-template-columns:1fr}.derivedData>div:first-child{grid-column:auto}.dataIntro{align-items:flex-start}.eventForm{grid-template-columns:1fr}.eventForm label.wide{grid-column:auto}.eventRecords>header{display:grid}.eventRecords>header input{width:100%}.eventRow{grid-template-columns:1fr 1fr}.eventRow>span:nth-child(3){grid-column:1/-1}.eventRow>span:last-child{justify-content:flex-start}}
 
+/* Progressive entry sync and local cache */
+.connectCard select{width:100%;height:46px;padding:0 13px;border:1px solid #30443d;border-radius:6px;outline:0;background:#091512;color:#dce8e3;font-size:11px}
+.connectCard select:focus{border-color:#69bd92;box-shadow:0 0 0 3px rgba(126,224,173,.08)}
+.connectLookback{grid-column:1/-1!important;grid-template-columns:100px minmax(180px,1fr) auto!important;align-items:center}
+.connectLookback small{color:#65756f;font-size:9px}
+.onboarding[data-theme="day"] .connectCard select{border-color:#c4cfdd;background:#f8fafc;color:#182333}
+.lookbackSetting{max-width:420px;display:grid;grid-template-columns:110px minmax(180px,1fr);align-items:center;gap:12px;margin-top:14px;color:var(--muted);font-size:11px}
+.syncProgress{position:sticky;top:0;z-index:2;display:grid;gap:5px;padding:8px 12px;border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--panel2) 94%,transparent);backdrop-filter:blur(8px);color:var(--muted)}
+.syncProgress>span{height:3px;overflow:hidden;border-radius:999px;background:color-mix(in srgb,var(--muted) 18%,transparent)}
+.syncProgress>span>i{display:block;height:100%;min-width:8%;border-radius:inherit;background:var(--mint);transition:width .2s ease}
+.syncProgress small{font:10px var(--font-geist-sans)}
+.toolbarButton:disabled{opacity:.55;cursor:wait}.toolbarButton.spinning{animation:spin .9s linear infinite}
+.articleLoading{min-height:260px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;color:var(--muted);text-align:center}
+.articleLoading>b{color:var(--mint);font-size:30px}.articleLoading p{margin:0;font:12px/1.6 var(--font-geist-sans)}
+.articleLoading button{padding:8px 14px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--mint);cursor:pointer}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media(max-width:800px){.connectLookback{grid-column:1!important;grid-template-columns:1fr!important}.connectLookback small{margin-top:-4px}.lookbackSetting{grid-template-columns:1fr}}
+
 /* NetNewsWire-style source sidebar */
 .sidebar{
   display:flex;
