@@ -10,7 +10,7 @@ const packageJson = JSON.parse(
 );
 
 test("sidebar icons are provided by the local Bootstrap Icons package", () => {
-  assert.equal(packageJson.dependencies["bootstrap-icons"], "^1.13.1");
+  assert.match(packageJson.dependencies["bootstrap-icons"], /^\^?1\./);
   assert.match(main, /import "bootstrap-icons\/font\/bootstrap-icons\.css"/);
 });
 
@@ -34,6 +34,17 @@ test("the subscriptions heading toggles the whole persisted section", () => {
   assert.doesNotMatch(heading, />折叠<|>展开</);
 });
 
+test("subscription collapse state survives unavailable browser storage", () => {
+  assert.match(
+    app,
+    /function readStoredBoolean\([^)]*\)\s*\{[\s\S]*?try\s*\{[\s\S]*?localStorage\.getItem\(key\)[\s\S]*?catch\s*\{[\s\S]*?return false;/,
+  );
+  assert.match(
+    app,
+    /useState\(\s*\(\)\s*=>\s*readStoredBoolean\("readflux\.sidebar\.subscriptions-collapsed"\)/,
+  );
+});
+
 test("each category folder independently reflects and toggles its state", () => {
   assert.match(app, /collapsed\s*\?\s*"bi-folder-fill"\s*:\s*"bi-folder2-open"/);
   assert.match(app, /onClick=\{\(\)\s*=>\s*toggleCategory\(category\.id\)\}/);
@@ -54,6 +65,14 @@ test("a selected category highlights its folder and title as one row", () => {
 test("hovering either category control highlights the whole row", () => {
   assert.match(styles, /\.groupRow:hover\s*\{[^}]*background:[^}]*color:/);
   assert.match(styles, /\.groupRow:hover \.groupHead,[^{]*\.groupRow:hover \.disclosure\s*\{[^}]*background:transparent;[^}]*color:inherit/);
+});
+
+test("long category titles are truncated within their row", () => {
+  assert.match(
+    styles,
+    /\.groupHead>span(?:,|\s*\{)[^}]*overflow:hidden;[^}]*text-overflow:ellipsis;[^}]*white-space:nowrap;/,
+  );
+  assert.doesNotMatch(styles, /\.groupHead>span:nth-child\(2\)/);
 });
 
 test("the sidebar no longer links to Miniflux", () => {

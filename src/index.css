@@ -182,7 +182,7 @@ kbd{padding:2px 6px;border:1px solid #33423e;border-radius:4px;background:#1a252
   font:500 15px/1 var(--font-geist-sans);
   text-align:center;
 }
-.sidebar nav button span,.groupHead>span:nth-child(2),.sourceRow>span{
+.sidebar nav button span,.groupHead>span,.sourceRow>span{
   overflow:hidden;
   text-overflow:ellipsis;
   white-space:nowrap;

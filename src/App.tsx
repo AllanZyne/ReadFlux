@@ -75,6 +75,15 @@ const LOOKBACK_OPTIONS = [
   { value: null, label: "全部文章" },
 ] as const;
 
+function readStoredBoolean(key: string) {
+  if (typeof window === "undefined") return false;
+  try {
+    return localStorage.getItem(key) === "true";
+  } catch {
+    return false;
+  }
+}
+
 const toText = (html: string) => html
   .replace(/<[^>]*>/g, " ")
   .replace(/&nbsp;/g, " ")
@@ -539,9 +548,9 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(250);
   const [listWidth, setListWidth] = useState(430);
   const [collapsedSidebar, setCollapsedSidebar] = useState(false);
-  const [subscriptionsCollapsed, setSubscriptionsCollapsed] = useState(() =>
-    typeof window !== "undefined"
-      && localStorage.getItem("readflux.sidebar.subscriptions-collapsed") === "true");
+  const [subscriptionsCollapsed, setSubscriptionsCollapsed] = useState(
+    () => readStoredBoolean("readflux.sidebar.subscriptions-collapsed"),
+  );
   const [collapsedCategories, setCollapsedCategories] = useState<Set<number>>(() => {
     if (typeof window === "undefined") return new Set();
     try {
