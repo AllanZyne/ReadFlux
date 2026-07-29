@@ -75,6 +75,15 @@ const LOOKBACK_OPTIONS = [
   { value: null, label: "全部文章" },
 ] as const;
 
+function readStoredBoolean(key: string) {
+  if (typeof window === "undefined") return false;
+  try {
+    return localStorage.getItem(key) === "true";
+  } catch {
+    return false;
+  }
+}
+
 const toText = (html: string) => html
   .replace(/<[^>]*>/g, " ")
   .replace(/&nbsp;/g, " ")
@@ -539,6 +548,9 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(250);
   const [listWidth, setListWidth] = useState(430);
   const [collapsedSidebar, setCollapsedSidebar] = useState(false);
+  const [subscriptionsCollapsed, setSubscriptionsCollapsed] = useState(
+    () => readStoredBoolean("readflux.sidebar.subscriptions-collapsed"),
+  );
   const [collapsedCategories, setCollapsedCategories] = useState<Set<number>>(() => {
     if (typeof window === "undefined") return new Set();
     try {
@@ -578,6 +590,10 @@ export default function App() {
       setReady(true);
     });
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem("readflux.sidebar.subscriptions-collapsed", String(subscriptionsCollapsed));
+  }, [subscriptionsCollapsed]);
 
   useEffect(() => {
     localStorage.setItem("readflux.sidebar.collapsed-categories", JSON.stringify([...collapsedCategories]));
@@ -1106,8 +1122,8 @@ export default function App() {
   }} />;
 
   const nav = [
-    ["today", "◷", "今天", unreadCount],
-    ["saved", "★", "已收藏", savedCount],
+    ["today", "bi-clock", "今天", unreadCount],
+    ["saved", "bi-star-fill", "已收藏", savedCount],
   ] as const;
 
   return (
@@ -1127,24 +1143,26 @@ export default function App() {
       <div className={`workspace ${collapsedSidebar ? "sidebarCollapsed" : ""} mobile-${mobileView}`} style={{ "--sidebar-width": `${sidebarWidth}px`, "--list-width": `${listWidth}px` } as CSSProperties}>
         <aside className="sidebar" aria-label="订阅源">
           <div className="sidebarScroll" onKeyDown={handleSidebarKey}>
-            <nav>{nav.map(([key, icon, label, count]) => <button data-sidebar-row key={key} className={mode === key && !topic ? "active" : ""} onClick={() => { setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setMode(key); setTopic(null); setMobileView("list"); }}><b>{icon}</b><span>{label}</span><em>{count}</em></button>)}</nav>
-            <div className="sideLabel"><span>订阅</span><button type="button" onClick={() => setCollapsedCategories((current) => current.size ? new Set() : new Set(categories.map((category) => category.id)))} title={collapsedCategories.size ? "全部展开" : "全部折叠"} aria-label={collapsedCategories.size ? "全部展开" : "全部折叠"}>{collapsedCategories.size ? "展开" : "折叠"}</button></div>
-            {categorySources.map((category) => {
+            <nav>{nav.map(([key, icon, label, count]) => <button data-sidebar-row key={key} className={mode === key && !topic ? "active" : ""} onClick={() => { setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setMode(key); setTopic(null); setMobileView("list"); }}><i className={`bi ${icon}`} aria-hidden="true" /><span>{label}</span><em>{count}</em></button>)}</nav>
+            <div className="sideLabel"><span>订阅</span><button type="button" onClick={() => setSubscriptionsCollapsed((current) => !current)} title={subscriptionsCollapsed ? "展开订阅" : "折叠订阅"} aria-label={subscriptionsCollapsed ? "展开订阅" : "折叠订阅"} aria-expanded={!subscriptionsCollapsed}><i className={`bi ${subscriptionsCollapsed ? "bi-chevron-right" : "bi-chevron-down"}`} aria-hidden="true" /></button></div>
+            {!subscriptionsCollapsed && categorySources.map((category) => {
               const collapsed = collapsedCategories.has(category.id);
+              const categorySelected = topic?.kind === "category" && topic.id === category.id;
               const categoryUnread = category.feeds.reduce((sum, feed) => sum + (unreadByFeed.get(feed.id) ?? 0), 0);
               return <section className="sourceGroup" key={category.id}>
-                <div className="groupRow">
-                  <button className="disclosure" onClick={() => toggleCategory(category.id)} aria-label={`${collapsed ? "展开" : "折叠"}${category.title}`} aria-expanded={!collapsed}>⌄</button>
+                <div className={`groupRow ${categorySelected ? "selected" : ""}`}>
+                  <button className="disclosure" onClick={() => toggleCategory(category.id)} aria-label={`${collapsed ? "展开" : "折叠"}${category.title}`} aria-expanded={!collapsed}><i className={`bi ${collapsed ? "bi-folder-fill" : "bi-folder2-open"}`} aria-hidden="true" /></button>
                   <button
                     data-sidebar-row
-                    className={`groupHead ${topic?.kind === "category" && topic.id === category.id ? "selected" : ""}`}
+                    className="groupHead"
+                    aria-current={categorySelected ? "page" : undefined}
                     onClick={() => { setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setTopic({ kind: "category", id: category.id }); setMobileView("list"); }}
                     onKeyDown={(event) => {
                       if (event.key === "ArrowLeft") { event.preventDefault(); event.stopPropagation(); toggleCategory(category.id, true); }
                       if (event.key === "ArrowRight") { event.preventDefault(); event.stopPropagation(); toggleCategory(category.id, false); }
                       if (event.key === " ") { event.preventDefault(); event.stopPropagation(); toggleCategory(category.id); }
                     }}
-                  ><span className="folderIcon" aria-hidden="true">▰</span><span>{category.title}</span><em>{categoryUnread || ""}</em></button>
+                  ><span>{category.title}</span><em>{categoryUnread || ""}</em></button>
                 </div>
                 {!collapsed && <div className="groupFeeds">
                   {category.feeds.map((feed) => <button data-sidebar-row className={topic?.kind === "feed" && topic.id === feed.id ? "sourceRow selected" : "sourceRow"} key={feed.id} onClick={() => { setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setTopic({ kind: "feed", id: feed.id }); setMobileView("list"); }}><SourceIcon src={feedIcons.get(feed.id)}>{feed.title.slice(0, 1)}</SourceIcon><span>{feed.title}</span><em>{unreadByFeed.get(feed.id) || ""}</em></button>)}
@@ -1152,7 +1170,6 @@ export default function App() {
               </section>;
             })}
           </div>
-          <a className="manage" href={config.url} target="_blank" rel="noreferrer">↗<span>打开 Miniflux</span></a>
         </aside>
         <div className="resizeHandle sidebarHandle" onPointerDown={(event) => startResize("sidebar", event)} onDoubleClick={() => setSidebarWidth(250)} />
 

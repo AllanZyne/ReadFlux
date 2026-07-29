@@ -3,6 +3,11 @@
 This file gives coding agents the project context and constraints needed to
 work safely on ReadFlux.
 
+Detailed rationale and reusable implementation checklists live in
+[`docs/development-bkms.md`](docs/development-bkms.md). Files under
+`docs/superpowers/` are temporary working artifacts and must never be
+committed.
+
 ## Product
 
 ReadFlux is a static, local-first Miniflux client. It has no application
@@ -42,8 +47,8 @@ build variable unless the user explicitly changes the architecture.
 ## Browser data
 
 - Miniflux connection: localStorage or sessionStorage.
-- Reading events and settings: IndexedDB.
-- Category collapse state: localStorage.
+- Reading events, settings, cached entries, and sync progress: IndexedDB.
+- Category and subscriptions-section collapse state: localStorage.
 - WebDAV payload: encrypted in the browser with PBKDF2-derived AES-256-GCM.
 
 Never log, commit, upload, or add analytics around API keys, WebDAV passwords,
@@ -103,6 +108,14 @@ Run lint, tests, and build before publishing.
 - Preserve keyboard and mobile behavior when changing desktop layout.
 - Use Miniflux category and feed IDs for identity; titles are display text only.
 - Avoid adding dependencies when a browser API or short local helper is enough.
+- Use Bootstrap Icons for interface icons instead of Unicode approximations.
+- Apply hover and selected states to the complete interactive row, including
+  its icon, label, and count.
+- Keep disclosure and selection as separate controls and semantics. Expose
+  state with appropriate `aria-expanded`, `aria-current`, and accessible
+  labels.
+- Check UI changes in day and night themes, desktop and mobile layouts, and
+  keyboard and focus-visible interactions.
 
 ## Deployment
 
