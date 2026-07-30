@@ -542,7 +542,13 @@ export default function App() {
   const [topic, setTopic] = useState<Topic>(null);
   const [query, setQuery] = useState("");
   const [hideRead, setHideRead] = useState(false);
-  const [listReadSnapshot, setListReadSnapshot] = useState<Map<number, Entry["status"]>>(new Map());
+  const [listReadSnapshot, setListReadSnapshot] = useState<Map<number, Entry["status"]>>(() => {
+    try {
+      const stored = localStorage.getItem("readflux.listSnapshot");
+      if (stored) return new Map(JSON.parse(stored) as [number, Entry["status"]][]);
+    } catch { /* ignore */ }
+    return new Map();
+  });
   const [reasonOpen, setReasonOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(250);
@@ -606,6 +612,12 @@ export default function App() {
   }, [collapsedCategories]);
 
   useEffect(() => {
+    if (listReadSnapshot.size) {
+      localStorage.setItem("readflux.listSnapshot", JSON.stringify([...listReadSnapshot]));
+    }
+  }, [listReadSnapshot]);
+
+  useEffect(() => {
     const refreshSettings = () => { void getProfileSettings().then(setSettings); };
     const receiveSettings = (event: MessageEvent<{ type?: string }>) => {
       if (event.origin === window.location.origin && event.data?.type === "readflux:settings-updated") refreshSettings();
@@ -666,7 +678,9 @@ export default function App() {
       const scopedCache = cached.filter((entry) =>
         entry.starred || cutoff === null || new Date(entry.published_at).getTime() >= cutoff);
       setEntries(scopedCache);
-      setListReadSnapshot(new Map(scopedCache.map((entry) => [entry.id, entry.status])));
+      if (!listSnapshotIds.current.size) {
+        setListReadSnapshot(new Map(scopedCache.map((entry) => [entry.id, entry.status])));
+      }
       const [feedData, categoryData] = await Promise.all([
         minifluxFetch<Feed[]>(config, "/v1/feeds"),
         minifluxFetch<Category[]>(config, "/v1/categories"),
@@ -735,7 +749,7 @@ export default function App() {
         updatedAt: syncStartedAt,
       });
       setSyncedAt(new Date());
-      if (!background) {
+      if (!background && !listSnapshotIds.current.size) {
         setEntries((current) => {
           setListReadSnapshot(new Map(current.map((entry) => [entry.id, entry.status])));
           return current;
