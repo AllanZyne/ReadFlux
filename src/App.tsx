@@ -588,6 +588,8 @@ export default function App() {
   const modeRef = useRef(mode);
   const topicRef = useRef(topic);
   const feedsRef = useRef(feeds);
+  const hideReadRef = useRef(hideRead);
+  const queryRef = useRef(query);
   const loadRef = useRef<(options?: { background?: boolean }) => Promise<void>>(async () => {});
 
   const notify = useCallback((message: string) => {
@@ -599,6 +601,8 @@ export default function App() {
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { topicRef.current = topic; }, [topic]);
   useEffect(() => { feedsRef.current = feeds; }, [feeds]);
+  useEffect(() => { hideReadRef.current = hideRead; }, [hideRead]);
+  useEffect(() => { queryRef.current = query; }, [query]);
 
   useEffect(() => {
     Promise.all([getReadingEvents(), getProfileSettings()]).then(([history, profile]) => {
@@ -653,13 +657,15 @@ export default function App() {
       });
       return [...merged.values()];
     });
-    if (listSnapshotIds.current.size) {
+    if (!queryRef.current.trim()) {
       const currentMode = modeRef.current;
       const currentTopic = topicRef.current;
+      const currentHideRead = hideReadRef.current;
       const relevant = batch.filter((entry) => {
         if (listSnapshotIds.current.has(entry.id)) return false;
         if (currentMode === "today" && !currentTopic && entry.status !== "unread") return false;
         if (currentMode === "saved" && !entry.starred) return false;
+        if (currentHideRead && entry.status === "read") return false;
         if (currentTopic?.kind === "category") {
           const feed = feedsRef.current.find((f) => f.id === entry.feed_id);
           if (feed?.category?.id !== currentTopic.id) return false;
