@@ -614,6 +614,8 @@ export default function App() {
   useEffect(() => {
     if (listReadSnapshot.size) {
       localStorage.setItem("readflux.listSnapshot", JSON.stringify([...listReadSnapshot]));
+    } else {
+      localStorage.removeItem("readflux.listSnapshot");
     }
   }, [listReadSnapshot]);
 
@@ -678,7 +680,7 @@ export default function App() {
       const scopedCache = cached.filter((entry) =>
         entry.starred || cutoff === null || new Date(entry.published_at).getTime() >= cutoff);
       setEntries(scopedCache);
-      if (!listSnapshotIds.current.size) {
+      if (!listSnapshotIds.current.size || !scopedCache.some((e) => listSnapshotIds.current.has(e.id))) {
         setListReadSnapshot(new Map(scopedCache.map((entry) => [entry.id, entry.status])));
       }
       const [feedData, categoryData] = await Promise.all([
@@ -898,16 +900,17 @@ export default function App() {
   }, [entries]);
 
   const visible = useMemo(() => {
+    const hasQuery = !!query.trim();
+    const needle = hasQuery ? query.trim().toLowerCase() : "";
     const filtered = stories.filter((story) => {
-      if (!listReadSnapshot.has(story.id)) return false;
-      const statusWhenListed = listReadSnapshot.get(story.id)!;
+      if (!hasQuery && !listReadSnapshot.has(story.id)) return false;
+      const statusWhenListed = listReadSnapshot.get(story.id) ?? story.status;
       if (mode === "today" && !topic && statusWhenListed !== "unread") return false;
       if (mode === "saved" && !story.starred) return false;
       if (hideRead && statusWhenListed === "read") return false;
       if (topic?.kind === "category" && story.categoryId !== topic.id) return false;
       if (topic?.kind === "feed" && story.feed_id !== topic.id) return false;
-      if (!query.trim()) return true;
-      const needle = query.trim().toLowerCase();
+      if (!hasQuery) return true;
       return `${story.title} ${story.summary} ${story.source} ${story.author ?? ""}`.toLowerCase().includes(needle);
     }).sort((a, b) => mode === "today" && !topic
       ? b.score - a.score
@@ -1166,7 +1169,7 @@ export default function App() {
         <div className="topActions">
           {error && <span className="syncError">同步失败</span>}
           {syncProgress && <span className="syncLabel" role="status">{syncProgressLabel}</span>}
-          <button className={`toolbarButton ${loading ? "spinning" : ""}`} disabled={loading} onClick={async () => { try { await minifluxFetch(config, "/v1/feeds/refresh", { method: "PUT" }); await load(); notify("Miniflux 已刷新"); } catch (cause) { notify(cause instanceof Error ? cause.message : "刷新失败"); } }} aria-label="刷新订阅" title="刷新订阅">↻</button>
+          <button className={`toolbarButton ${loading ? "spinning" : ""}`} disabled={loading} onClick={async () => { try { await minifluxFetch(config, "/v1/feeds/refresh", { method: "PUT" }); await load(); refreshList(); notify("Miniflux 已刷新"); } catch (cause) { notify(cause instanceof Error ? cause.message : "刷新失败"); } }} aria-label="刷新订阅" title="刷新订阅">↻</button>
           <button className="settingsButton" onClick={() => setSettingsOpen(true)} aria-label="打开设置对话框" title="设置">⚙</button>
         </div>
         {syncProgress && <div className="topbarProgress" aria-hidden="true"><i style={{ width: `${syncProgress.total ? Math.min(100, syncProgress.loaded / syncProgress.total * 100) : 8}%` }} /></div>}
