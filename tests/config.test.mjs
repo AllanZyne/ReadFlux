@@ -4,7 +4,7 @@ import test from "node:test";
 
 test("GitHub Pages deployment uses the repository base path", async () => {
   const config = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
-  assert.match(config, /GITHUB_ACTIONS\s*\?\s*"\/readflux\/"/);
+  assert.match(config, /GITHUB_ACTIONS\s*\?\s*"\/ReadFlux\/"/);
 });
 
 test("no credential is embedded in source", async () => {
