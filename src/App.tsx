@@ -911,9 +911,12 @@ export default function App() {
 
   const refreshList = useCallback(() => {
     commitActiveEvent();
-    setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status])));
+    setEntries((current) => {
+      setListReadSnapshot(new Map(current.map((entry) => [entry.id, entry.status])));
+      return current;
+    });
     setPendingNew(0);
-  }, [entries, commitActiveEvent]);
+  }, [commitActiveEvent]);
 
   const visible = useMemo(() => {
     const hasQuery = !!query.trim();
