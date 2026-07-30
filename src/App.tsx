@@ -633,8 +633,10 @@ export default function App() {
       });
       return [...merged.values()];
     });
-    const newCount = batch.filter((entry) => entry.status === "unread" && !listSnapshotIds.current.has(entry.id)).length;
-    if (newCount) setPendingNew((n) => n + newCount);
+    if (listSnapshotIds.current.size) {
+      const newCount = batch.filter((entry) => entry.status === "unread" && !listSnapshotIds.current.has(entry.id)).length;
+      if (newCount) setPendingNew((n) => n + newCount);
+    }
     await putCachedEntries(config, batch);
   }, [config]);
 
@@ -738,6 +740,7 @@ export default function App() {
           setListReadSnapshot(new Map(current.map((entry) => [entry.id, entry.status])));
           return current;
         });
+        setPendingNew(0);
       }
     } catch (cause) {
       setError(cause instanceof TypeError
