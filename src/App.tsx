@@ -583,6 +583,10 @@ export default function App() {
   const syncQueued = useRef(false);
   const syncResetInProgress = useRef(false);
   const listSnapshotIds = useRef<Set<number>>(new Set());
+  const visibleEmptyRef = useRef(true);
+  const modeRef = useRef(mode);
+  const topicRef = useRef(topic);
+  const feedsRef = useRef(feeds);
   const loadRef = useRef<(options?: { background?: boolean }) => Promise<void>>(async () => {});
 
   const notify = useCallback((message: string) => {
@@ -590,9 +594,10 @@ export default function App() {
     window.setTimeout(() => setToast(""), 2200);
   }, []);
 
-  useEffect(() => {
-    listSnapshotIds.current = new Set(listReadSnapshot.keys());
-  }, [listReadSnapshot]);
+  useEffect(() => { listSnapshotIds.current = new Set(listReadSnapshot.keys()); }, [listReadSnapshot]);
+  useEffect(() => { modeRef.current = mode; }, [mode]);
+  useEffect(() => { topicRef.current = topic; }, [topic]);
+  useEffect(() => { feedsRef.current = feeds; }, [feeds]);
 
   useEffect(() => {
     Promise.all([getReadingEvents(), getProfileSettings()]).then(([history, profile]) => {
@@ -648,8 +653,30 @@ export default function App() {
       return [...merged.values()];
     });
     if (listSnapshotIds.current.size) {
-      const newCount = batch.filter((entry) => entry.status === "unread" && !listSnapshotIds.current.has(entry.id)).length;
-      if (newCount) setPendingNew((n) => n + newCount);
+      const currentMode = modeRef.current;
+      const currentTopic = topicRef.current;
+      const relevant = batch.filter((entry) => {
+        if (listSnapshotIds.current.has(entry.id)) return false;
+        if (currentMode === "today" && !currentTopic && entry.status !== "unread") return false;
+        if (currentMode === "saved" && !entry.starred) return false;
+        if (currentTopic?.kind === "category") {
+          const feed = feedsRef.current.find((f) => f.id === entry.feed_id);
+          if (feed?.category?.id !== currentTopic.id) return false;
+        }
+        if (currentTopic?.kind === "feed" && entry.feed_id !== currentTopic.id) return false;
+        return true;
+      });
+      if (relevant.length) {
+        if (visibleEmptyRef.current) {
+          setListReadSnapshot((current) => {
+            const next = new Map(current);
+            relevant.forEach((entry) => next.set(entry.id, entry.status));
+            return next;
+          });
+        } else {
+          setPendingNew((n) => n + relevant.length);
+        }
+      }
     }
     await putCachedEntries(config, batch);
   }, [config]);
@@ -936,6 +963,8 @@ export default function App() {
       : new Date(b.published_at).getTime() - new Date(a.published_at).getTime());
     return filtered;
   }, [stories, mode, topic, query, hideRead, listReadSnapshot]);
+
+  useEffect(() => { visibleEmptyRef.current = !visible.length; }, [visible]);
 
   const selected = stories.find((story) => story.id === selectedId) ?? null;
 
