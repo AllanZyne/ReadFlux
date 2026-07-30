@@ -894,10 +894,26 @@ export default function App() {
     };
   }), [entries, events.length, feedMap, interest, syncedAt]);
 
+  const persistActive = useCallback(async () => {
+    if (!activeEvent.current) return;
+    activeEvent.current.updatedAt = new Date().toISOString();
+    await putReadingEvent(activeEvent.current);
+  }, []);
+
+  const commitActiveEvent = useCallback(() => {
+    if (!activeEvent.current) return;
+    const snapshot = { ...activeEvent.current };
+    setEvents((all) => {
+      const index = all.findIndex((event) => event.id === snapshot.id);
+      return index < 0 ? [...all, snapshot] : all.map((event, i) => i === index ? snapshot : event);
+    });
+  }, []);
+
   const refreshList = useCallback(() => {
+    commitActiveEvent();
     setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status])));
     setPendingNew(0);
-  }, [entries]);
+  }, [entries, commitActiveEvent]);
 
   const visible = useMemo(() => {
     const hasQuery = !!query.trim();
@@ -919,21 +935,6 @@ export default function App() {
   }, [stories, mode, topic, query, hideRead, listReadSnapshot]);
 
   const selected = stories.find((story) => story.id === selectedId) ?? null;
-
-  const persistActive = useCallback(async () => {
-    if (!activeEvent.current) return;
-    activeEvent.current.updatedAt = new Date().toISOString();
-    await putReadingEvent(activeEvent.current);
-  }, []);
-
-  const commitActiveEvent = useCallback(() => {
-    if (!activeEvent.current) return;
-    const snapshot = { ...activeEvent.current };
-    setEvents((all) => {
-      const index = all.findIndex((event) => event.id === snapshot.id);
-      return index < 0 ? [...all, snapshot] : all.map((event, i) => i === index ? snapshot : event);
-    });
-  }, []);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -983,7 +984,6 @@ export default function App() {
   }, [config, entries]);
 
   const choose = useCallback((story: Story, origin?: ReadingEvent["origin"]) => {
-    commitActiveEvent();
     void persistActive();
     setSelectedId(story.id);
     setContentError(null);
@@ -1005,7 +1005,7 @@ export default function App() {
       }), "已标为已读");
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, mode, query, persistActive, commitActiveEvent, loadEntryContent]);
+  }, [config, mode, query, persistActive, loadEntryContent]);
 
   const move = useCallback((delta: number) => {
     if (!visible.length) return;
