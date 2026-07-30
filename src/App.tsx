@@ -542,7 +542,13 @@ export default function App() {
   const [topic, setTopic] = useState<Topic>(null);
   const [query, setQuery] = useState("");
   const [hideRead, setHideRead] = useState(false);
-  const [listReadSnapshot, setListReadSnapshot] = useState<Map<number, Entry["status"]>>(new Map());
+  const [listReadSnapshot, setListReadSnapshot] = useState<Map<number, Entry["status"]>>(() => {
+    try {
+      const stored = localStorage.getItem("readflux.listSnapshot");
+      if (stored) return new Map(JSON.parse(stored) as [number, Entry["status"]][]);
+    } catch { /* ignore */ }
+    return new Map();
+  });
   const [reasonOpen, setReasonOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(250);
@@ -570,17 +576,23 @@ export default function App() {
   const [contentLoadingId, setContentLoadingId] = useState<number | null>(null);
   const [contentError, setContentError] = useState<{ id: number; message: string } | null>(null);
   const [error, setError] = useState("");
+  const [pendingNew, setPendingNew] = useState(0);
   const activeEvent = useRef<ReadingEvent | null>(null);
   const readerRef = useRef<HTMLDivElement | null>(null);
   const syncInFlight = useRef(false);
   const syncQueued = useRef(false);
   const syncResetInProgress = useRef(false);
-  const loadRef = useRef<() => Promise<void>>(async () => {});
+  const listSnapshotIds = useRef<Set<number>>(new Set());
+  const loadRef = useRef<(options?: { background?: boolean }) => Promise<void>>(async () => {});
 
   const notify = useCallback((message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(""), 2200);
   }, []);
+
+  useEffect(() => {
+    listSnapshotIds.current = new Set(listReadSnapshot.keys());
+  }, [listReadSnapshot]);
 
   useEffect(() => {
     Promise.all([getReadingEvents(), getProfileSettings()]).then(([history, profile]) => {
@@ -598,6 +610,14 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("readflux.sidebar.collapsed-categories", JSON.stringify([...collapsedCategories]));
   }, [collapsedCategories]);
+
+  useEffect(() => {
+    if (listReadSnapshot.size) {
+      localStorage.setItem("readflux.listSnapshot", JSON.stringify([...listReadSnapshot]));
+    } else {
+      localStorage.removeItem("readflux.listSnapshot");
+    }
+  }, [listReadSnapshot]);
 
   useEffect(() => {
     const refreshSettings = () => { void getProfileSettings().then(setSettings); };
@@ -627,13 +647,10 @@ export default function App() {
       });
       return [...merged.values()];
     });
-    setListReadSnapshot((current) => {
-      const next = new Map(current);
-      batch.forEach((entry) => {
-        if (!next.has(entry.id)) next.set(entry.id, entry.status);
-      });
-      return next;
-    });
+    if (listSnapshotIds.current.size) {
+      const newCount = batch.filter((entry) => entry.status === "unread" && !listSnapshotIds.current.has(entry.id)).length;
+      if (newCount) setPendingNew((n) => n + newCount);
+    }
     await putCachedEntries(config, batch);
   }, [config]);
 
@@ -641,12 +658,13 @@ export default function App() {
     ? DEFAULT_LOOKBACK_DAYS
     : settings.entryLookbackDays;
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (options?: { background?: boolean }) => {
     if (!config) return;
     if (syncResetInProgress.current || syncInFlight.current) {
       syncQueued.current = true;
       return;
     }
+    const background = options?.background ?? false;
     syncInFlight.current = true;
     setLoading(true);
     setError("");
@@ -662,7 +680,9 @@ export default function App() {
       const scopedCache = cached.filter((entry) =>
         entry.starred || cutoff === null || new Date(entry.published_at).getTime() >= cutoff);
       setEntries(scopedCache);
-      setListReadSnapshot(new Map(scopedCache.map((entry) => [entry.id, entry.status])));
+      if (!listSnapshotIds.current.size || !scopedCache.some((e) => listSnapshotIds.current.has(e.id))) {
+        setListReadSnapshot(new Map(scopedCache.map((entry) => [entry.id, entry.status])));
+      }
       const [feedData, categoryData] = await Promise.all([
         minifluxFetch<Feed[]>(config, "/v1/feeds"),
         minifluxFetch<Category[]>(config, "/v1/categories"),
@@ -731,6 +751,13 @@ export default function App() {
         updatedAt: syncStartedAt,
       });
       setSyncedAt(new Date());
+      if (!background && !listSnapshotIds.current.size) {
+        setEntries((current) => {
+          setListReadSnapshot(new Map(current.map((entry) => [entry.id, entry.status])));
+          return current;
+        });
+        setPendingNew(0);
+      }
     } catch (cause) {
       setError(cause instanceof TypeError
         ? "浏览器无法直连 Miniflux，请检查网络与 CORS 配置。"
@@ -784,15 +811,10 @@ export default function App() {
 
   useEffect(() => {
     if (!config) return;
-    const refresh = () => {
-      if (document.visibilityState === "visible") void loadRef.current();
-    };
-    const timer = window.setInterval(refresh, 5 * 60_000);
-    window.addEventListener("focus", refresh);
-    return () => {
-      window.clearInterval(timer);
-      window.removeEventListener("focus", refresh);
-    };
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void loadRef.current({ background: true });
+    }, 5 * 60_000);
+    return () => { window.clearInterval(timer); };
   }, [config]);
 
   useEffect(() => {
@@ -872,21 +894,29 @@ export default function App() {
     };
   }), [entries, events.length, feedMap, interest, syncedAt]);
 
-  const visible = useMemo(() => stories.filter((story) => {
-    // Read-state filters use a snapshot captured when the list changes.
-    // Opening articles updates their live status, but not membership of the current list.
-    const statusWhenListed = listReadSnapshot.get(story.id) ?? story.status;
-    if (mode === "today" && !topic && statusWhenListed !== "unread") return false;
-    if (mode === "saved" && !story.starred) return false;
-    if (hideRead && statusWhenListed === "read") return false;
-    if (topic?.kind === "category" && story.categoryId !== topic.id) return false;
-    if (topic?.kind === "feed" && story.feed_id !== topic.id) return false;
-    if (!query.trim()) return true;
-    const needle = query.trim().toLowerCase();
-    return `${story.title} ${story.summary} ${story.source} ${story.author ?? ""}`.toLowerCase().includes(needle);
-  }).sort((a, b) => mode === "today" && !topic
-    ? b.score - a.score
-    : new Date(b.published_at).getTime() - new Date(a.published_at).getTime()), [stories, mode, topic, query, hideRead, listReadSnapshot]);
+  const refreshList = useCallback(() => {
+    setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status])));
+    setPendingNew(0);
+  }, [entries]);
+
+  const visible = useMemo(() => {
+    const hasQuery = !!query.trim();
+    const needle = hasQuery ? query.trim().toLowerCase() : "";
+    const filtered = stories.filter((story) => {
+      if (!hasQuery && !listReadSnapshot.has(story.id)) return false;
+      const statusWhenListed = listReadSnapshot.get(story.id) ?? story.status;
+      if (mode === "today" && !topic && statusWhenListed !== "unread") return false;
+      if (mode === "saved" && !story.starred) return false;
+      if (hideRead && statusWhenListed === "read") return false;
+      if (topic?.kind === "category" && story.categoryId !== topic.id) return false;
+      if (topic?.kind === "feed" && story.feed_id !== topic.id) return false;
+      if (!hasQuery) return true;
+      return `${story.title} ${story.summary} ${story.source} ${story.author ?? ""}`.toLowerCase().includes(needle);
+    }).sort((a, b) => mode === "today" && !topic
+      ? b.score - a.score
+      : new Date(b.published_at).getTime() - new Date(a.published_at).getTime());
+    return filtered;
+  }, [stories, mode, topic, query, hideRead, listReadSnapshot]);
 
   const selected = stories.find((story) => story.id === selectedId) ?? null;
 
@@ -894,9 +924,14 @@ export default function App() {
     if (!activeEvent.current) return;
     activeEvent.current.updatedAt = new Date().toISOString();
     await putReadingEvent(activeEvent.current);
+  }, []);
+
+  const commitActiveEvent = useCallback(() => {
+    if (!activeEvent.current) return;
+    const snapshot = { ...activeEvent.current };
     setEvents((all) => {
-      const index = all.findIndex((event) => event.id === activeEvent.current?.id);
-      return index < 0 ? [...all, { ...activeEvent.current! }] : all.map((event, i) => i === index ? { ...activeEvent.current! } : event);
+      const index = all.findIndex((event) => event.id === snapshot.id);
+      return index < 0 ? [...all, snapshot] : all.map((event, i) => i === index ? snapshot : event);
     });
   }, []);
 
@@ -906,10 +941,10 @@ export default function App() {
       activeEvent.current.activeSeconds += 5;
       void persistActive();
     }, 5000);
-    const flush = () => { void persistActive(); };
+    const flush = () => { commitActiveEvent(); void persistActive(); };
     window.addEventListener("pagehide", flush);
-    return () => { window.clearInterval(timer); window.removeEventListener("pagehide", flush); void persistActive(); };
-  }, [persistActive]);
+    return () => { window.clearInterval(timer); window.removeEventListener("pagehide", flush); commitActiveEvent(); void persistActive(); };
+  }, [persistActive, commitActiveEvent]);
 
   const updateEntry = async (id: number, patch: Partial<Entry>, request: () => Promise<unknown>, success: string) => {
     const before = entries;
@@ -948,6 +983,7 @@ export default function App() {
   }, [config, entries]);
 
   const choose = useCallback((story: Story, origin?: ReadingEvent["origin"]) => {
+    commitActiveEvent();
     void persistActive();
     setSelectedId(story.id);
     setContentError(null);
@@ -962,7 +998,6 @@ export default function App() {
       origin: origin ?? (query ? "search" : mode === "today" ? "recommendation" : mode === "saved" ? "saved" : "feed"),
     });
     void putReadingEvent(activeEvent.current);
-    setEvents((all) => [...all, { ...activeEvent.current! }]);
     if (story.status === "unread" && config) {
       void updateEntry(story.id, { status: "read" }, () => minifluxFetch(config, "/v1/entries", {
         method: "PUT",
@@ -970,7 +1005,7 @@ export default function App() {
       }), "已标为已读");
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, mode, query, persistActive, loadEntryContent]);
+  }, [config, mode, query, persistActive, commitActiveEvent, loadEntryContent]);
 
   const move = useCallback((delta: number) => {
     if (!visible.length) return;
@@ -1134,7 +1169,7 @@ export default function App() {
         <div className="topActions">
           {error && <span className="syncError">同步失败</span>}
           {syncProgress && <span className="syncLabel" role="status">{syncProgressLabel}</span>}
-          <button className={`toolbarButton ${loading ? "spinning" : ""}`} disabled={loading} onClick={async () => { try { await minifluxFetch(config, "/v1/feeds/refresh", { method: "PUT" }); await load(); notify("Miniflux 已刷新"); } catch (cause) { notify(cause instanceof Error ? cause.message : "刷新失败"); } }} aria-label="刷新订阅" title="刷新订阅">↻</button>
+          <button className={`toolbarButton ${loading ? "spinning" : ""}`} disabled={loading} onClick={async () => { try { await minifluxFetch(config, "/v1/feeds/refresh", { method: "PUT" }); await load(); refreshList(); notify("Miniflux 已刷新"); } catch (cause) { notify(cause instanceof Error ? cause.message : "刷新失败"); } }} aria-label="刷新订阅" title="刷新订阅">↻</button>
           <button className="settingsButton" onClick={() => setSettingsOpen(true)} aria-label="打开设置对话框" title="设置">⚙</button>
         </div>
         {syncProgress && <div className="topbarProgress" aria-hidden="true"><i style={{ width: `${syncProgress.total ? Math.min(100, syncProgress.loaded / syncProgress.total * 100) : 8}%` }} /></div>}
@@ -1177,6 +1212,7 @@ export default function App() {
           <header className="feedTitle"><button className="mobileBack" onClick={() => setMobileView("sources")}>‹ 订阅源</button><div><h1>{topicTitle || (mode === "today" ? "今天" : "已收藏")}</h1><small>{visible.length} 篇文章{error && entries.length ? " · 离线缓存" : syncedAt ? ` · ${syncedAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} 已同步` : ""}</small></div></header>
           <div className="feedTools"><label><input type="checkbox" checked={hideRead} onChange={(event) => { setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead(event.target.checked); }} /> 隐藏已读</label><button onClick={() => void markVisibleRead()} disabled={!visible.some((story) => story.status === "unread")}>全部标为已读</button></div>
           <div className="storyList">
+            {pendingNew > 0 && <button className="newArticlesPill" onClick={refreshList}>{pendingNew} 篇新文章 ↑</button>}
             {loading && !entries.length ? <div className="empty"><b className="loadingMark">↻</b><h2>正在同步文章</h2><p>未读文章会优先显示，随后加载收藏和已读文章。</p></div>
               : error && !entries.length ? <div className="empty errorState"><b>!</b><h2>连接失败</h2><p>{error}</p><button onClick={() => void load()}>重新连接</button></div>
               : visible.length ? visible.map((story) => <article key={story.id} tabIndex={0} className={`story ${selected?.id === story.id ? "selected" : ""} ${story.status === "read" ? "read" : ""}`} onClick={() => { choose(story); setMobileView("reader"); }} onKeyDown={(event) => { if (event.key === "Enter") { choose(story); setMobileView("reader"); } }}>
