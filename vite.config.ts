@@ -2,6 +2,6 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  base: process.env.GITHUB_ACTIONS ? "/readflux/" : "/",
+  base: process.env.GITHUB_ACTIONS ? "/ReadFlux/" : "/",
   plugins: [react()],
 });
