@@ -577,6 +577,7 @@ export default function App() {
   const [contentError, setContentError] = useState<{ id: number; message: string } | null>(null);
   const [error, setError] = useState("");
   const [pendingNew, setPendingNew] = useState(0);
+  const [visibleIds, setVisibleIds] = useState<number[]>([]);
   const activeEvent = useRef<ReadingEvent | null>(null);
   const readerRef = useRef<HTMLDivElement | null>(null);
   const syncInFlight = useRef(false);
@@ -938,6 +939,7 @@ export default function App() {
 
   const refreshList = useCallback(() => {
     commitActiveEvent();
+    setVisibleIds([]);
     setEntries((current) => {
       setListReadSnapshot(new Map(current.map((entry) => [entry.id, entry.status])));
       return current;
@@ -958,11 +960,33 @@ export default function App() {
       if (topic?.kind === "feed" && story.feed_id !== topic.id) return false;
       if (!hasQuery) return true;
       return `${story.title} ${story.summary} ${story.source} ${story.author ?? ""}`.toLowerCase().includes(needle);
-    }).sort((a, b) => mode === "today" && !topic
-      ? b.score - a.score
-      : new Date(b.published_at).getTime() - new Date(a.published_at).getTime());
+    });
+    if (visibleIds.length) {
+      const orderIndex = new Map(visibleIds.map((id, i) => [id, i]));
+      filtered.sort((a, b) => {
+        const ai = orderIndex.get(a.id);
+        const bi = orderIndex.get(b.id);
+        if (ai !== undefined && bi !== undefined) return ai - bi;
+        if (ai !== undefined) return -1;
+        if (bi !== undefined) return 1;
+        return mode === "today" && !topic
+          ? b.score - a.score
+          : new Date(b.published_at).getTime() - new Date(a.published_at).getTime();
+      });
+    } else {
+      filtered.sort((a, b) => mode === "today" && !topic
+        ? b.score - a.score
+        : new Date(b.published_at).getTime() - new Date(a.published_at).getTime());
+    }
     return filtered;
-  }, [stories, mode, topic, query, hideRead, listReadSnapshot]);
+  }, [stories, mode, topic, query, hideRead, listReadSnapshot, visibleIds]);
+
+  useEffect(() => {
+    if (visible.length && !visibleIds.length) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- captures sort order after fresh sort
+      setVisibleIds(visible.map((s) => s.id));
+    }
+  }, [visible, visibleIds]);
 
   useEffect(() => { visibleEmptyRef.current = !visible.length; }, [visible]);
 
@@ -1062,6 +1086,7 @@ export default function App() {
     const before = entries;
     const after = entries.map((entry) => ids.includes(entry.id) ? { ...entry, status: "read" as const } : entry);
     setEntries(after);
+    setVisibleIds([]);
     setListReadSnapshot(new Map(after.map((entry) => [entry.id, entry.status])));
     try {
       await minifluxFetch(config, "/v1/entries", {
@@ -1072,6 +1097,7 @@ export default function App() {
       notify(`已将 ${ids.length} 篇文章标为已读`);
     } catch (cause) {
       setEntries(before);
+      setVisibleIds([]);
       setListReadSnapshot(new Map(before.map((entry) => [entry.id, entry.status])));
       notify(cause instanceof Error ? cause.message : "同步失败");
     }
@@ -1210,7 +1236,7 @@ export default function App() {
       <div className={`workspace ${collapsedSidebar ? "sidebarCollapsed" : ""} mobile-${mobileView}`} style={{ "--sidebar-width": `${sidebarWidth}px`, "--list-width": `${listWidth}px` } as CSSProperties}>
         <aside className="sidebar" aria-label="订阅源">
           <div className="sidebarScroll" onKeyDown={handleSidebarKey}>
-            <nav>{nav.map(([key, icon, label, count]) => <button data-sidebar-row key={key} className={mode === key && !topic ? "active" : ""} onClick={() => { setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setMode(key); setTopic(null); setMobileView("list"); }}><i className={`bi ${icon}`} aria-hidden="true" /><span>{label}</span><em>{count}</em></button>)}</nav>
+            <nav>{nav.map(([key, icon, label, count]) => <button data-sidebar-row key={key} className={mode === key && !topic ? "active" : ""} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setMode(key); setTopic(null); setMobileView("list"); }}><i className={`bi ${icon}`} aria-hidden="true" /><span>{label}</span><em>{count}</em></button>)}</nav>
             <div className="sideLabel"><span>订阅</span><button type="button" onClick={() => setSubscriptionsCollapsed((current) => !current)} title={subscriptionsCollapsed ? "展开订阅" : "折叠订阅"} aria-label={subscriptionsCollapsed ? "展开订阅" : "折叠订阅"} aria-expanded={!subscriptionsCollapsed}><i className={`bi ${subscriptionsCollapsed ? "bi-chevron-right" : "bi-chevron-down"}`} aria-hidden="true" /></button></div>
             {!subscriptionsCollapsed && categorySources.map((category) => {
               const collapsed = collapsedCategories.has(category.id);
@@ -1223,7 +1249,7 @@ export default function App() {
                     data-sidebar-row
                     className="groupHead"
                     aria-current={categorySelected ? "page" : undefined}
-                    onClick={() => { setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setTopic({ kind: "category", id: category.id }); setMobileView("list"); }}
+                    onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setTopic({ kind: "category", id: category.id }); setMobileView("list"); }}
                     onKeyDown={(event) => {
                       if (event.key === "ArrowLeft") { event.preventDefault(); event.stopPropagation(); toggleCategory(category.id, true); }
                       if (event.key === "ArrowRight") { event.preventDefault(); event.stopPropagation(); toggleCategory(category.id, false); }
@@ -1232,7 +1258,7 @@ export default function App() {
                   ><span>{category.title}</span><em>{categoryUnread || ""}</em></button>
                 </div>
                 {!collapsed && <div className="groupFeeds">
-                  {category.feeds.map((feed) => <button data-sidebar-row className={topic?.kind === "feed" && topic.id === feed.id ? "sourceRow selected" : "sourceRow"} key={feed.id} onClick={() => { setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setTopic({ kind: "feed", id: feed.id }); setMobileView("list"); }}><SourceIcon src={feedIcons.get(feed.id)}>{feed.title.slice(0, 1)}</SourceIcon><span>{feed.title}</span><em>{unreadByFeed.get(feed.id) || ""}</em></button>)}
+                  {category.feeds.map((feed) => <button data-sidebar-row className={topic?.kind === "feed" && topic.id === feed.id ? "sourceRow selected" : "sourceRow"} key={feed.id} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setTopic({ kind: "feed", id: feed.id }); setMobileView("list"); }}><SourceIcon src={feedIcons.get(feed.id)}>{feed.title.slice(0, 1)}</SourceIcon><span>{feed.title}</span><em>{unreadByFeed.get(feed.id) || ""}</em></button>)}
                 </div>}
               </section>;
             })}
@@ -1242,7 +1268,7 @@ export default function App() {
 
         <section className="feed">
           <header className="feedTitle"><button className="mobileBack" onClick={() => setMobileView("sources")}>‹ 订阅源</button><div><h1>{topicTitle || (mode === "today" ? "今天" : "已收藏")}</h1><small>{visible.length} 篇文章{error && entries.length ? " · 离线缓存" : syncedAt ? ` · ${syncedAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} 已同步` : ""}</small></div></header>
-          <div className="feedTools"><label><input type="checkbox" checked={hideRead} onChange={(event) => { setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead(event.target.checked); }} /> 隐藏已读</label><button onClick={() => void markVisibleRead()} disabled={!visible.some((story) => story.status === "unread")}>全部标为已读</button></div>
+          <div className="feedTools"><label><input type="checkbox" checked={hideRead} onChange={(event) => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead(event.target.checked); }} /> 隐藏已读</label><button onClick={() => void markVisibleRead()} disabled={!visible.some((story) => story.status === "unread")}>全部标为已读</button></div>
           <div className="storyList">
             {pendingNew > 0 && <button className="newArticlesPill" onClick={refreshList}>{pendingNew} 篇新文章 ↑</button>}
             {loading && !entries.length ? <div className="empty"><b className="loadingMark">↻</b><h2>正在同步文章</h2><p>未读文章会优先显示，随后加载收藏和已读文章。</p></div>
@@ -1251,7 +1277,7 @@ export default function App() {
                 <div className="storySource"><SourceIcon src={feedIcons.get(story.feed_id)}>{story.mark}</SourceIcon><span>{story.source}</span><time>{new Date(story.published_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time>{story.starred && <b>★</b>}</div>
                 <h2>{story.title}</h2><p>{story.summary}</p>
                 <footer><i /><span>{story.status === "unread" ? "未读" : "已读"}</span><span>·</span><span>{story.reading_time || 1} 分钟</span></footer>
-              </article>) : <div className="empty"><b>✓</b><h2>这里没有文章</h2><p>换一个订阅源，或关闭“隐藏已读”。</p><button onClick={() => { setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setQuery(""); setTopic(null); setMode("today"); setHideRead(false); }}>重置</button></div>}
+              </article>) : <div className="empty"><b>✓</b><h2>这里没有文章</h2><p>换一个订阅源，或关闭“隐藏已读”。</p><button onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setQuery(""); setTopic(null); setMode("today"); setHideRead(false); }}>重置</button></div>}
           </div>
         </section>
         <div className="resizeHandle listHandle" onPointerDown={(event) => startResize("list", event)} onDoubleClick={() => setListWidth(430)} />
