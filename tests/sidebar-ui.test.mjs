@@ -67,6 +67,22 @@ test("hovering either category control highlights the whole row", () => {
   assert.match(styles, /\.groupRow:hover \.groupHead,[^{]*\.groupRow:hover \.disclosure\s*\{[^}]*background:transparent;[^}]*color:inherit/);
 });
 
+test("category rows share the smart-feed row grid and horizontal padding", () => {
+  assert.match(
+    styles,
+    /\.groupRow\s*\{[^}]*grid-template-columns:24px minmax\(0,1fr\);[^}]*gap:4px;[^}]*padding:0 9px;/,
+  );
+  assert.match(styles, /\.disclosure\s*\{[^}]*width:24px;/);
+  assert.match(styles, /\.groupHead\s*\{[^}]*padding:0;/);
+});
+
+test("the empty-state reset button uses a light surface in the day theme", () => {
+  assert.match(
+    styles,
+    /\.shell\[data-theme="day"\] \.empty button\s*\{[^}]*border-color:#afc1df;[^}]*background:#fff;[^}]*color:#2559c2;/,
+  );
+});
+
 test("long category titles are truncated within their row", () => {
   assert.match(
     styles,
