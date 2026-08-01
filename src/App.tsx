@@ -1,4 +1,6 @@
 import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { imageReferrerPolicy, minifluxReferrerScope, updateOriginReferrerFeeds } from "./article-images";
+import { runExclusive } from "./async-lock";
 import {
   clearConnection,
   ConnectionConfig,
@@ -19,9 +21,7 @@ import {
   saveConnection,
   saveEntrySyncState,
   saveProfileSettings,
-  syncWithWebDav,
   ThemeName,
-  WebDavConfig,
 } from "./readflux-client";
 
 type Feed = {
@@ -127,7 +127,7 @@ async function loadEntryPages(
 
 }
 
-function safeHtml(html: string) {
+function safeHtml(html: string, useOriginReferrer = false) {
   if (typeof window === "undefined") return "";
   const parsed = new DOMParser().parseFromString(html, "text/html");
   parsed.querySelectorAll("script,style,iframe,object,embed,form,video,audio,source").forEach((node) => node.remove());
@@ -143,10 +143,11 @@ function safeHtml(html: string) {
     link.setAttribute("rel", "noopener noreferrer");
   });
   parsed.querySelectorAll("img").forEach((image) => {
-    if (!/^https?:\/\//i.test(image.getAttribute("src") ?? "")) image.remove();
+    const src = image.getAttribute("src") ?? "";
+    if (!/^https?:\/\//i.test(src)) image.remove();
     else {
       image.setAttribute("loading", "lazy");
-      image.setAttribute("referrerpolicy", "origin");
+      image.setAttribute("referrerpolicy", imageReferrerPolicy(useOriginReferrer));
     }
   });
   return parsed.body.innerHTML;
@@ -162,13 +163,6 @@ const THEME_OPTIONS: { id: ThemeName; title: string; hint: string }[] = [
   { id: "day", title: "白天", hint: "明亮、清晰，适合日间连续阅读" },
   { id: "night", title: "夜晚", hint: "低亮度深色，适合夜间阅读" },
 ];
-
-const EMPTY_WEBDAV: WebDavConfig = {
-  url: "",
-  username: "",
-  password: "",
-  passphrase: "",
-};
 
 type EventDraft = Omit<ReadingEvent, "id" | "updatedAt"> & { id?: string };
 
@@ -188,6 +182,8 @@ function emptyEventDraft(): EventDraft {
 
 function SettingsDialog({
   config,
+  feeds,
+  referrerScope,
   events,
   settings,
   sourceWeights,
@@ -203,6 +199,8 @@ function SettingsDialog({
   notify,
 }: {
   config: ConnectionConfig;
+  feeds: Feed[];
+  referrerScope: string;
   events: ReadingEvent[];
   settings: ProfileSettings;
   sourceWeights: Map<number, number>;
@@ -218,11 +216,14 @@ function SettingsDialog({
   notify: (message: string) => void;
 }) {
   const [tab, setTab] = useState<"general" | "sync" | "recommendation">("general");
-  const [webdav, setWebdav] = useState<WebDavConfig>(settings.webdav ?? EMPTY_WEBDAV);
-  const [syncing, setSyncing] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
   const [eventQuery, setEventQuery] = useState("");
   const [draft, setDraft] = useState<EventDraft | null>(null);
+  const profileWriteInFlight = useRef(false);
+  const currentSettings = useRef(settings);
+
+  useEffect(() => { currentSettings.current = settings; }, [settings]);
 
   useEffect(() => {
     const close = (event: KeyboardEvent) => {
@@ -232,25 +233,54 @@ function SettingsDialog({
     return () => window.removeEventListener("keydown", close);
   }, [onClose]);
 
+  const saveProfileChange = async (change: (current: ProfileSettings) => ProfileSettings, failure: string) => {
+    try {
+      const result = await runExclusive(profileWriteInFlight, async () => {
+        setProfileSaving(true);
+        try {
+          const next = change(currentSettings.current);
+          await saveProfileSettings(next);
+          currentSettings.current = next;
+          onSettingsChange(next);
+        } finally {
+          setProfileSaving(false);
+        }
+      });
+      if (!result.started) notify("设置正在保存，请稍候");
+      return result.started;
+    } catch {
+      notify(failure);
+      return false;
+    }
+  };
+
   const setTheme = async (theme: ThemeName) => {
-    const next = { ...settings, theme, updatedAt: new Date().toISOString() };
-    onSettingsChange(next);
-    await saveProfileSettings(next);
+    await saveProfileChange(
+      (current) => ({ ...current, theme, updatedAt: new Date().toISOString() }),
+      "主题设置保存失败",
+    );
+  };
+
+  const setOriginReferrerFeed = async (feedId: number, useOrigin: boolean) => {
+    if (!referrerScope) return;
+    await saveProfileChange((current) => ({
+      ...current,
+      originReferrerFeeds: updateOriginReferrerFeeds(
+        current.originReferrerFeeds ?? {},
+        referrerScope,
+        feedId,
+        useOrigin,
+      ),
+    }), "图片来源设置保存失败");
   };
 
   const setEntryLookback = async (value: string) => {
     const entryLookbackDays = value === "all" ? null : Number(value);
-    const next = { ...settings, entryLookbackDays, updatedAt: new Date().toISOString() };
-    onSettingsChange(next);
-    await saveProfileSettings(next);
-    notify(entryLookbackDays === null ? "将同步全部文章，收藏始终不受限制" : `将同步最近 ${entryLookbackDays} 天，收藏始终不受限制`);
-  };
-
-  const saveWebDav = async () => {
-    const next = { ...settings, webdav, updatedAt: new Date().toISOString() };
-    onSettingsChange(next);
-    await saveProfileSettings(next);
-    notify("WebDAV 设置已保存在此设备");
+    const saved = await saveProfileChange(
+      (current) => ({ ...current, entryLookbackDays, updatedAt: new Date().toISOString() }),
+      "文章加载范围保存失败",
+    );
+    if (saved) notify(entryLookbackDays === null ? "将同步全部文章，收藏始终不受限制" : `将同步最近 ${entryLookbackDays} 天，收藏始终不受限制`);
   };
 
   const resetSync = async () => {
@@ -260,22 +290,6 @@ function SettingsDialog({
       await onResetSync();
     } finally {
       setResetting(false);
-    }
-  };
-
-  const sync = async () => {
-    setSyncing(true);
-    try {
-      const result = await syncWithWebDav(webdav, events, { ...settings, webdav });
-      onSettingsChange(result.settings);
-      onEventsChange(result.events);
-      notify(`已加密同步 ${result.events.length} 条阅读事件`);
-    } catch (cause) {
-      notify(cause instanceof TypeError
-        ? "浏览器无法连接 WebDAV，请检查 CORS"
-        : cause instanceof Error ? cause.message : "同步失败");
-    } finally {
-      setSyncing(false);
     }
   };
 
@@ -352,12 +366,29 @@ function SettingsDialog({
               <div className="settingTitle"><div><h3>外观</h3><p>在白天与夜晚阅读模式之间切换。</p></div></div>
               <div className="themeGrid">
                 {THEME_OPTIONS.map((option) => (
-                  <button key={option.id} className={settings.theme === option.id ? "themeCard selected" : "themeCard"} onClick={() => void setTheme(option.id)}>
+                  <button key={option.id} disabled={profileSaving} className={settings.theme === option.id ? "themeCard selected" : "themeCard"} onClick={() => void setTheme(option.id)}>
                     <i className={`themeSwatch ${option.id}`}><b /><b /><b /></i>
                     <strong>{option.title}</strong>
                     <small>{option.hint}</small>
                   </button>
                 ))}
+              </div>
+            </section>
+            <section>
+              <div className="settingTitle"><div><h3>图片来源兼容性</h3><p>默认不发送来源信息。仅为无法显示图片的订阅源启用 Origin Referer。</p></div></div>
+              <div className="originFeedList">
+                {feeds.length && referrerScope ? [...feeds]
+                  .sort((a, b) => `${a.category?.title ?? ""}\n${a.title}`.localeCompare(`${b.category?.title ?? ""}\n${b.title}`, "zh-CN"))
+                  .map((feed) => <label key={feed.id}>
+                    <input
+                      type="checkbox"
+                      checked={settings.originReferrerFeeds?.[referrerScope]?.includes(feed.id) ?? false}
+                      disabled={profileSaving}
+                      onChange={(event) => void setOriginReferrerFeed(feed.id, event.target.checked)}
+                    />
+                    <span><strong>{feed.title}</strong><small>{feed.category?.title ?? "未分组"}</small></span>
+                  </label>)
+                  : <p>{feeds.length ? "正在准备订阅源设置…" : "还没有可配置的订阅源。"}</p>}
               </div>
             </section>
             <section className="privacyBox">
@@ -376,7 +407,7 @@ function SettingsDialog({
                 <label><span>服务器</span><input value={config.url} readOnly /></label>
                 <label className="lookbackSetting">
                   <span>文章加载范围</span>
-                  <select value={settings.entryLookbackDays ?? "all"} onChange={(event) => void setEntryLookback(event.target.value)}>
+                  <select disabled={profileSaving} value={settings.entryLookbackDays ?? "all"} onChange={(event) => void setEntryLookback(event.target.value)}>
                     {LOOKBACK_OPTIONS.map((option) => <option key={option.value ?? "all"} value={option.value ?? "all"}>{option.label}</option>)}
                   </select>
                   <small>未读和普通已读按此范围加载；收藏始终加载全部历史。</small>
@@ -385,25 +416,7 @@ function SettingsDialog({
                   <div><strong>重新测试首次加载</strong><p>清除当前连接的文章缓存与同步进度，保留阅读画像、偏好和连接凭据。</p></div>
                   <button className="dangerAction" disabled={syncBusy || resetting} onClick={() => void resetSync()}>{resetting ? "正在重置…" : "重置同步数据"}</button>
                 </div>
-                <button className="disconnect" onClick={onDisconnect}>断开此设备上的 Miniflux</button>
-              </div>
-            </section>
-            <section>
-              <div className="settingTitle">
-                <div><h3>加密 WebDAV 同步</h3><p>只同步阅读事件、反馈和主题；不会上传 Miniflux Key 或 WebDAV 凭据。</p></div>
-                <span>可选</span>
-              </div>
-              <div className="settingsForm">
-                <label><span>WebDAV 目录或文件地址</span><input value={webdav.url} onChange={(event) => setWebdav({ ...webdav, url: event.target.value })} placeholder="https://dav.example.com/signal/" /></label>
-                <div>
-                  <label><span>用户名</span><input value={webdav.username} onChange={(event) => setWebdav({ ...webdav, username: event.target.value })} /></label>
-                  <label><span>密码</span><input type="password" value={webdav.password} onChange={(event) => setWebdav({ ...webdav, password: event.target.value })} /></label>
-                </div>
-                <label><span>同步加密口令</span><input type="password" value={webdav.passphrase} onChange={(event) => setWebdav({ ...webdav, passphrase: event.target.value })} placeholder="所有设备需填写同一口令" /></label>
-                <div className="settingsActions">
-                  <button onClick={() => void saveWebDav()}>仅保存</button>
-                  <button className="primary" disabled={syncing || !webdav.url || !webdav.passphrase} onClick={() => void sync()}>{syncing ? "正在合并与加密…" : "立即双向同步"}</button>
-                </div>
+                <button className="disconnect" disabled={profileSaving} onClick={onDisconnect}>断开此设备上的 Miniflux</button>
               </div>
             </section>
           </>}
@@ -509,7 +522,7 @@ function ConnectScreen({ onConnected }: { onConnected: (config: ConnectionConfig
         <div className="connectBrand"><span className="wave">▁▅█▃▇▂</span><strong>READFLUX</strong><small>LOCAL-FIRST RSS</small></div>
         <p className="eyebrow">PRIVATE INTELLIGENCE READER</p>
         <h1>把 Miniflux 变成<br />你的个人情报终端。</h1>
-        <p className="connectLead">文章由 Miniflux 提供；真实阅读行为、推荐偏好和主题只保存在这个浏览器，可选用加密 WebDAV 跨设备同步。</p>
+        <p className="connectLead">文章由 Miniflux 提供；真实阅读行为、推荐偏好和主题只保存在这个浏览器。</p>
         <form onSubmit={connect}>
           <label><span>Miniflux 地址</span><input type="url" required value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://rss.example.com" autoComplete="url" /></label>
           <label><span>API Key</span><input type="password" required value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="粘贴专用 API Key" autoComplete="off" /></label>
@@ -523,7 +536,7 @@ function ConnectScreen({ onConnected }: { onConnected: (config: ConnectionConfig
       <aside className="connectAside">
         <div className="miniSignal"><i /><span>推荐依据</span><strong>真实阅读</strong></div>
         <div className="miniSignal"><i /><span>本地画像</span><strong>IndexedDB</strong></div>
-        <div className="miniSignal"><i /><span>偏好同步</span><strong>AES-256-GCM</strong></div>
+        <div className="miniSignal"><i /><span>数据边界</span><strong>仅此设备</strong></div>
       </aside>
     </main>
   );
@@ -578,6 +591,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [pendingNew, setPendingNew] = useState(0);
   const [visibleIds, setVisibleIds] = useState<number[]>([]);
+  const [referrerScopeState, setReferrerScopeState] = useState({ url: "", scope: "" });
   const activeEvent = useRef<ReadingEvent | null>(null);
   const readerRef = useRef<HTMLDivElement | null>(null);
   const syncInFlight = useRef(false);
@@ -603,6 +617,21 @@ export default function App() {
   useEffect(() => { feedsRef.current = feeds; }, [feeds]);
   useEffect(() => { hideReadRef.current = hideRead; }, [hideRead]);
   useEffect(() => { queryRef.current = query; }, [query]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!config) return () => { cancelled = true; };
+    void minifluxReferrerScope(config.url).then((scope) => {
+      if (!cancelled) setReferrerScopeState({ url: config.url, scope });
+    }).catch(() => {
+      if (!cancelled) setReferrerScopeState({ url: config.url, scope: "" });
+    });
+    return () => { cancelled = true; };
+  }, [config]);
+
+  const referrerScope = config && referrerScopeState.url === config.url
+    ? referrerScopeState.scope
+    : "";
 
   useEffect(() => {
     Promise.all([getReadingEvents(), getProfileSettings()]).then(([history, profile]) => {
@@ -1307,7 +1336,10 @@ export default function App() {
                 ? <div className="articleLoading" role="status"><b className="loadingMark">↻</b><p>正在加载文章正文…</p></div>
                 : contentError?.id === selected.id
                   ? <div className="articleLoading errorState"><b>!</b><p>{contentError.message}</p><button onClick={() => void loadEntryContent(selected.id)}>重试</button></div>
-                  : <div className="body articleContent" dangerouslySetInnerHTML={{ __html: safeHtml(selected.content) }} />}
+                  : <div className="body articleContent" dangerouslySetInnerHTML={{ __html: safeHtml(
+                      selected.content,
+                      settings.originReferrerFeeds?.[referrerScope]?.includes(selected.feed_id) ?? false,
+                    ) }} />}
               <div className="feedback"><span>这篇文章符合你的兴趣吗？</span><button onClick={() => void setFeedback("helpful")}>有帮助</button><button onClick={() => void setFeedback("not_interested")}>不感兴趣</button></div>
             </div>
             <footer className="readerFoot"><span><kbd>J</kbd><kbd>K</kbd> 上下篇　<kbd>S</kbd> 收藏　<kbd>U</kbd> 已读</span><div><button onClick={() => move(-1)}>← 上一篇</button><button onClick={() => move(1)}>下一篇 →</button></div></footer>
@@ -1317,6 +1349,8 @@ export default function App() {
 
       {settingsOpen && <SettingsDialog
         config={config}
+        feeds={feeds}
+        referrerScope={referrerScope}
         events={events}
         settings={settings}
         sourceWeights={interest.sources}
