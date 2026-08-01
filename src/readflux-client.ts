@@ -15,6 +15,8 @@ export type ProfileSettings = {
   updatedAt: string;
 };
 
+type StoredProfileSettings = Partial<ProfileSettings> & { webdav?: unknown };
+
 export type EntrySyncPhase = "unread" | "starred" | "read";
 
 export type EntrySyncState = {
@@ -237,15 +239,22 @@ export async function getProfileSettings(): Promise<ProfileSettings> {
   const db = await openDb();
   const value = await requestResult(db.transaction(SETTINGS).objectStore(SETTINGS).get("profile"));
   db.close();
-  const stored = value as (Partial<ProfileSettings> & { webdav?: unknown }) | undefined;
-  const settings = normalizeProfileSettings(stored);
-  if (stored && "webdav" in stored) await saveProfileSettings(settings);
+  const settings = normalizeProfileSettings(value);
+  if (hasLegacyWebDavSettings(value)) await saveProfileSettings(settings);
   return settings;
 }
 
-export function normalizeProfileSettings(
-  stored?: Partial<ProfileSettings> & { webdav?: unknown },
-): ProfileSettings {
+function storedProfileSettings(value: unknown): StoredProfileSettings | undefined {
+  return typeof value === "object" && value !== null ? value as StoredProfileSettings : undefined;
+}
+
+export function hasLegacyWebDavSettings(value: unknown) {
+  const stored = storedProfileSettings(value);
+  return stored !== undefined && "webdav" in stored;
+}
+
+export function normalizeProfileSettings(value?: unknown): ProfileSettings {
+  const stored = storedProfileSettings(value);
   return {
     theme: stored?.theme === "night" ? "night" : "day",
     entryLookbackDays: stored?.entryLookbackDays === undefined ? 30 : stored.entryLookbackDays,
