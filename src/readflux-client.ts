@@ -1,22 +1,17 @@
+import type { OriginReferrerFeeds } from "./article-images";
+
 export type ConnectionConfig = {
   url: string;
   apiKey: string;
   remember: boolean;
 };
 
-export type WebDavConfig = {
-  url: string;
-  username: string;
-  password: string;
-  passphrase: string;
-};
-
 export type ThemeName = "day" | "night";
 
 export type ProfileSettings = {
   theme: ThemeName;
-  webdav?: WebDavConfig;
   entryLookbackDays?: number | null;
+  originReferrerFeeds?: OriginReferrerFeeds;
   updatedAt: string;
 };
 
@@ -242,14 +237,20 @@ export async function getProfileSettings(): Promise<ProfileSettings> {
   const db = await openDb();
   const value = await requestResult(db.transaction(SETTINGS).objectStore(SETTINGS).get("profile"));
   db.close();
-  const settings = value as ProfileSettings | undefined;
-  return settings ? {
-    ...settings,
-    entryLookbackDays: settings.entryLookbackDays === undefined ? 30 : settings.entryLookbackDays,
-  } : {
-    theme: "day",
-    entryLookbackDays: 30,
-    updatedAt: new Date(0).toISOString(),
+  const stored = value as (Partial<ProfileSettings> & { webdav?: unknown }) | undefined;
+  const settings = normalizeProfileSettings(stored);
+  if (stored && "webdav" in stored) await saveProfileSettings(settings);
+  return settings;
+}
+
+export function normalizeProfileSettings(
+  stored?: Partial<ProfileSettings> & { webdav?: unknown },
+): ProfileSettings {
+  return {
+    theme: stored?.theme === "night" ? "night" : "day",
+    entryLookbackDays: stored?.entryLookbackDays === undefined ? 30 : stored.entryLookbackDays,
+    originReferrerFeeds: stored?.originReferrerFeeds ?? {},
+    updatedAt: stored?.updatedAt ?? new Date(0).toISOString(),
   };
 }
 
@@ -276,112 +277,8 @@ export function newReadingEvent(input: Omit<ReadingEvent, "id" | "openedAt" | "u
   };
 }
 
-type SyncPayload = {
-  version: 1;
-  events: ReadingEvent[];
-  settings: Omit<ProfileSettings, "webdav">;
-};
-
 function bytesToBase64(bytes: Uint8Array) {
   let binary = "";
   bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
   return btoa(binary);
-}
-
-function base64ToBytes(value: string) {
-  return Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
-}
-
-async function deriveKey(passphrase: string, salt: Uint8Array) {
-  const saltBuffer = salt.buffer.slice(salt.byteOffset, salt.byteOffset + salt.byteLength) as ArrayBuffer;
-  const material = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(passphrase),
-    "PBKDF2",
-    false,
-    ["deriveKey"],
-  );
-  return crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt: saltBuffer, iterations: 180_000, hash: "SHA-256" },
-    material,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt", "decrypt"],
-  );
-}
-
-async function encrypt(payload: SyncPayload, passphrase: string) {
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const key = await deriveKey(passphrase, salt);
-  const data = new TextEncoder().encode(JSON.stringify(payload));
-  const cipher = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, data));
-  return JSON.stringify({
-    v: 1,
-    salt: bytesToBase64(salt),
-    iv: bytesToBase64(iv),
-    data: bytesToBase64(cipher),
-  });
-}
-
-async function decrypt(value: string, passphrase: string): Promise<SyncPayload> {
-  const envelope = JSON.parse(value) as { v: number; salt: string; iv: string; data: string };
-  if (envelope.v !== 1) throw new Error("不支持的同步文件版本");
-  const salt = base64ToBytes(envelope.salt);
-  const iv = base64ToBytes(envelope.iv);
-  const key = await deriveKey(passphrase, salt);
-  const plain = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv },
-    key,
-    base64ToBytes(envelope.data),
-  );
-  return JSON.parse(new TextDecoder().decode(plain)) as SyncPayload;
-}
-
-function webDavHeaders(config: WebDavConfig) {
-  return {
-    Authorization: `Basic ${btoa(`${config.username}:${config.password}`)}`,
-    "Content-Type": "application/octet-stream",
-  };
-}
-
-function syncUrl(config: WebDavConfig) {
-  const base = config.url.replace(/\/+$/, "");
-  return base.endsWith(".enc") ? base : `${base}/readflux-profile.v1.enc`;
-}
-
-export async function syncWithWebDav(
-  config: WebDavConfig,
-  localEvents: ReadingEvent[],
-  settings: ProfileSettings,
-) {
-  let remote: SyncPayload | null = null;
-  const response = await fetch(syncUrl(config), { headers: webDavHeaders(config) });
-  if (response.ok) remote = await decrypt(await response.text(), config.passphrase);
-  else if (response.status !== 404) throw new Error(`WebDAV 读取失败（${response.status}）`);
-
-  const merged = new Map<string, ReadingEvent>();
-  [...(remote?.events ?? []), ...localEvents].forEach((event) => {
-    const current = merged.get(event.id);
-    if (!current || current.updatedAt < event.updatedAt) merged.set(event.id, event);
-  });
-  const remoteSettings = remote?.settings;
-  const profile = remoteSettings && remoteSettings.updatedAt > settings.updatedAt
-    ? { ...settings, theme: remoteSettings.theme, updatedAt: remoteSettings.updatedAt }
-    : settings;
-  const payload: SyncPayload = {
-    version: 1,
-    events: [...merged.values()],
-    settings: { theme: profile.theme, updatedAt: profile.updatedAt },
-  };
-  const upload = await fetch(syncUrl(config), {
-    method: "PUT",
-    headers: webDavHeaders(config),
-    body: await encrypt(payload, config.passphrase),
-  });
-  if (!upload.ok) throw new Error(`WebDAV 写入失败（${upload.status}）`);
-
-  for (const event of payload.events) await putReadingEvent(event);
-  await saveProfileSettings({ ...profile, webdav: config });
-  return { events: payload.events, settings: { ...profile, webdav: config } };
 }

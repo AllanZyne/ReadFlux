@@ -16,7 +16,6 @@ ReadFlux 是一个纯前端、local-first 的 Miniflux 客户端。它把 Minifl
 - 白天 / 夜晚主题
 - 键盘连续阅读、可调整栏宽、移动端单面板导航
 - 阅读事件、订阅源偏好和关键词偏好的检查、编辑与删除
-- 可选的 AES-256-GCM 加密 WebDAV 同步
 
 ## 隐私与安全
 
@@ -25,7 +24,7 @@ ReadFlux 没有应用服务器：
 - Miniflux 地址和 API Key 只保存在当前浏览器的 `localStorage` 或
   `sessionStorage`。
 - 阅读事件与推荐设置保存在 IndexedDB。
-- 浏览器直接请求你的 Miniflux 与可选的 WebDAV 服务。
+- 浏览器直接请求你的 Miniflux 服务。
 - 仓库和构建产物不包含任何凭据。
 
 在共享电脑上建议不要勾选「记住在此设备」。请为 ReadFlux 创建独立的

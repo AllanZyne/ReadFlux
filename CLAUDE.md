@@ -11,7 +11,7 @@ committed.
 ## Product
 
 ReadFlux is a static, local-first Miniflux client. It has no application
-backend. The browser talks directly to Miniflux and, optionally, WebDAV.
+backend. The browser talks directly to Miniflux.
 
 The primary product contract is:
 
@@ -34,8 +34,7 @@ The primary product contract is:
 
 - `src/App.tsx`: UI, Miniflux orchestration, list snapshots, reading tracker,
   and recommendation derivation.
-- `src/readflux-client.ts`: browser persistence, Miniflux requests, WebDAV
-  encryption, and synchronization.
+- `src/readflux-client.ts`: browser persistence and Miniflux requests.
 - `src/index.css`: all layout, themes, responsive behavior, and interaction
   states.
 - `src/main.tsx`: React entry point.
@@ -49,10 +48,8 @@ build variable unless the user explicitly changes the architecture.
 - Miniflux connection: localStorage or sessionStorage.
 - Reading events, settings, cached entries, and sync progress: IndexedDB.
 - Category and subscriptions-section collapse state: localStorage.
-- WebDAV payload: encrypted in the browser with PBKDF2-derived AES-256-GCM.
-
-Never log, commit, upload, or add analytics around API keys, WebDAV passwords,
-encryption passphrases, article contents, or reading events.
+Never log, commit, upload, or add analytics around API keys, article contents,
+or reading events.
 
 ## Recommendation behavior
 
