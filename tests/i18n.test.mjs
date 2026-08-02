@@ -76,3 +76,9 @@ test("the React interface uses catalog keys instead of embedded Chinese copy", a
   assert.doesNotMatch(html, /[\p{Script=Han}]/u);
   assert.doesNotMatch(app, />Entry ID<|>Feed ID<|>API Key<|>LOCAL-FIRST RSS</);
 });
+
+test("feed settings sort with the active interface language", async () => {
+  const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /localeCompare\([^,]+,\s*i18n\.resolvedLanguage\s*\?\?\s*"en"\)/);
+  assert.doesNotMatch(app, /localeCompare\([^,]+,\s*"zh-CN"\)/);
+});

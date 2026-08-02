@@ -424,7 +424,7 @@ function SettingsDialog({
               <div className="settingTitle"><div><h3>{t("settings.imageCompatibility")}</h3><p>{t("settings.imageCompatibilityHint")}</p></div></div>
               <div className="originFeedList">
                 {feeds.length && referrerScope ? [...feeds]
-                  .sort((a, b) => `${a.category?.title ?? ""}\n${a.title}`.localeCompare(`${b.category?.title ?? ""}\n${b.title}`, "zh-CN"))
+                  .sort((a, b) => `${a.category?.title ?? ""}\n${a.title}`.localeCompare(`${b.category?.title ?? ""}\n${b.title}`, i18n.resolvedLanguage ?? "en"))
                   .map((feed) => <label key={feed.id}>
                     <input
                       type="checkbox"

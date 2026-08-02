@@ -7,6 +7,17 @@ test("GitHub Pages deployment uses the repository base path", async () => {
   assert.match(config, /GITHUB_ACTIONS\s*\?\s*"\/ReadFlux\/"/);
 });
 
+test("the declared runtime targets the current Node LTS import syntax", async () => {
+  const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+  const i18n = await readFile(new URL("../src/i18n.ts", import.meta.url), "utf8");
+
+  assert.equal(packageJson.engines.node, ">=24");
+  assert.match(readme, /Node\.js 24 or later/);
+  assert.match(i18n, /with \{ type: "json" \}/);
+  assert.doesNotMatch(i18n, /assert \{ type: "json" \}/);
+});
+
 test("no credential is embedded in source", async () => {
   const client = await readFile(new URL("../src/readflux-client.ts", import.meta.url), "utf8");
   assert.doesNotMatch(client, /X-Auth-Token["']?\s*:\s*["'][^"']+["']/);
