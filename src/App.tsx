@@ -4,6 +4,8 @@ import { useTranslation } from "react-i18next";
 import { imageReferrerPolicy, minifluxReferrerScope, updateOriginReferrerFeeds } from "./article-images";
 import { runExclusive } from "./async-lock";
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
+import { startOptionalMinifluxTimeZoneLoad } from "./miniflux-timezone.mjs";
+import { compareSmartFeedEntries, countSmartFeedEntries, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, localDayKey, nextDayBoundary, selectTimeZone, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
 import {
   clearConnection,
   ConnectionConfig,
@@ -17,6 +19,7 @@ import {
   MinifluxRequestError,
   minifluxFetch,
   newReadingEvent,
+  normalizeReadingEventOpenedAt,
   putCachedEntries,
   ProfileSettings,
   putReadingEvent,
@@ -36,6 +39,7 @@ type Feed = {
 };
 type Category = { id: number; title: string };
 type FeedIcon = { id: number; data: string; mime_type: string };
+type MinifluxUser = { timezone?: string };
 type Entry = {
   id: number;
   feed_id: number;
@@ -60,7 +64,7 @@ type Story = Entry & {
   reason: string;
 };
 type EntryPage = { total: number; entries: Entry[] };
-type ListMode = "today" | "saved";
+type ListMode = "today" | "unread" | "saved";
 type Topic = { kind: "category" | "feed"; id: number } | null;
 type SyncProgress = {
   kind: "initial" | "incremental" | "search";
@@ -197,6 +201,8 @@ function SettingsDialog({
   referrerScope,
   events,
   settings,
+  timeZone,
+  timeZoneSource,
   sourceWeights,
   wordWeights,
   negativeWeights,
@@ -214,6 +220,8 @@ function SettingsDialog({
   referrerScope: string;
   events: ReadingEvent[];
   settings: ProfileSettings;
+  timeZone: string;
+  timeZoneSource: "miniflux" | "browser";
   sourceWeights: Map<number, number>;
   wordWeights: Map<string, number>;
   negativeWeights: Map<string, number>;
@@ -320,6 +328,11 @@ function SettingsDialog({
       notify(t("recommendation.missingFields"));
       return;
     }
+    const openedAt = normalizeReadingEventOpenedAt(draft.openedAt);
+    if (!openedAt) {
+      notify(t("recommendation.invalidOpenedAt"));
+      return;
+    }
     const now = new Date().toISOString();
     const event: ReadingEvent = {
       ...draft,
@@ -327,7 +340,7 @@ function SettingsDialog({
       title: draft.title.trim(),
       source: draft.source.trim(),
       terms: draft.terms.map((term) => term.trim().toLowerCase()).filter(Boolean),
-      openedAt: new Date(draft.openedAt).toISOString(),
+      openedAt,
       activeSeconds: Math.max(0, Number(draft.activeSeconds) || 0),
       scrollDepth: Math.max(0, Math.min(1, Number(draft.scrollDepth) || 0)),
       updatedAt: now,
@@ -438,6 +451,7 @@ function SettingsDialog({
               </div>
               <div className="settingsForm minifluxSettings">
                 <label><span>{t("sync.server")}</span><input value={config.url} readOnly /></label>
+                <label className="timeZoneSetting"><span>{t("sync.timeZone")}</span><input value={timeZone} readOnly /><small>{t(timeZoneSource === "miniflux" ? "sync.timeZoneMinifluxHint" : "sync.timeZoneBrowserHint")}</small></label>
                 <label className="lookbackSetting">
                   <span>{t("sync.range")}</span>
                   <select disabled={profileSaving} value={settings.entryLookbackDays ?? "all"} onChange={(event) => void setEntryLookback(event.target.value)}>
@@ -488,7 +502,7 @@ function SettingsDialog({
               <div className="eventForm">
                 <label className="wide"><span>{t("recommendation.articleTitle")}</span><input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></label>
                 <label><span>{t("recommendation.source")}</span><input value={draft.source} onChange={(event) => setDraft({ ...draft, source: event.target.value })} /></label>
-                <label><span>{t("recommendation.openedAt")}</span><input type="datetime-local" value={draft.openedAt.slice(0, 16)} onChange={(event) => setDraft({ ...draft, openedAt: event.target.value })} /></label>
+                <label><span>{t("recommendation.openedAt")}</span><input type="datetime-local" value={draft.openedAt ? toZonedDateTimeInput(draft.openedAt, timeZone) : ""} onChange={(event) => setDraft({ ...draft, openedAt: event.target.value ? zonedDateTimeInputToIso(event.target.value, timeZone, draft.openedAt) : "" })} /></label>
                 <label><span>{t("recommendation.entryId")}</span><input type="number" value={draft.entryId} onChange={(event) => setDraft({ ...draft, entryId: Number(event.target.value) })} /></label>
                 <label><span>{t("recommendation.feedId")}</span><input type="number" value={draft.feedId} onChange={(event) => setDraft({ ...draft, feedId: Number(event.target.value) })} /></label>
                 <label><span>{t("recommendation.foregroundSeconds")}</span><input type="number" min="0" value={draft.activeSeconds} onChange={(event) => setDraft({ ...draft, activeSeconds: Number(event.target.value) })} /></label>
@@ -505,7 +519,7 @@ function SettingsDialog({
               <div className="eventTable">
                 <div className="eventTableHead"><span>{t("recommendation.articleSource")}</span><span>{t("recommendation.behavior")}</span><span>{t("recommendation.signal")}</span><span /></div>
                 {shownEvents.length ? shownEvents.map((event) => <div className="eventRow" key={event.id}>
-                  <span><strong>{event.title}</strong><small>{event.source} · {new Date(event.openedAt).toLocaleString(i18n.resolvedLanguage)}</small></span>
+                  <span><strong>{event.title}</strong><small>{event.source} · {formatZonedDateTime(event.openedAt, timeZone)}</small></span>
                   <span><b>{t("common.secondsShort", { count: Math.round(event.activeSeconds) })}</b><small>{t("recommendation.scrollSummary", { depth: Math.round(event.scrollDepth * 100), origin: t(`recommendation.origin${event.origin[0].toUpperCase()}${event.origin.slice(1)}`) })}</small></span>
                   <span><b>{event.feedback === "helpful" ? t("recommendation.helpful") : event.feedback === "not_interested" ? t("recommendation.notInterested") : t("recommendation.implicit")}</b><small>{event.terms.slice(0, 4).join(" · ") || t("recommendation.noTerms")}</small></span>
                   <span><button onClick={() => setDraft({ ...event })}>{t("common.edit")}</button><button className="danger" onClick={() => void removeEvent(event)}>{t("common.delete")}</button></span>
@@ -587,6 +601,17 @@ export default function App() {
   const [settings, setSettings] = useState<ProfileSettings>({ theme: "day", entryLookbackDays: DEFAULT_LOOKBACK_DAYS, updatedAt: new Date(0).toISOString() });
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [mode, setMode] = useState<ListMode>("today");
+  const [minifluxTimeZone, setMinifluxTimeZone] = useState<string>();
+  const [todayClock, setTodayClock] = useState(() => Date.now());
+  const timeZoneSelection = useMemo(
+    () => selectTimeZone(minifluxTimeZone),
+    [minifluxTimeZone],
+  );
+  const activeTimeZone = timeZoneSelection.timeZone;
+  const todayKey = useMemo(
+    () => localDayKey(todayClock, activeTimeZone),
+    [todayClock, activeTimeZone],
+  );
   const [topic, setTopic] = useState<Topic>(null);
   const [query, setQuery] = useState("");
   const [hideRead, setHideRead] = useState(false);
@@ -601,7 +626,6 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(250);
   const [listWidth, setListWidth] = useState(430);
-  const [collapsedSidebar, setCollapsedSidebar] = useState(false);
   const [subscriptionsCollapsed, setSubscriptionsCollapsed] = useState(
     () => readStoredBoolean("readflux.sidebar.subscriptions-collapsed"),
   );
@@ -635,6 +659,8 @@ export default function App() {
   const listSnapshotIds = useRef<Set<number>>(new Set());
   const visibleEmptyRef = useRef(true);
   const modeRef = useRef(mode);
+  const todayKeyRef = useRef(todayKey);
+  const timeZoneRef = useRef(activeTimeZone);
   const topicRef = useRef(topic);
   const feedsRef = useRef(feeds);
   const hideReadRef = useRef(hideRead);
@@ -648,10 +674,28 @@ export default function App() {
 
   useEffect(() => { listSnapshotIds.current = new Set(listReadSnapshot.keys()); }, [listReadSnapshot]);
   useEffect(() => { modeRef.current = mode; }, [mode]);
+  useEffect(() => { todayKeyRef.current = todayKey; }, [todayKey]);
+  useEffect(() => { timeZoneRef.current = activeTimeZone; }, [activeTimeZone]);
   useEffect(() => { topicRef.current = topic; }, [topic]);
   useEffect(() => { feedsRef.current = feeds; }, [feeds]);
   useEffect(() => { hideReadRef.current = hideRead; }, [hideRead]);
   useEffect(() => { queryRef.current = query; }, [query]);
+
+  useEffect(() => {
+    const now = new Date();
+    const nextMidnight = nextDayBoundary(now, activeTimeZone);
+    const timer = window.setTimeout(() => {
+      setTodayClock(Date.now());
+      if (modeRef.current === "today" && !topicRef.current) {
+        setVisibleIds([]);
+        setEntries((current) => {
+          setListReadSnapshot(new Map(current.map((entry) => [entry.id, entry.status])));
+          return current;
+        });
+      }
+    }, Math.max(1_000, nextMidnight.getTime() - now.getTime() + 100));
+    return () => window.clearTimeout(timer);
+  }, [todayKey, activeTimeZone]);
 
   useEffect(() => {
     let cancelled = false;
@@ -731,8 +775,12 @@ export default function App() {
       const currentHideRead = hideReadRef.current;
       const relevant = batch.filter((entry) => {
         if (listSnapshotIds.current.has(entry.id)) return false;
-        if (currentMode === "today" && !currentTopic && entry.status !== "unread") return false;
-        if (currentMode === "saved" && !entry.starred) return false;
+        if (!currentTopic && !isEntryInSmartFeed(
+          entry,
+          currentMode,
+          todayKeyRef.current,
+          timeZoneRef.current,
+        )) return false;
         if (currentHideRead && entry.status === "read") return false;
         if (currentTopic?.kind === "category") {
           const feed = feedsRef.current.find((f) => f.id === entry.feed_id);
@@ -772,6 +820,10 @@ export default function App() {
     setError(null);
     const syncStartedAt = new Date().toISOString();
     try {
+      startOptionalMinifluxTimeZoneLoad(
+        () => minifluxFetch<MinifluxUser>(config, "/v1/me"),
+        setMinifluxTimeZone,
+      );
       const [cached, storedState] = await Promise.all([
         getCachedEntries<Entry>(config),
         getEntrySyncState(config),
@@ -1030,8 +1082,12 @@ export default function App() {
     const filtered = stories.filter((story) => {
       if (!hasQuery && !listReadSnapshot.has(story.id)) return false;
       const statusWhenListed = listReadSnapshot.get(story.id) ?? story.status;
-      if (mode === "today" && !topic && statusWhenListed !== "unread") return false;
-      if (mode === "saved" && !story.starred) return false;
+      if (!topic && !isEntryInSmartFeed(
+        { ...story, status: statusWhenListed },
+        mode,
+        todayKey,
+        activeTimeZone,
+      )) return false;
       if (hideRead && statusWhenListed === "read") return false;
       if (topic?.kind === "category" && story.categoryId !== topic.id) return false;
       if (topic?.kind === "feed" && story.feed_id !== topic.id) return false;
@@ -1046,17 +1102,13 @@ export default function App() {
         if (ai !== undefined && bi !== undefined) return ai - bi;
         if (ai !== undefined) return -1;
         if (bi !== undefined) return 1;
-        return mode === "today" && !topic
-          ? b.score - a.score
-          : new Date(b.published_at).getTime() - new Date(a.published_at).getTime();
+        return compareSmartFeedEntries(a, b, topic ? "unread" : mode);
       });
     } else {
-      filtered.sort((a, b) => mode === "today" && !topic
-        ? b.score - a.score
-        : new Date(b.published_at).getTime() - new Date(a.published_at).getTime());
+      filtered.sort((a, b) => compareSmartFeedEntries(a, b, topic ? "unread" : mode));
     }
     return filtered;
-  }, [stories, mode, topic, query, hideRead, listReadSnapshot, visibleIds]);
+  }, [stories, mode, topic, query, hideRead, listReadSnapshot, visibleIds, todayKey, activeTimeZone]);
 
   useEffect(() => {
     if (visible.length && !visibleIds.length) {
@@ -1278,8 +1330,10 @@ export default function App() {
       rows[Math.max(0, Math.min(rows.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))]?.focus();
     }
   };
-  const unreadCount = entries.filter((entry) => entry.status === "unread").length;
-  const savedCount = entries.filter((entry) => entry.starred).length;
+  const { unreadCount, todayUnreadCount, savedCount } = useMemo(
+    () => countSmartFeedEntries(entries, todayKey, activeTimeZone),
+    [entries, todayKey, activeTimeZone],
+  );
   const syncProgressLabel = syncProgress
     ? `${syncProgress.kind === "initial"
       ? t(syncProgress.phase === "unread" ? "sync.initialUnread" : syncProgress.phase === "starred" ? "sync.initialSaved" : "sync.initialRead")
@@ -1292,25 +1346,26 @@ export default function App() {
   }} />;
 
   const nav = [
-    ["today", "bi-clock", t("sidebar.today"), unreadCount],
+    ["today", "bi-brightness-high-fill", t("sidebar.today"), todayUnreadCount],
+    ["unread", "bi-circle-fill", t("sidebar.allUnread"), unreadCount],
     ["saved", "bi-star-fill", t("sidebar.saved"), savedCount],
   ] as const;
 
   return (
     <main className="shell" data-theme={settings.theme}>
       <header className="topbar">
-        <div className="brand"><button className="sidebarToggle" onClick={() => setCollapsedSidebar(!collapsedSidebar)} aria-label={t("sidebar.toggle")}>☰</button><strong>ReadFlux</strong></div>
+        <div className="brand"><strong>ReadFlux</strong></div>
         <label className="search"><span>⌕</span><input id="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("sidebar.search")} /><kbd>/</kbd></label>
         <div className="topActions">
           {error && <span className="syncError">{t("sync.failed")}</span>}
           {syncProgress && <span className="syncLabel" role="status">{syncProgressLabel}</span>}
-          <button className={`toolbarButton ${loading ? "spinning" : ""}`} disabled={loading} onClick={async () => { try { await minifluxFetch(config, "/v1/feeds/refresh", { method: "PUT" }); await load(); refreshList(); notify(t("sync.refreshDone")); } catch (cause) { notify(errorMessage(cause, t, "sync.refreshFailed")); } }} aria-label={t("sync.refresh")} title={t("sync.refresh")}>↻</button>
-          <button className="settingsButton" onClick={() => setSettingsOpen(true)} aria-label={t("settings.title")} title={t("settings.title")}>⚙</button>
+          <button className={`toolbarButton ${loading ? "spinning" : ""}`} disabled={loading} onClick={async () => { try { await minifluxFetch(config, "/v1/feeds/refresh", { method: "PUT" }); await load(); refreshList(); notify(t("sync.refreshDone")); } catch (cause) { notify(errorMessage(cause, t, "sync.refreshFailed")); } }} aria-label={t("sync.refresh")} title={t("sync.refresh")}><i className="bi bi-arrow-clockwise" aria-hidden="true" /></button>
+          <button className="settingsButton" onClick={() => setSettingsOpen(true)} aria-label={t("settings.title")} title={t("settings.title")}><i className="bi bi-gear" aria-hidden="true" /></button>
         </div>
         {syncProgress && <div className="topbarProgress" aria-hidden="true"><i style={{ width: `${syncProgress.total ? Math.min(100, syncProgress.loaded / syncProgress.total * 100) : 8}%` }} /></div>}
       </header>
 
-      <div className={`workspace ${collapsedSidebar ? "sidebarCollapsed" : ""} mobile-${mobileView}`} style={{ "--sidebar-width": `${sidebarWidth}px`, "--list-width": `${listWidth}px` } as CSSProperties}>
+      <div className={`workspace mobile-${mobileView}`} style={{ "--sidebar-width": `${sidebarWidth}px`, "--list-width": `${listWidth}px` } as CSSProperties}>
         <aside className="sidebar" aria-label={t("sidebar.feeds")}>
           <div className="sidebarScroll" onKeyDown={handleSidebarKey}>
             <nav>{nav.map(([key, icon, label, count]) => <button data-sidebar-row key={key} className={mode === key && !topic ? "active" : ""} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setMode(key); setTopic(null); setMobileView("list"); }}><i className={`bi ${icon}`} aria-hidden="true" /><span>{label}</span><em>{count}</em></button>)}</nav>
@@ -1344,14 +1399,20 @@ export default function App() {
         <div className="resizeHandle sidebarHandle" onPointerDown={(event) => startResize("sidebar", event)} onDoubleClick={() => setSidebarWidth(250)} />
 
         <section className="feed">
-          <header className="feedTitle"><button className="mobileBack" onClick={() => setMobileView("sources")}>‹ {t("sidebar.feeds")}</button><div><h1>{topicTitle || t(mode === "today" ? "sidebar.today" : "sidebar.saved")}</h1><small>{t("feed.articleCount", { count: visible.length })}{error && entries.length ? ` · ${t("feed.offline")}` : syncedAt ? ` · ${t("feed.syncedAt", { time: syncedAt.toLocaleTimeString(i18n.resolvedLanguage, { hour: "2-digit", minute: "2-digit" }) })}` : ""}</small></div></header>
-          <div className="feedTools"><label><input type="checkbox" checked={hideRead} onChange={(event) => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead(event.target.checked); }} /> {t("feed.hideRead")}</label><button onClick={() => void markVisibleRead()} disabled={!visible.some((story) => story.status === "unread")}>{t("feed.markAllRead")}</button></div>
+          <header className="feedTitle">
+            <button className="mobileBack" onClick={() => setMobileView("sources")}>‹ {t("sidebar.feeds")}</button>
+            <div className="feedTitleText"><h1>{topicTitle || t(mode === "today" ? "sidebar.today" : mode === "unread" ? "sidebar.allUnread" : "sidebar.saved")}</h1><small>{t("feed.articleCount", { count: visible.length })}{error && entries.length ? ` · ${t("feed.offline")}` : syncedAt ? ` · ${t("feed.syncedAt", { time: formatZonedTime(syncedAt, activeTimeZone) })}` : ""}</small></div>
+            <div className="feedTitleActions" role="group" aria-label={t("feed.listActions")}>
+              <button type="button" onClick={() => void markVisibleRead()} disabled={!visible.some((story) => story.status === "unread")} aria-label={t("feed.markAllRead")} title={t("feed.markAllRead")}><i className="bi bi-check2-all" aria-hidden="true" /></button>
+              <button type="button" className={hideRead ? "active" : ""} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead((current) => !current); }} aria-label={t("feed.hideRead")} title={t(hideRead ? "feed.showRead" : "feed.hideRead")} aria-pressed={hideRead}><i className="bi bi-filter-circle" aria-hidden="true" /></button>
+            </div>
+          </header>
           <div className="storyList">
             {pendingNew > 0 && <button className="newArticlesPill" onClick={refreshList}>{t("feed.newArticles", { count: pendingNew })}</button>}
             {loading && !entries.length ? <div className="empty"><b className="loadingMark">↻</b><h2>{t("feed.syncing")}</h2><p>{t("feed.syncingHint")}</p></div>
               : error && !entries.length ? <div className="empty errorState"><b>!</b><h2>{t("feed.connectionFailed")}</h2><p>{t(error.key, { status: error.status })}</p><button onClick={() => void load()}>{t("feed.reconnect")}</button></div>
               : visible.length ? visible.map((story) => <article key={story.id} tabIndex={0} className={`story ${selected?.id === story.id ? "selected" : ""} ${story.status === "read" ? "read" : ""}`} onClick={() => { choose(story); setMobileView("reader"); }} onKeyDown={(event) => { if (event.key === "Enter") { choose(story); setMobileView("reader"); } }}>
-                <div className="storySource"><SourceIcon src={feedIcons.get(story.feed_id)}>{story.mark}</SourceIcon><span>{story.source}</span><time>{new Date(story.published_at).toLocaleTimeString(i18n.resolvedLanguage, { hour: "2-digit", minute: "2-digit" })}</time>{story.starred && <b>★</b>}</div>
+                <div className="storySource"><SourceIcon src={feedIcons.get(story.feed_id)}>{story.mark}</SourceIcon><span>{story.source}</span><time>{formatZonedTime(story.published_at, activeTimeZone)}</time>{story.starred && <b>★</b>}</div>
                 <h2>{story.title}</h2><p>{story.summary}</p>
                 <footer><i /><span>{t(story.status === "unread" ? "feed.unread" : "feed.read")}</span><span>·</span><span>{t("feed.minutes", { count: story.reading_time || 1 })}</span></footer>
               </article>) : <div className="empty"><b>✓</b><h2>{t("feed.empty")}</h2><p>{t("feed.emptyHint")}</p><button onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setQuery(""); setTopic(null); setMode("today"); setHideRead(false); }}>{t("common.reset")}</button></div>}
@@ -1369,7 +1430,7 @@ export default function App() {
             }}>
               <div className="readerToolbar"><button className="mobileBack" onClick={() => setMobileView("list")}>‹ {t("reader.backToArticles")}</button><div><button onClick={() => toggleRead(selected)} title={t(selected.status === "read" ? "reader.markUnread" : "reader.markRead")}>{selected.status === "read" ? "○" : "●"}</button><button className={selected.starred ? "pressed" : ""} title={t(selected.starred ? "reader.unsave" : "reader.save")} onClick={() => void updateEntry(selected.id, { starred: !selected.starred }, () => minifluxFetch(config, `/v1/entries/${selected.id}/bookmark`, { method: "PUT" }), selected.starred ? t("reader.unsaved") : t("reader.saved"))}>{selected.starred ? "★" : "☆"}</button><a href={selected.url} target="_blank" rel="noreferrer" title={t("reader.openOriginal")}>↗</a><button title={t("reader.copyLink")} onClick={async () => { await navigator.clipboard.writeText(selected.url); notify(t("reader.linkCopied")); }}>⧉</button><button title={t("reader.notInterested")} onClick={() => void setFeedback("not_interested")}>−</button></div></div>
               <p className="crumb">{selected.category} · {selected.source}</p>
-              <header className="articleHead"><div><h2>{selected.title}</h2><p><SourceIcon src={feedIcons.get(selected.feed_id)}>{selected.mark}</SourceIcon>{selected.author || selected.source} · {new Date(selected.published_at).toLocaleString(i18n.resolvedLanguage)} · {t("feed.minutes", { count: selected.reading_time || 1 })}</p></div></header>
+              <header className="articleHead"><div><h2>{selected.title}</h2><p><SourceIcon src={feedIcons.get(selected.feed_id)}>{selected.mark}</SourceIcon>{selected.author || selected.source} · {formatZonedDateTime(selected.published_at, activeTimeZone)} · {t("feed.minutes", { count: selected.reading_time || 1 })}</p></div></header>
               <section className="reason">
                 <button className="reasonHead" onClick={() => setReasonOpen(!reasonOpen)}><span>{t("recommendation.reason")}</span><small>{reasonOpen ? t("recommendation.collapse") : t("recommendation.view")}</small></button>
                 {reasonOpen && <><p>{selected.reason}</p><div className="tags">{[selected.category, selected.source, ...(selected.tags ?? [])].slice(0, 4).map((tag) => <span key={tag}>{tag}</span>)}</div></>}
@@ -1395,6 +1456,8 @@ export default function App() {
         referrerScope={referrerScope}
         events={events}
         settings={settings}
+        timeZone={activeTimeZone}
+        timeZoneSource={timeZoneSelection.source}
         sourceWeights={interest.sources}
         wordWeights={interest.words}
         negativeWeights={interest.negatives}
