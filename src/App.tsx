@@ -585,7 +585,6 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(250);
   const [listWidth, setListWidth] = useState(430);
-  const [collapsedSidebar, setCollapsedSidebar] = useState(false);
   const [subscriptionsCollapsed, setSubscriptionsCollapsed] = useState(
     () => readStoredBoolean("readflux.sidebar.subscriptions-collapsed"),
   );
@@ -1307,7 +1306,7 @@ export default function App() {
   return (
     <main className="shell" data-theme={settings.theme}>
       <header className="topbar">
-        <div className="brand"><button className="sidebarToggle" onClick={() => setCollapsedSidebar(!collapsedSidebar)} aria-label="显示或隐藏订阅源">☰</button><strong>ReadFlux</strong></div>
+        <div className="brand"><strong>ReadFlux</strong></div>
         <label className="search"><span>⌕</span><input id="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文章" /><kbd>/</kbd></label>
         <div className="topActions">
           {error && <span className="syncError">同步失败</span>}
@@ -1318,7 +1317,7 @@ export default function App() {
         {syncProgress && <div className="topbarProgress" aria-hidden="true"><i style={{ width: `${syncProgress.total ? Math.min(100, syncProgress.loaded / syncProgress.total * 100) : 8}%` }} /></div>}
       </header>
 
-      <div className={`workspace ${collapsedSidebar ? "sidebarCollapsed" : ""} mobile-${mobileView}`} style={{ "--sidebar-width": `${sidebarWidth}px`, "--list-width": `${listWidth}px` } as CSSProperties}>
+      <div className={`workspace mobile-${mobileView}`} style={{ "--sidebar-width": `${sidebarWidth}px`, "--list-width": `${listWidth}px` } as CSSProperties}>
         <aside className="sidebar" aria-label="订阅源">
           <div className="sidebarScroll" onKeyDown={handleSidebarKey}>
             <nav>{nav.map(([key, icon, label, count]) => <button data-sidebar-row key={key} className={mode === key && !topic ? "active" : ""} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setMode(key); setTopic(null); setMobileView("list"); }}><i className={`bi ${icon}`} aria-hidden="true" /><span>{label}</span><em>{count}</em></button>)}</nav>
