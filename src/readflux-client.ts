@@ -213,6 +213,11 @@ export async function getReadingEvents(): Promise<ReadingEvent[]> {
   return events as ReadingEvent[];
 }
 
+export function normalizeReadingEventOpenedAt(value: string): string | null {
+  const timestamp = new Date(value);
+  return Number.isNaN(timestamp.getTime()) ? null : timestamp.toISOString();
+}
+
 export async function putReadingEvent(event: ReadingEvent) {
   const db = await openDb();
   const tx = db.transaction(EVENTS, "readwrite");

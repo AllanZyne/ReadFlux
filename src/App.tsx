@@ -15,6 +15,7 @@ import {
   getReadingEvents,
   minifluxFetch,
   newReadingEvent,
+  normalizeReadingEventOpenedAt,
   putCachedEntries,
   ProfileSettings,
   putReadingEvent,
@@ -305,6 +306,11 @@ function SettingsDialog({
       notify("请填写文章标题和来源");
       return;
     }
+    const openedAt = normalizeReadingEventOpenedAt(draft.openedAt);
+    if (!openedAt) {
+      notify("请选择有效的打开时间");
+      return;
+    }
     const now = new Date().toISOString();
     const event: ReadingEvent = {
       ...draft,
@@ -312,7 +318,7 @@ function SettingsDialog({
       title: draft.title.trim(),
       source: draft.source.trim(),
       terms: draft.terms.map((term) => term.trim().toLowerCase()).filter(Boolean),
-      openedAt: new Date(draft.openedAt).toISOString(),
+      openedAt,
       activeSeconds: Math.max(0, Number(draft.activeSeconds) || 0),
       scrollDepth: Math.max(0, Math.min(1, Number(draft.scrollDepth) || 0)),
       updatedAt: now,
