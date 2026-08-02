@@ -1,7 +1,7 @@
 import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { imageReferrerPolicy, minifluxReferrerScope, updateOriginReferrerFeeds } from "./article-images";
 import { runExclusive } from "./async-lock";
-import { compareSmartFeedEntries, isEntryInSmartFeed, localDayKey } from "./smart-feeds.mjs";
+import { compareSmartFeedEntries, countSmartFeedEntries, isEntryInSmartFeed, localDayKey } from "./smart-feeds.mjs";
 import {
   clearConnection,
   ConnectionConfig,
@@ -1250,9 +1250,10 @@ export default function App() {
       rows[Math.max(0, Math.min(rows.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))]?.focus();
     }
   };
-  const unreadCount = entries.filter((entry) => entry.status === "unread").length;
-  const todayUnreadCount = entries.filter((entry) => isEntryInSmartFeed(entry, "today", todayKey)).length;
-  const savedCount = entries.filter((entry) => entry.starred).length;
+  const { unreadCount, todayUnreadCount, savedCount } = useMemo(
+    () => countSmartFeedEntries(entries, todayKey),
+    [entries, todayKey],
+  );
   const syncProgressLabel = syncProgress
     ? `${syncProgress.kind === "initial"
       ? `首次同步 · ${syncProgress.phase === "unread" ? "未读" : syncProgress.phase === "starred" ? "全部收藏" : "已读"}`
