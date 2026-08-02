@@ -1,4 +1,5 @@
 import type { OriginReferrerFeeds } from "./article-images";
+import { isSupportedLanguage, type SupportedLanguage } from "./languages.ts";
 
 export type ConnectionConfig = {
   url: string;
@@ -10,6 +11,7 @@ export type ThemeName = "day" | "night";
 
 export type ProfileSettings = {
   theme: ThemeName;
+  language?: SupportedLanguage;
   entryLookbackDays?: number | null;
   originReferrerFeeds?: OriginReferrerFeeds;
   updatedAt: string;
@@ -86,6 +88,16 @@ export function clearConnection() {
   sessionStorage.removeItem(SESSION_CONFIG);
 }
 
+export class MinifluxRequestError extends Error {
+  readonly status: number;
+
+  constructor(status: number) {
+    super(`Miniflux request failed (${status})`);
+    this.name = "MinifluxRequestError";
+    this.status = status;
+  }
+}
+
 export async function minifluxFetch<T>(
   config: ConnectionConfig,
   path: string,
@@ -100,7 +112,7 @@ export async function minifluxFetch<T>(
     },
   });
   if (!response.ok) {
-    throw new Error(`Miniflux 请求失败（${response.status}）`);
+    throw new MinifluxRequestError(response.status);
   }
   if (response.status === 204) return null as T;
   const text = await response.text();
@@ -255,8 +267,10 @@ export function hasLegacyWebDavSettings(value: unknown) {
 
 export function normalizeProfileSettings(value?: unknown): ProfileSettings {
   const stored = storedProfileSettings(value);
+  const language = stored?.language;
   return {
     theme: stored?.theme === "night" ? "night" : "day",
+    ...(isSupportedLanguage(language) ? { language } : {}),
     entryLookbackDays: stored?.entryLookbackDays === undefined ? 30 : stored.entryLookbackDays,
     originReferrerFeeds: stored?.originReferrerFeeds ?? {},
     updatedAt: stored?.updatedAt ?? new Date(0).toISOString(),

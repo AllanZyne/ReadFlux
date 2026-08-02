@@ -15,8 +15,8 @@ test("sidebar icons are provided by the local Bootstrap Icons package", () => {
 });
 
 test("primary sidebar navigation uses Bootstrap Icons", () => {
-  assert.match(app, /\["today",\s*"bi-clock",\s*"今天",\s*unreadCount\]/);
-  assert.match(app, /\["saved",\s*"bi-star-fill",\s*"已收藏",\s*savedCount\]/);
+  assert.match(app, /\["today",\s*"bi-clock",\s*t\("sidebar\.today"\),\s*unreadCount\]/);
+  assert.match(app, /\["saved",\s*"bi-star-fill",\s*t\("sidebar\.saved"\),\s*savedCount\]/);
   assert.match(app, /<i className=\{`bi \$\{icon\}`\} aria-hidden="true" \/>/);
   assert.doesNotMatch(app, /<b>\{icon\}<\/b>/);
   assert.match(styles, /\.sidebar nav button>i\s*\{/);

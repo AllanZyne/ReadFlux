@@ -38,6 +38,8 @@ The primary product contract is:
 - `src/index.css`: all layout, themes, responsive behavior, and interaction
   states.
 - `src/main.tsx`: React entry point.
+- `src/i18n.ts`: i18next initialization, supported locale detection, and page metadata.
+- `src/locales/*.json`: contributor-editable interface translation catalogs.
 - `.github/workflows/deploy-pages.yml`: checks and GitHub Pages deployment.
 
 Do not add a server, proxy, database, authentication service, or secret-bearing
@@ -113,6 +115,8 @@ Run lint, tests, and build before publishing.
   labels.
 - Check UI changes in day and night themes, desktop and mobile layouts, and
   keyboard and focus-visible interactions.
+- Keep user-facing interface copy in the locale catalogs, preserve interpolation
+  placeholders, and keep all locale key sets identical.
 
 ## Deployment
 
