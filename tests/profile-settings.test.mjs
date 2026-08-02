@@ -36,3 +36,11 @@ test("legacy WebDAV credentials are removed when profile settings load", () => {
   });
   assert.equal("webdav" in normalized, false);
 });
+
+test("profile settings preserve only supported interface languages", () => {
+  assert.equal(typeof settingsModule.normalizeProfileSettings, "function");
+  assert.equal(settingsModule.normalizeProfileSettings({ language: "fr" }).language, "fr");
+  assert.equal(settingsModule.normalizeProfileSettings({ language: "zh-CN" }).language, "zh-CN");
+  assert.equal(settingsModule.normalizeProfileSettings({ language: "en" }).language, "en");
+  assert.equal(settingsModule.normalizeProfileSettings({ language: "de" }).language, undefined);
+});

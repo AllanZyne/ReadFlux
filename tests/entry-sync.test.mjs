@@ -31,7 +31,7 @@ test("sync data can be reset without deleting profile data or credentials", () =
   assert.match(client, /\.openCursor\(IDBKeyRange\.only\(scope\)\)/);
   assert.doesNotMatch(client, /getAllKeys\(scope\)/);
   assert.match(client, /delete\(`entry-sync-state:\$\{scope\}`\)/);
-  assert.match(app, /重置同步数据/);
+  assert.match(app, /t\("sync\.resetData"\)/);
   assert.match(app, /syncResetInProgress\.current\s*=\s*true/);
   assert.match(app, /while\s*\(syncInFlight\.current\)/);
   assert.match(app, /await resetEntrySync\(config\)/);

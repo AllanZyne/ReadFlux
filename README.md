@@ -1,57 +1,64 @@
 # ReadFlux
 
-ReadFlux 是一个纯前端、local-first 的 Miniflux 客户端。它把 Miniflux
-作为订阅与文章数据源，在浏览器中记录真实阅读行为，并将当天发布的未读文章
-按本地兴趣画像排序成「今天」。
+ReadFlux is a static, local-first Miniflux client. It uses Miniflux as the
+source for feeds and articles, records real reading behavior in the browser,
+and ranks unread articles published today into a personalized **Today** view.
 
-## 功能
+## Features
 
-- NetNewsWire 风格的三栏阅读界面
-- 「今天」包含本地当天发布的未读文章，并按本地推荐结果排序
-- 「全部未读」包含所有未读文章，并按发布时间从新到旧排序
-- 已收藏、订阅分组、Feed 图标和未读数
-- IndexedDB 文章缓存、缓存优先启动和定时增量同步
-- 首次同步优先加载未读，其次加载全量收藏，最后加载已读，并显示分页进度
-- 默认加载最近 30 天的普通文章，可在首次连接或设置中调整；收藏不受时间范围限制
-- 稳定的未读列表快照：阅读时文章不会从当前列表中突然消失
-- 白天 / 夜晚主题
-- 键盘连续阅读、可调整栏宽、移动端单面板导航
-- 阅读事件、订阅源偏好和关键词偏好的检查、编辑与删除
+- NetNewsWire-inspired three-column reading interface
+- **Today** contains unread articles published on the current local day, ranked
+  by local recommendations
+- **All unread** contains every unread article, sorted newest first
+- Saved articles, subscription groups, feed icons, and unread counts
+- IndexedDB article cache, cache-first startup, and scheduled incremental sync
+- Initial sync prioritizes unread articles, then all saved articles, then read
+  articles, with paginated progress
+- Ordinary articles load from the latest 30 days by default, with an adjustable
+  range during first connection and in Settings; saved articles are unlimited
+- Stable unread-list snapshots, so articles do not disappear while being read
+- Day and night themes
+- English, Simplified Chinese, and French interfaces selectable in Settings
+- Continuous keyboard reading, adjustable column widths, and mobile navigation
+- Inspection, editing, and deletion of reading events, feed preferences, and
+  keyword preferences
 
-## 隐私与安全
+## Privacy and security
 
-ReadFlux 没有应用服务器：
+ReadFlux has no application server:
 
-- Miniflux 地址和 API Key 只保存在当前浏览器的 `localStorage` 或
-  `sessionStorage`。
-- 阅读事件与推荐设置保存在 IndexedDB。
-- 浏览器直接请求你的 Miniflux 服务。
-- 仓库和构建产物不包含任何凭据。
+- The Miniflux URL and API key are stored only in the current browser's
+  `localStorage` or `sessionStorage`.
+- Reading events and recommendation settings are stored in IndexedDB.
+- The browser sends requests directly to your Miniflux server.
+- The repository and build output contain no credentials.
 
-在共享电脑上建议不要勾选「记住在此设备」。请为 ReadFlux 创建独立的
-Miniflux API Key，以便随时单独吊销。
+On a shared computer, leave **Remember on this device** unchecked. Create a
+dedicated Miniflux API key for ReadFlux so it can be revoked independently.
 
-## 运行要求
+## Requirements
 
-- Node.js 20 或更高版本
-- 可通过 HTTPS 访问的 Miniflux
-- Miniflux 或其反向代理允许 ReadFlux 所在 origin 进行跨域 API 请求
-- 跨域规则需要允许 `X-Auth-Token`、`Content-Type`，以及 ReadFlux 使用的
-  `GET`、`PUT`、`OPTIONS` 方法
+- Node.js 24 or later
+- A Miniflux instance accessible over HTTPS
+- Miniflux, or its reverse proxy, configured to allow requests from the
+  ReadFlux origin
+- CORS rules that allow `X-Auth-Token`, `Content-Type`, and the `GET`, `PUT`,
+  and `OPTIONS` methods used by ReadFlux
 
-Miniflux 推荐使用每个应用独立的 API Key；ReadFlux 通过
-`X-Auth-Token` 请求 API。
+Miniflux recommends a separate API key for each application. ReadFlux sends the
+key in the `X-Auth-Token` header.
 
-## 本地开发
+## Local development
 
 ```bash
 npm install
 npm run dev
 ```
 
-打开终端显示的本地地址，然后输入 Miniflux 地址和专用 API Key。
+Open the local address shown in the terminal, then enter your Miniflux URL and
+dedicated API key.
 
-提交代码前运行：
+Run these checks before submitting changes:
 
 ```bash
 npm run lint
@@ -59,48 +66,63 @@ npm test
 npm run build
 ```
 
-## 部署到 GitHub Pages
+## Contributing translations
 
-仓库已包含 `.github/workflows/deploy-pages.yml`。推送到 `main` 后，工作流会：
+ReadFlux uses `i18next` and separate JSON locale files. To improve an existing
+translation, edit the corresponding file under `src/locales/`; automated tests
+verify that every locale has the complete key set and preserves interpolation
+placeholders.
 
-1. 安装依赖；
-2. 执行 lint、测试和生产构建；
-3. 将 `dist/` 部署到 GitHub Pages。
+See [CONTRIBUTING.md](CONTRIBUTING.md) for adding a language, working with
+placeholders and plurals, and submitting changes through GitHub's web editor.
+No React changes are needed for ordinary translation fixes.
 
-首次使用时，在仓库的 **Settings → Pages → Build and deployment** 中将
-Source 设为 **GitHub Actions**。默认地址为：
+## Deploying to GitHub Pages
+
+The repository includes `.github/workflows/deploy-pages.yml`. After a push to
+`main`, the workflow:
+
+1. Installs dependencies.
+2. Runs lint, tests, and the production build.
+3. Deploys `dist/` to GitHub Pages.
+
+For the first deployment, open **Settings → Pages → Build and deployment** in
+the GitHub repository and set **Source** to **GitHub Actions**. The default URL
+is:
 
 ```text
 https://allanzayne.github.io/readflux/
 ```
 
-如果 fork 后修改了仓库名，请同步修改 `vite.config.ts` 中 GitHub Pages 的
-base path。
+If a fork uses a different repository name, update the GitHub Pages base path
+in `vite.config.ts`.
 
-## 推荐数据
+## Recommendation data
 
-ReadFlux 会记录文章、订阅源、标题、关键词、打开时间、前台停留时间、滚动
-深度、进入路径，以及用户明确给出的「有帮助 / 不感兴趣」反馈。收藏状态由
-Miniflux 管理。
+ReadFlux records the article, feed, title, keywords, open time, active
+foreground time, scroll depth, entry path, and explicit **Helpful** or
+**Not interested** feedback. Saved state remains managed by Miniflux.
 
-推荐画像对较新的行为给予更高权重，并综合：
+The recommendation profile gives more weight to recent behavior and combines:
 
-- 订阅源亲和度
-- 标题与正文摘要中的兴趣关键词
-- 发布时间
-- 收藏
-- 负向关键词
+- Feed affinity
+- Interest keywords from titles and article summaries
+- Publication time
+- Saved articles
+- Negative keywords
 
-推荐分数只用于「今天」的排序，不在文章列表中展示。设置对话框的「推荐数据」
-Tab 可查看派生权重与原始事件，并支持新增、编辑和删除。
+Recommendation scores only order **Today** and are not displayed in the article
+list. The **Recommendation data** tab in Settings exposes derived weights and
+raw events and allows records to be added, edited, or deleted.
 
-## 技术栈
+## Technology
 
 - React
 - TypeScript
 - Vite
+- i18next and react-i18next
 - Miniflux REST API
-- IndexedDB、Web Crypto API
+- IndexedDB and Web Crypto API
 
 ## License
 

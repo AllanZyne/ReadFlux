@@ -1,6 +1,9 @@
 import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 import { imageReferrerPolicy, minifluxReferrerScope, updateOriginReferrerFeeds } from "./article-images";
 import { runExclusive } from "./async-lock";
+import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { startOptionalMinifluxTimeZoneLoad } from "./miniflux-timezone.mjs";
 import { compareSmartFeedEntries, countSmartFeedEntries, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, localDayKey, nextDayBoundary, selectTimeZone, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
 import {
@@ -13,6 +16,7 @@ import {
   getEntrySyncState,
   getProfileSettings,
   getReadingEvents,
+  MinifluxRequestError,
   minifluxFetch,
   newReadingEvent,
   normalizeReadingEventOpenedAt,
@@ -72,12 +76,24 @@ type SyncProgress = {
 const ENTRY_PAGE_SIZE = 100;
 const DEFAULT_LOOKBACK_DAYS = 30;
 const LOOKBACK_OPTIONS = [
-  { value: 7, label: "最近 7 天" },
-  { value: 30, label: "最近 30 天" },
-  { value: 90, label: "最近 90 天" },
-  { value: 365, label: "最近 1 年" },
-  { value: null, label: "全部文章" },
+  { value: 7, key: "lookback.days7" },
+  { value: 30, key: "lookback.days30" },
+  { value: 90, key: "lookback.days90" },
+  { value: 365, key: "lookback.year1" },
+  { value: null, key: "lookback.all" },
 ] as const;
+
+type LocalizedError = { key: string; status?: number };
+
+function errorDetails(cause: unknown, fallback: string): LocalizedError {
+  if (cause instanceof MinifluxRequestError) return { key: "errors.minifluxRequest", status: cause.status };
+  return { key: fallback };
+}
+
+function errorMessage(cause: unknown, t: TFunction, fallback: string) {
+  const error = errorDetails(cause, fallback);
+  return t(error.key, { status: error.status });
+}
 
 function readStoredBoolean(key: string) {
   if (typeof window === "undefined") return false;
@@ -163,11 +179,6 @@ const SourceIcon = ({ children, src }: { children: React.ReactNode; src?: string
   </span>
 );
 
-const THEME_OPTIONS: { id: ThemeName; title: string; hint: string }[] = [
-  { id: "day", title: "白天", hint: "明亮、清晰，适合日间连续阅读" },
-  { id: "night", title: "夜晚", hint: "低亮度深色，适合夜间阅读" },
-];
-
 type EventDraft = Omit<ReadingEvent, "id" | "updatedAt"> & { id?: string };
 
 function emptyEventDraft(): EventDraft {
@@ -223,6 +234,7 @@ function SettingsDialog({
   syncBusy: boolean;
   notify: (message: string) => void;
 }) {
+  const { t, i18n } = useTranslation();
   const [tab, setTab] = useState<"general" | "sync" | "recommendation">("general");
   const [resetting, setResetting] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
@@ -254,7 +266,7 @@ function SettingsDialog({
           setProfileSaving(false);
         }
       });
-      if (!result.started) notify("设置正在保存，请稍候");
+      if (!result.started) notify(t("settings.saving"));
       return result.started;
     } catch {
       notify(failure);
@@ -265,8 +277,16 @@ function SettingsDialog({
   const setTheme = async (theme: ThemeName) => {
     await saveProfileChange(
       (current) => ({ ...current, theme, updatedAt: new Date().toISOString() }),
-      "主题设置保存失败",
+      t("settings.themeSaveFailed"),
     );
+  };
+
+  const setLanguage = async (language: SupportedLanguage) => {
+    const saved = await saveProfileChange(
+      (current) => ({ ...current, language, updatedAt: new Date().toISOString() }),
+      t("settings.languageSaveFailed"),
+    );
+    if (saved) await i18n.changeLanguage(language);
   };
 
   const setOriginReferrerFeed = async (feedId: number, useOrigin: boolean) => {
@@ -279,20 +299,22 @@ function SettingsDialog({
         feedId,
         useOrigin,
       ),
-    }), "图片来源设置保存失败");
+    }), t("settings.imageSaveFailed"));
   };
 
   const setEntryLookback = async (value: string) => {
     const entryLookbackDays = value === "all" ? null : Number(value);
     const saved = await saveProfileChange(
       (current) => ({ ...current, entryLookbackDays, updatedAt: new Date().toISOString() }),
-      "文章加载范围保存失败",
+      t("settings.lookbackSaveFailed"),
     );
-    if (saved) notify(entryLookbackDays === null ? "将同步全部文章，收藏始终不受限制" : `将同步最近 ${entryLookbackDays} 天，收藏始终不受限制`);
+    if (saved) notify(entryLookbackDays === null
+      ? t("settings.lookbackAllSaved")
+      : t("settings.lookbackDaysSaved", { count: entryLookbackDays }));
   };
 
   const resetSync = async () => {
-    if (!window.confirm("清除当前 Miniflux 连接的文章缓存和同步进度，并重新执行首次加载？阅读画像和连接凭据会保留。")) return;
+    if (!window.confirm(t("sync.resetConfirm"))) return;
     setResetting(true);
     try {
       await onResetSync();
@@ -303,12 +325,12 @@ function SettingsDialog({
 
   const saveEvent = async () => {
     if (!draft || !draft.title.trim() || !draft.source.trim()) {
-      notify("请填写文章标题和来源");
+      notify(t("recommendation.missingFields"));
       return;
     }
     const openedAt = normalizeReadingEventOpenedAt(draft.openedAt);
     if (!openedAt) {
-      notify("请选择有效的打开时间");
+      notify(t("recommendation.invalidOpenedAt"));
       return;
     }
     const now = new Date().toISOString();
@@ -328,15 +350,15 @@ function SettingsDialog({
       ? events.map((item) => item.id === event.id ? event : item)
       : [...events, event]);
     setDraft(null);
-    notify(draft.id ? "阅读事件已更新" : "阅读事件已添加");
+    notify(draft.id ? t("recommendation.eventUpdated") : t("recommendation.eventAdded"));
   };
 
   const removeEvent = async (event: ReadingEvent) => {
-    if (!window.confirm(`删除「${event.title}」的这条阅读记录？`)) return;
+    if (!window.confirm(t("recommendation.deleteConfirm", { title: event.title }))) return;
     await deleteReadingEvent(event.id);
     onEventsChange(events.filter((item) => item.id !== event.id));
     if (draft?.id === event.id) setDraft(null);
-    notify("阅读事件已删除");
+    notify(t("recommendation.eventDeleted"));
   };
 
   const validEvents = events.filter((event) =>
@@ -364,34 +386,45 @@ function SettingsDialog({
     }}>
       <section className="settingsDialog" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <header>
-          <div><small>SIGNAL PREFERENCES</small><h2 id="settings-title">设置</h2></div>
-          <button onClick={onClose} aria-label="关闭设置">×</button>
+          <div><small>{t("settings.eyebrow")}</small><h2 id="settings-title">{t("settings.title")}</h2></div>
+          <button onClick={onClose} aria-label={t("settings.close")}>×</button>
         </header>
-        <nav className="settingsTabs" aria-label="设置分类">
-          <button className={tab === "general" ? "active" : ""} onClick={() => setTab("general")}>通用</button>
-          <button className={tab === "sync" ? "active" : ""} onClick={() => setTab("sync")}>同步</button>
-          <button className={tab === "recommendation" ? "active" : ""} onClick={() => setTab("recommendation")}>推荐数据 <span>{events.length}</span></button>
+        <nav className="settingsTabs" aria-label={t("settings.categories")}>
+          <button className={tab === "general" ? "active" : ""} onClick={() => setTab("general")}>{t("settings.general")}</button>
+          <button className={tab === "sync" ? "active" : ""} onClick={() => setTab("sync")}>{t("settings.sync")}</button>
+          <button className={tab === "recommendation" ? "active" : ""} onClick={() => setTab("recommendation")}>{t("settings.recommendation")} <span>{events.length}</span></button>
         </nav>
 
         <div className="settingsDialogBody">
           {tab === "general" && <>
             <section>
-              <div className="settingTitle"><div><h3>外观</h3><p>在白天与夜晚阅读模式之间切换。</p></div></div>
+              <div className="settingTitle"><div><h3>{t("theme.appearance")}</h3><p>{t("theme.description")}</p></div></div>
               <div className="themeGrid">
-                {THEME_OPTIONS.map((option) => (
-                  <button key={option.id} disabled={profileSaving} className={settings.theme === option.id ? "themeCard selected" : "themeCard"} onClick={() => void setTheme(option.id)}>
-                    <i className={`themeSwatch ${option.id}`}><b /><b /><b /></i>
-                    <strong>{option.title}</strong>
-                    <small>{option.hint}</small>
+                {(["day", "night"] as ThemeName[]).map((theme) => (
+                  <button key={theme} disabled={profileSaving} className={settings.theme === theme ? "themeCard selected" : "themeCard"} onClick={() => void setTheme(theme)}>
+                    <i className={`themeSwatch ${theme}`}><b /><b /><b /></i>
+                    <strong>{t(`theme.${theme}`)}</strong>
+                    <small>{t(`theme.${theme}Hint`)}</small>
                   </button>
                 ))}
               </div>
             </section>
             <section>
-              <div className="settingTitle"><div><h3>图片来源兼容性</h3><p>默认不发送来源信息。仅为无法显示图片的订阅源启用 Origin Referer。</p></div></div>
+              <div className="settingTitle"><div><h3>{t("language.label")}</h3><p>{t("language.description")}</p></div></div>
+              <div className="settingsForm">
+                <label>
+                  <span>{t("language.label")}</span>
+                  <select disabled={profileSaving} value={settings.language ?? i18n.resolvedLanguage ?? "en"} onChange={(event) => void setLanguage(event.target.value as SupportedLanguage)}>
+                    {SUPPORTED_LANGUAGES.map((language) => <option key={language} value={language}>{t(`language.${language}`)}</option>)}
+                  </select>
+                </label>
+              </div>
+            </section>
+            <section>
+              <div className="settingTitle"><div><h3>{t("settings.imageCompatibility")}</h3><p>{t("settings.imageCompatibilityHint")}</p></div></div>
               <div className="originFeedList">
                 {feeds.length && referrerScope ? [...feeds]
-                  .sort((a, b) => `${a.category?.title ?? ""}\n${a.title}`.localeCompare(`${b.category?.title ?? ""}\n${b.title}`, "zh-CN"))
+                  .sort((a, b) => `${a.category?.title ?? ""}\n${a.title}`.localeCompare(`${b.category?.title ?? ""}\n${b.title}`, i18n.resolvedLanguage ?? "en"))
                   .map((feed) => <label key={feed.id}>
                     <input
                       type="checkbox"
@@ -399,98 +432,98 @@ function SettingsDialog({
                       disabled={profileSaving}
                       onChange={(event) => void setOriginReferrerFeed(feed.id, event.target.checked)}
                     />
-                    <span><strong>{feed.title}</strong><small>{feed.category?.title ?? "未分组"}</small></span>
+                    <span><strong>{feed.title}</strong><small>{feed.category?.title ?? t("settings.uncategorized")}</small></span>
                   </label>)
-                  : <p>{feeds.length ? "正在准备订阅源设置…" : "还没有可配置的订阅源。"}</p>}
+                  : <p>{feeds.length ? t("settings.preparingFeeds") : t("settings.noFeeds")}</p>}
               </div>
             </section>
             <section className="privacyBox">
-              <strong>本地数据边界</strong>
-              <p>“批量已读”只写回 Miniflux，不会成为兴趣信号。只有实际打开、前台停留、滚动深度、收藏和明确反馈会影响推荐。</p>
+              <strong>{t("settings.localBoundary")}</strong>
+              <p>{t("settings.localBoundaryHint")}</p>
             </section>
           </>}
 
           {tab === "sync" && <>
             <section>
               <div className="settingTitle">
-                <div><h3>Miniflux 同步</h3><p>管理文章加载范围、当前连接和本地同步数据。</p></div>
-                <span>已连接</span>
+                <div><h3>{t("sync.title")}</h3><p>{t("sync.description")}</p></div>
+                <span>{t("sync.connected")}</span>
               </div>
               <div className="settingsForm minifluxSettings">
-                <label><span>服务器</span><input value={config.url} readOnly /></label>
-                <label className="timeZoneSetting"><span>时区</span><input value={timeZone} readOnly /><small>{timeZoneSource === "miniflux" ? "来自 Miniflux 账户设置，应用于所有日期与时间。" : "Miniflux 时区不可用，所有日期与时间使用浏览器时区。"}</small></label>
+                <label><span>{t("sync.server")}</span><input value={config.url} readOnly /></label>
+                <label className="timeZoneSetting"><span>{t("sync.timeZone")}</span><input value={timeZone} readOnly /><small>{t(timeZoneSource === "miniflux" ? "sync.timeZoneMinifluxHint" : "sync.timeZoneBrowserHint")}</small></label>
                 <label className="lookbackSetting">
-                  <span>文章加载范围</span>
+                  <span>{t("sync.range")}</span>
                   <select disabled={profileSaving} value={settings.entryLookbackDays ?? "all"} onChange={(event) => void setEntryLookback(event.target.value)}>
-                    {LOOKBACK_OPTIONS.map((option) => <option key={option.value ?? "all"} value={option.value ?? "all"}>{option.label}</option>)}
+                    {LOOKBACK_OPTIONS.map((option) => <option key={option.value ?? "all"} value={option.value ?? "all"}>{t(option.key)}</option>)}
                   </select>
-                  <small>未读和普通已读按此范围加载；收藏始终加载全部历史。</small>
+                  <small>{t("sync.rangeHint")}</small>
                 </label>
                 <div className="syncDataActions">
-                  <div><strong>重新测试首次加载</strong><p>清除当前连接的文章缓存与同步进度，保留阅读画像、偏好和连接凭据。</p></div>
-                  <button className="dangerAction" disabled={syncBusy || resetting} onClick={() => void resetSync()}>{resetting ? "正在重置…" : "重置同步数据"}</button>
+                  <div><strong>{t("sync.resetTitle")}</strong><p>{t("sync.resetHint")}</p></div>
+                  <button className="dangerAction" disabled={syncBusy || resetting} onClick={() => void resetSync()}>{resetting ? t("sync.resetting") : t("sync.resetData")}</button>
                 </div>
-                <button className="disconnect" disabled={profileSaving} onClick={onDisconnect}>断开此设备上的 Miniflux</button>
+                <button className="disconnect" disabled={profileSaving} onClick={onDisconnect}>{t("sync.disconnect")}</button>
               </div>
             </section>
           </>}
 
           {tab === "recommendation" && <div className="recommendationData">
             <section className="dataIntro">
-              <div><h3>本地推荐画像</h3><p>这里展示浏览器真实保存的原始阅读事件，以及算法由它们和 Miniflux 收藏派生出的权重。推荐分数仍只用于“今天”的排序。</p></div>
-              <button className="primaryAction" onClick={() => setDraft(emptyEventDraft())}>＋ 添加记录</button>
+              <div><h3>{t("recommendation.title")}</h3><p>{t("recommendation.description")}</p></div>
+              <button className="primaryAction" onClick={() => setDraft(emptyEventDraft())}>{t("recommendation.addRecord")}</button>
             </section>
             <section className="metricGrid">
-              <div><strong>{events.length}</strong><span>阅读事件</span></div>
-              <div><strong>{validEvents.length}</strong><span>有效兴趣事件</span></div>
-              <div><strong>{averageSeconds}s</strong><span>平均前台停留</span></div>
-              <div><strong>{averageDepth}%</strong><span>平均滚动深度</span></div>
-              <div><strong>{helpfulCount}</strong><span>“有帮助”</span></div>
-              <div><strong>{negativeCount}</strong><span>“不感兴趣”</span></div>
-              <div><strong>{starredCount}</strong><span>Miniflux 收藏</span></div>
+              <div><strong>{events.length}</strong><span>{t("recommendation.readingEvents")}</span></div>
+              <div><strong>{validEvents.length}</strong><span>{t("recommendation.validEvents")}</span></div>
+              <div><strong>{t("common.secondsShort", { count: averageSeconds })}</strong><span>{t("recommendation.averageForeground")}</span></div>
+              <div><strong>{t("common.percent", { count: averageDepth })}</strong><span>{t("recommendation.averageDepth")}</span></div>
+              <div><strong>{helpfulCount}</strong><span>{t("recommendation.helpfulQuoted")}</span></div>
+              <div><strong>{negativeCount}</strong><span>{t("recommendation.notInterestedQuoted")}</span></div>
+              <div><strong>{starredCount}</strong><span>{t("recommendation.saved")}</span></div>
             </section>
             <section className="derivedData">
               <div>
-                <header><h3>订阅源权重</h3><small>有效阅读与收藏，经时间衰减</small></header>
-                <div className="weightList">{topSources.length ? topSources.map(([feedId, weight]) => <span key={feedId}><b>{sourceName.get(feedId) ?? `Feed ${feedId}`}</b><em>{weight.toFixed(2)}</em></span>) : <p>还没有有效权重</p>}</div>
+                <header><h3>{t("recommendation.sourceWeights")}</h3><small>{t("recommendation.sourceWeightsHint")}</small></header>
+                <div className="weightList">{topSources.length ? topSources.map(([feedId, weight]) => <span key={feedId}><b>{sourceName.get(feedId) ?? `${t("common.feed")} ${feedId}`}</b><em>{weight.toFixed(2)}</em></span>) : <p>{t("recommendation.noWeights")}</p>}</div>
               </div>
               <div>
-                <header><h3>正向关键词</h3><small>权重最高的 20 个词</small></header>
-                <div className="weightTags">{topWords.length ? topWords.map(([word, weight]) => <span key={word}>{word}<em>{weight.toFixed(1)}</em></span>) : <p>还没有关键词</p>}</div>
+                <header><h3>{t("recommendation.positiveTerms")}</h3><small>{t("recommendation.positiveTermsHint")}</small></header>
+                <div className="weightTags">{topWords.length ? topWords.map(([word, weight]) => <span key={word}>{word}<em>{weight.toFixed(1)}</em></span>) : <p>{t("recommendation.noKeywords")}</p>}</div>
               </div>
               <div>
-                <header><h3>负向关键词</h3><small>来自“不感兴趣”反馈</small></header>
-                <div className="weightTags negative">{topNegatives.length ? topNegatives.map(([word, weight]) => <span key={word}>{word}<em>{weight.toFixed(1)}</em></span>) : <p>还没有负向关键词</p>}</div>
+                <header><h3>{t("recommendation.negativeTerms")}</h3><small>{t("recommendation.negativeTermsHint")}</small></header>
+                <div className="weightTags negative">{topNegatives.length ? topNegatives.map(([word, weight]) => <span key={word}>{word}<em>{weight.toFixed(1)}</em></span>) : <p>{t("recommendation.noNegativeTerms")}</p>}</div>
               </div>
             </section>
 
             {draft && <section className="eventEditor">
-              <header><div><h3>{draft.id ? "编辑阅读事件" : "添加阅读事件"}</h3><small>滚动深度使用 0–1；关键词用逗号分隔。</small></div><button onClick={() => setDraft(null)}>×</button></header>
+              <header><div><h3>{draft.id ? t("recommendation.editEvent") : t("recommendation.addEvent")}</h3><small>{t("recommendation.editorHint")}</small></div><button onClick={() => setDraft(null)} aria-label={t("common.close")}>×</button></header>
               <div className="eventForm">
-                <label className="wide"><span>文章标题</span><input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></label>
-                <label><span>来源</span><input value={draft.source} onChange={(event) => setDraft({ ...draft, source: event.target.value })} /></label>
-                <label><span>打开时间</span><input type="datetime-local" value={draft.openedAt ? toZonedDateTimeInput(draft.openedAt, timeZone) : ""} onChange={(event) => setDraft({ ...draft, openedAt: event.target.value ? zonedDateTimeInputToIso(event.target.value, timeZone, draft.openedAt) : "" })} /></label>
-                <label><span>Entry ID</span><input type="number" value={draft.entryId} onChange={(event) => setDraft({ ...draft, entryId: Number(event.target.value) })} /></label>
-                <label><span>Feed ID</span><input type="number" value={draft.feedId} onChange={(event) => setDraft({ ...draft, feedId: Number(event.target.value) })} /></label>
-                <label><span>前台停留（秒）</span><input type="number" min="0" value={draft.activeSeconds} onChange={(event) => setDraft({ ...draft, activeSeconds: Number(event.target.value) })} /></label>
-                <label><span>滚动深度</span><input type="number" min="0" max="1" step=".01" value={draft.scrollDepth} onChange={(event) => setDraft({ ...draft, scrollDepth: Number(event.target.value) })} /></label>
-                <label><span>进入路径</span><select value={draft.origin} onChange={(event) => setDraft({ ...draft, origin: event.target.value as ReadingEvent["origin"] })}><option value="recommendation">今天推荐</option><option value="feed">订阅源</option><option value="search">搜索</option><option value="saved">收藏</option></select></label>
-                <label><span>明确反馈</span><select value={draft.feedback ?? ""} onChange={(event) => setDraft({ ...draft, feedback: event.target.value ? event.target.value as ReadingEvent["feedback"] : undefined })}><option value="">无</option><option value="helpful">有帮助</option><option value="not_interested">不感兴趣</option></select></label>
-                <label className="wide"><span>关键词</span><input value={draft.terms.join(", ")} onChange={(event) => setDraft({ ...draft, terms: event.target.value.split(",") })} /></label>
+                <label className="wide"><span>{t("recommendation.articleTitle")}</span><input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></label>
+                <label><span>{t("recommendation.source")}</span><input value={draft.source} onChange={(event) => setDraft({ ...draft, source: event.target.value })} /></label>
+                <label><span>{t("recommendation.openedAt")}</span><input type="datetime-local" value={draft.openedAt ? toZonedDateTimeInput(draft.openedAt, timeZone) : ""} onChange={(event) => setDraft({ ...draft, openedAt: event.target.value ? zonedDateTimeInputToIso(event.target.value, timeZone, draft.openedAt) : "" })} /></label>
+                <label><span>{t("recommendation.entryId")}</span><input type="number" value={draft.entryId} onChange={(event) => setDraft({ ...draft, entryId: Number(event.target.value) })} /></label>
+                <label><span>{t("recommendation.feedId")}</span><input type="number" value={draft.feedId} onChange={(event) => setDraft({ ...draft, feedId: Number(event.target.value) })} /></label>
+                <label><span>{t("recommendation.foregroundSeconds")}</span><input type="number" min="0" value={draft.activeSeconds} onChange={(event) => setDraft({ ...draft, activeSeconds: Number(event.target.value) })} /></label>
+                <label><span>{t("recommendation.scrollDepth")}</span><input type="number" min="0" max="1" step=".01" value={draft.scrollDepth} onChange={(event) => setDraft({ ...draft, scrollDepth: Number(event.target.value) })} /></label>
+                <label><span>{t("recommendation.origin")}</span><select value={draft.origin} onChange={(event) => setDraft({ ...draft, origin: event.target.value as ReadingEvent["origin"] })}><option value="recommendation">{t("recommendation.originRecommendation")}</option><option value="feed">{t("recommendation.originFeed")}</option><option value="search">{t("recommendation.originSearch")}</option><option value="saved">{t("recommendation.originSaved")}</option></select></label>
+                <label><span>{t("recommendation.feedback")}</span><select value={draft.feedback ?? ""} onChange={(event) => setDraft({ ...draft, feedback: event.target.value ? event.target.value as ReadingEvent["feedback"] : undefined })}><option value="">{t("common.none")}</option><option value="helpful">{t("recommendation.helpful")}</option><option value="not_interested">{t("recommendation.notInterested")}</option></select></label>
+                <label className="wide"><span>{t("recommendation.keywords")}</span><input value={draft.terms.join(", ")} onChange={(event) => setDraft({ ...draft, terms: event.target.value.split(",") })} /></label>
               </div>
-              <footer><button onClick={() => setDraft(null)}>取消</button><button className="primaryAction" onClick={() => void saveEvent()}>保存记录</button></footer>
+              <footer><button onClick={() => setDraft(null)}>{t("common.cancel")}</button><button className="primaryAction" onClick={() => void saveEvent()}>{t("recommendation.saveRecord")}</button></footer>
             </section>}
 
             <section className="eventRecords">
-              <header><div><h3>原始阅读事件</h3><small>{shownEvents.length} / {events.length} 条；按打开时间倒序</small></div><input value={eventQuery} onChange={(event) => setEventQuery(event.target.value)} placeholder="搜索标题、来源或关键词" /></header>
+              <header><div><h3>{t("recommendation.rawEvents")}</h3><small>{t("recommendation.rawEventsSummary", { shown: shownEvents.length, total: events.length })}</small></div><input value={eventQuery} onChange={(event) => setEventQuery(event.target.value)} placeholder={t("recommendation.searchPlaceholder")} /></header>
               <div className="eventTable">
-                <div className="eventTableHead"><span>文章 / 来源</span><span>行为</span><span>信号</span><span /></div>
+                <div className="eventTableHead"><span>{t("recommendation.articleSource")}</span><span>{t("recommendation.behavior")}</span><span>{t("recommendation.signal")}</span><span /></div>
                 {shownEvents.length ? shownEvents.map((event) => <div className="eventRow" key={event.id}>
                   <span><strong>{event.title}</strong><small>{event.source} · {formatZonedDateTime(event.openedAt, timeZone)}</small></span>
-                  <span><b>{Math.round(event.activeSeconds)}s</b><small>滚动 {Math.round(event.scrollDepth * 100)}% · {event.origin}</small></span>
-                  <span><b>{event.feedback === "helpful" ? "有帮助" : event.feedback === "not_interested" ? "不感兴趣" : "隐式"}</b><small>{event.terms.slice(0, 4).join(" · ") || "无关键词"}</small></span>
-                  <span><button onClick={() => setDraft({ ...event })}>编辑</button><button className="danger" onClick={() => void removeEvent(event)}>删除</button></span>
-                </div>) : <p className="noEvents">没有匹配的阅读事件。</p>}
+                  <span><b>{t("common.secondsShort", { count: Math.round(event.activeSeconds) })}</b><small>{t("recommendation.scrollSummary", { depth: Math.round(event.scrollDepth * 100), origin: t(`recommendation.origin${event.origin[0].toUpperCase()}${event.origin.slice(1)}`) })}</small></span>
+                  <span><b>{event.feedback === "helpful" ? t("recommendation.helpful") : event.feedback === "not_interested" ? t("recommendation.notInterested") : t("recommendation.implicit")}</b><small>{event.terms.slice(0, 4).join(" · ") || t("recommendation.noTerms")}</small></span>
+                  <span><button onClick={() => setDraft({ ...event })}>{t("common.edit")}</button><button className="danger" onClick={() => void removeEvent(event)}>{t("common.delete")}</button></span>
+                </div>) : <p className="noEvents">{t("recommendation.noMatchingEvents")}</p>}
               </div>
             </section>
           </div>}
@@ -501,18 +534,19 @@ function SettingsDialog({
 }
 
 function ConnectScreen({ onConnected }: { onConnected: (config: ConnectionConfig, settings: ProfileSettings) => void }) {
+  const { t } = useTranslation();
   const [url, setUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [remember, setRemember] = useState(true);
   const [entryLookbackDays, setEntryLookbackDays] = useState<number | null>(DEFAULT_LOOKBACK_DAYS);
   const [testing, setTesting] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<LocalizedError | null>(null);
 
   const connect = async (event: FormEvent) => {
     event.preventDefault();
     const config = { url: url.trim().replace(/\/+$/, ""), apiKey: apiKey.trim(), remember };
     setTesting(true);
-    setError("");
+    setError(null);
     try {
       await minifluxFetch(config, "/v1/me");
       saveConnection(config);
@@ -522,8 +556,8 @@ function ConnectScreen({ onConnected }: { onConnected: (config: ConnectionConfig
       onConnected(config, nextSettings);
     } catch (cause) {
       setError(cause instanceof TypeError
-        ? "浏览器无法直连该地址。请检查 HTTPS、地址是否正确，以及反向代理是否允许 CORS 和 X-Auth-Token。"
-        : cause instanceof Error ? cause.message : "连接失败");
+        ? { key: "connect.directFailed" }
+        : errorDetails(cause, "connect.failed"));
     } finally {
       setTesting(false);
     }
@@ -533,30 +567,31 @@ function ConnectScreen({ onConnected }: { onConnected: (config: ConnectionConfig
     <main className="onboarding" data-theme="day">
       <div className="onboardGlow" />
       <section className="connectCard">
-        <div className="connectBrand"><span className="wave">▁▅█▃▇▂</span><strong>READFLUX</strong><small>LOCAL-FIRST RSS</small></div>
-        <p className="eyebrow">PRIVATE INTELLIGENCE READER</p>
-        <h1>把 Miniflux 变成<br />你的个人情报终端。</h1>
-        <p className="connectLead">文章由 Miniflux 提供；真实阅读行为、推荐偏好和主题只保存在这个浏览器。</p>
+        <div className="connectBrand"><span className="wave">▁▅█▃▇▂</span><strong>READFLUX</strong><small>{t("connect.tagline")}</small></div>
+        <p className="eyebrow">{t("connect.eyebrow")}</p>
+        <h1>{t("connect.headline").split("\n").map((line, index) => <span key={line}>{index > 0 && <br />}{line}</span>)}</h1>
+        <p className="connectLead">{t("connect.lead")}</p>
         <form onSubmit={connect}>
-          <label><span>Miniflux 地址</span><input type="url" required value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://rss.example.com" autoComplete="url" /></label>
-          <label><span>API Key</span><input type="password" required value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="粘贴专用 API Key" autoComplete="off" /></label>
-          <label className="connectLookback"><span>首次加载</span><select value={entryLookbackDays ?? "all"} onChange={(event) => setEntryLookbackDays(event.target.value === "all" ? null : Number(event.target.value))}>{LOOKBACK_OPTIONS.map((option) => <option key={option.value ?? "all"} value={option.value ?? "all"}>{option.label}</option>)}</select><small>收藏文章始终加载全部历史</small></label>
-          <label className="remember"><input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /><span>记住在此设备</span><small>{remember ? "保存在此浏览器" : "关闭标签页后清除"}</small></label>
-          {error && <p className="formError">{error}</p>}
-          <button className="connectButton" disabled={testing}>{testing ? "正在验证连接…" : "连接 Miniflux →"}</button>
+          <label><span>{t("connect.url")}</span><input type="url" required value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://rss.example.com" autoComplete="url" /></label>
+          <label><span>{t("connect.apiKey")}</span><input type="password" required value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={t("connect.apiKeyPlaceholder")} autoComplete="off" /></label>
+          <label className="connectLookback"><span>{t("connect.initialLoad")}</span><select value={entryLookbackDays ?? "all"} onChange={(event) => setEntryLookbackDays(event.target.value === "all" ? null : Number(event.target.value))}>{LOOKBACK_OPTIONS.map((option) => <option key={option.value ?? "all"} value={option.value ?? "all"}>{t(option.key)}</option>)}</select><small>{t("connect.savedAllHistory")}</small></label>
+          <label className="remember"><input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /><span>{t("connect.remember")}</span><small>{remember ? t("connect.storedBrowser") : t("connect.clearedTab")}</small></label>
+          {error && <p className="formError">{t(error.key, { status: error.status })}</p>}
+          <button className="connectButton" disabled={testing}>{testing ? t("connect.testing") : t("connect.submit")}</button>
         </form>
-        <footer><span>● 无 ReadFlux 服务器</span><span>● Key 不会离开浏览器与 Miniflux</span></footer>
+        <footer><span>{t("connect.noServer")}</span><span>{t("connect.keyBoundary")}</span></footer>
       </section>
       <aside className="connectAside">
-        <div className="miniSignal"><i /><span>推荐依据</span><strong>真实阅读</strong></div>
-        <div className="miniSignal"><i /><span>本地画像</span><strong>IndexedDB</strong></div>
-        <div className="miniSignal"><i /><span>数据边界</span><strong>仅此设备</strong></div>
+        <div className="miniSignal"><i /><span>{t("connect.signalBasis")}</span><strong>{t("connect.realReading")}</strong></div>
+        <div className="miniSignal"><i /><span>{t("connect.localProfile")}</span><strong>IndexedDB</strong></div>
+        <div className="miniSignal"><i /><span>{t("connect.dataBoundary")}</span><strong>{t("connect.thisDevice")}</strong></div>
       </aside>
     </main>
   );
 }
 
 export default function App() {
+  const { t, i18n } = useTranslation();
   const [config, setConfig] = useState<ConnectionConfig | null>(null);
   const [ready, setReady] = useState(false);
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -611,8 +646,8 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
   const [contentLoadingId, setContentLoadingId] = useState<number | null>(null);
-  const [contentError, setContentError] = useState<{ id: number; message: string } | null>(null);
-  const [error, setError] = useState("");
+  const [contentError, setContentError] = useState<{ id: number; error: LocalizedError } | null>(null);
+  const [error, setError] = useState<LocalizedError | null>(null);
   const [pendingNew, setPendingNew] = useState(0);
   const [visibleIds, setVisibleIds] = useState<number[]>([]);
   const [referrerScopeState, setReferrerScopeState] = useState({ url: "", scope: "" });
@@ -678,13 +713,14 @@ export default function App() {
     : "";
 
   useEffect(() => {
-    Promise.all([getReadingEvents(), getProfileSettings()]).then(([history, profile]) => {
+    Promise.all([getReadingEvents(), getProfileSettings()]).then(async ([history, profile]) => {
+      if (profile.language) await i18n.changeLanguage(profile.language);
       setEvents(history);
       setSettings(profile);
       setConfig(getConnection());
       setReady(true);
     });
-  }, []);
+  }, [i18n]);
 
   useEffect(() => {
     localStorage.setItem("readflux.sidebar.subscriptions-collapsed", String(subscriptionsCollapsed));
@@ -703,7 +739,10 @@ export default function App() {
   }, [listReadSnapshot]);
 
   useEffect(() => {
-    const refreshSettings = () => { void getProfileSettings().then(setSettings); };
+    const refreshSettings = () => { void getProfileSettings().then((profile) => {
+      setSettings(profile);
+      if (profile.language) void i18n.changeLanguage(profile.language);
+    }); };
     const receiveSettings = (event: MessageEvent<{ type?: string }>) => {
       if (event.origin === window.location.origin && event.data?.type === "readflux:settings-updated") refreshSettings();
       if (event.origin === window.location.origin && event.data?.type === "readflux:disconnected") window.location.reload();
@@ -714,7 +753,7 @@ export default function App() {
       window.removeEventListener("focus", refreshSettings);
       window.removeEventListener("message", receiveSettings);
     };
-  }, []);
+  }, [i18n]);
 
   const mergeEntryBatch = useCallback(async (batch: Entry[]) => {
     if (!config || !batch.length) return;
@@ -778,7 +817,7 @@ export default function App() {
     const background = options?.background ?? false;
     syncInFlight.current = true;
     setLoading(true);
-    setError("");
+    setError(null);
     const syncStartedAt = new Date().toISOString();
     try {
       startOptionalMinifluxTimeZoneLoad(
@@ -875,8 +914,8 @@ export default function App() {
       }
     } catch (cause) {
       setError(cause instanceof TypeError
-        ? "浏览器无法直连 Miniflux，请检查网络与 CORS 配置。"
-        : cause instanceof Error ? cause.message : "无法连接 Miniflux");
+        ? { key: "connect.directFailed" }
+        : errorDetails(cause, "errors.connect"));
     } finally {
       setLoading(false);
       setSyncProgress(null);
@@ -980,8 +1019,8 @@ export default function App() {
 
   const stories = useMemo<Story[]>(() => entries.map((entry) => {
     const feed = entry.feed ?? feedMap.get(entry.feed_id);
-    const source = feed?.title ?? "未知来源";
-    const category = feed?.category?.title ?? "未分组";
+    const source = feed?.title ?? t("feed.unknownSource");
+    const category = feed?.category?.title ?? t("settings.uncategorized");
     const titleTerms = termsOf(`${entry.title} ${toText(entry.content).slice(0, 240)}`);
     const hits = titleTerms.map((word) => [word, interest.words.get(word) ?? 0] as const).filter(([, value]) => value > 0).sort((a, b) => b[1] - a[1]);
     const negative = titleTerms.reduce((sum, word) => sum + (interest.negatives.get(word) ?? 0), 0);
@@ -989,13 +1028,16 @@ export default function App() {
     const ageDays = Math.max(0, ((syncedAt?.getTime() ?? 0) - new Date(entry.published_at).getTime()) / 86_400_000);
     const freshness = Math.max(0, 12 - Math.floor(ageDays));
     const score = Math.max(1, Math.min(99, Math.round(44 + Math.min(25, sourceAffinity * 3) + Math.min(20, hits.reduce((sum, [, value]) => sum + value, 0)) + freshness + (entry.starred ? 8 : 0) - negative * 2)));
+    const terms = hits.slice(0, 2).map(([word]) => word).join(", ");
     const reason = sourceAffinity >= 2
-      ? `你最近在「${source}」有真实阅读行为${hits[0] ? `，并持续关注「${hits.slice(0, 2).map(([word]) => word).join("、")}」` : ""}。`
+      ? t("recommendation.reasonSource", { source, interest: hits[0] ? t("recommendation.reasonSourceInterest", { terms }) : "" })
       : hits[0]
-        ? `主题命中了近期认真阅读或收藏中的兴趣词「${hits.slice(0, 2).map(([word]) => word).join("、")}」。`
-        : events.length
-          ? `来自「${category}」，结合发布时间与本地兴趣画像进入队列。`
-          : "兴趣画像还很轻；阅读几篇文章后，推荐依据会逐渐个性化。";
+        ? t("recommendation.reasonTerms", { terms })
+        : entry.starred
+          ? t("recommendation.reasonSaved")
+          : events.length
+            ? t("recommendation.reasonCategory", { category })
+            : t("recommendation.reasonNew");
     const summary = toText(entry.content).slice(0, 160);
     return {
       ...entry,
@@ -1003,11 +1045,11 @@ export default function App() {
       category,
       categoryId: feed?.category?.id,
       mark: source.trim().slice(0, 1).toUpperCase() || "·",
-      summary: summary ? `${summary}${summary.length >= 160 ? "…" : ""}` : "这篇文章暂时没有摘要。",
+      summary: summary ? `${summary}${summary.length >= 160 ? "…" : ""}` : t("feed.noSummary"),
       score,
       reason,
     };
-  }), [entries, events.length, feedMap, interest, syncedAt]);
+  }), [entries, events.length, feedMap, interest, syncedAt, t]);
 
   const persistActive = useCallback(async () => {
     if (!activeEvent.current) return;
@@ -1100,7 +1142,7 @@ export default function App() {
       notify(success);
     } catch (cause) {
       setEntries(before);
-      notify(cause instanceof Error ? cause.message : "同步失败");
+      notify(errorMessage(cause, t, "errors.sync"));
     }
   };
 
@@ -1119,7 +1161,7 @@ export default function App() {
     } catch (cause) {
       setContentError({
         id,
-        message: cause instanceof Error ? cause.message : "文章正文加载失败",
+        error: errorDetails(cause, "reader.contentFailed"),
       });
     } finally {
       setContentLoadingId((current) => current === id ? null : current);
@@ -1145,10 +1187,10 @@ export default function App() {
       void updateEntry(story.id, { status: "read" }, () => minifluxFetch(config, "/v1/entries", {
         method: "PUT",
         body: JSON.stringify({ entry_ids: [story.id], status: "read" }),
-      }), "已标为已读");
+      }), t("reader.markedRead"));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, mode, query, persistActive, loadEntryContent]);
+  }, [config, mode, query, persistActive, loadEntryContent, t]);
 
   const move = useCallback((delta: number) => {
     if (!visible.length) return;
@@ -1162,14 +1204,14 @@ export default function App() {
     void updateEntry(story.id, { status }, () => minifluxFetch(config, "/v1/entries", {
       method: "PUT",
       body: JSON.stringify({ entry_ids: [story.id], status }),
-    }), status === "read" ? "已标为已读" : "已标为未读");
+    }), status === "read" ? t("reader.markedRead") : t("reader.markedUnread"));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, entries]);
+  }, [config, entries, t]);
 
   const markVisibleRead = useCallback(async () => {
     if (!config) return;
     const ids = visible.filter((story) => story.status === "unread").map((story) => story.id);
-    if (!ids.length) return notify("当前列表没有未读文章");
+    if (!ids.length) return notify(t("feed.noUnread"));
     const before = entries;
     const after = entries.map((entry) => ids.includes(entry.id) ? { ...entry, status: "read" as const } : entry);
     setEntries(after);
@@ -1181,14 +1223,14 @@ export default function App() {
         body: JSON.stringify({ entry_ids: ids, status: "read" }),
       });
       await putCachedEntries(config, after.filter((entry) => ids.includes(entry.id)));
-      notify(`已将 ${ids.length} 篇文章标为已读`);
+      notify(t("feed.markedRead", { count: ids.length }));
     } catch (cause) {
       setEntries(before);
       setVisibleIds([]);
       setListReadSnapshot(new Map(before.map((entry) => [entry.id, entry.status])));
-      notify(cause instanceof Error ? cause.message : "同步失败");
+      notify(errorMessage(cause, t, "errors.sync"));
     }
-  }, [config, entries, notify, visible]);
+  }, [config, entries, notify, t, visible]);
 
   const startResize = (kind: "sidebar" | "list", event: React.PointerEvent) => {
     event.preventDefault();
@@ -1220,7 +1262,7 @@ export default function App() {
         if (nextUnread) choose(nextUnread);
       }
       if (!selected || !config) return;
-      if (event.key.toLowerCase() === "s") void updateEntry(selected.id, { starred: !selected.starred }, () => minifluxFetch(config, `/v1/entries/${selected.id}/bookmark`, { method: "PUT" }), selected.starred ? "已取消收藏" : "已收藏");
+      if (event.key.toLowerCase() === "s") void updateEntry(selected.id, { starred: !selected.starred }, () => minifluxFetch(config, `/v1/entries/${selected.id}/bookmark`, { method: "PUT" }), selected.starred ? t("reader.unsaved") : t("reader.saved"));
       if (["m", "u", "r"].includes(event.key.toLowerCase())) toggleRead(selected);
       if (event.key === "Enter") window.open(selected.url, "_blank", "noopener,noreferrer");
       if (event.key === " ") {
@@ -1246,9 +1288,9 @@ export default function App() {
     if (feedback === "not_interested") {
       const next = visible.find((story) => story.id !== selected.id);
       setSelectedId(next?.id ?? null);
-      notify("已降低相似主题的推荐");
+      notify(t("recommendation.reduced"));
     } else {
-      notify("已强化这类内容");
+      notify(t("recommendation.reinforced"));
     }
   };
 
@@ -1294,47 +1336,47 @@ export default function App() {
   );
   const syncProgressLabel = syncProgress
     ? `${syncProgress.kind === "initial"
-      ? `首次同步 · ${syncProgress.phase === "unread" ? "未读" : syncProgress.phase === "starred" ? "全部收藏" : "已读"}`
-      : syncProgress.kind === "search" ? "搜索 Miniflux" : "获取最新文章"}${syncProgress.total ? ` ${syncProgress.loaded} / ${syncProgress.total}` : ""}`
+      ? t(syncProgress.phase === "unread" ? "sync.initialUnread" : syncProgress.phase === "starred" ? "sync.initialSaved" : "sync.initialRead")
+      : t(syncProgress.kind === "search" ? "sync.searching" : "sync.latest")}${syncProgress.total ? ` ${syncProgress.loaded} / ${syncProgress.total}` : ""}`
     : "";
-  if (!ready) return <main className="boot" data-theme="day"><span className="wave">▁▅█▃▇▂</span><p>正在启动阅读器…</p></main>;
+  if (!ready) return <main className="boot" data-theme="day"><span className="wave">▁▅█▃▇▂</span><p>{t("connect.booting")}</p></main>;
   if (!config) return <ConnectScreen onConnected={(nextConfig, nextSettings) => {
     setSettings(nextSettings);
     setConfig(nextConfig);
   }} />;
 
   const nav = [
-    ["today", "bi-brightness-high-fill", "今天", todayUnreadCount],
-    ["unread", "bi-circle-fill", "全部未读", unreadCount],
-    ["saved", "bi-star-fill", "已收藏", savedCount],
+    ["today", "bi-brightness-high-fill", t("sidebar.today"), todayUnreadCount],
+    ["unread", "bi-circle-fill", t("sidebar.allUnread"), unreadCount],
+    ["saved", "bi-star-fill", t("sidebar.saved"), savedCount],
   ] as const;
 
   return (
     <main className="shell" data-theme={settings.theme}>
       <header className="topbar">
         <div className="brand"><strong>ReadFlux</strong></div>
-        <label className="search"><span>⌕</span><input id="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文章" /><kbd>/</kbd></label>
+        <label className="search"><span>⌕</span><input id="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("sidebar.search")} /><kbd>/</kbd></label>
         <div className="topActions">
-          {error && <span className="syncError">同步失败</span>}
+          {error && <span className="syncError">{t("sync.failed")}</span>}
           {syncProgress && <span className="syncLabel" role="status">{syncProgressLabel}</span>}
-          <button className={`toolbarButton ${loading ? "spinning" : ""}`} disabled={loading} onClick={async () => { try { await minifluxFetch(config, "/v1/feeds/refresh", { method: "PUT" }); await load(); refreshList(); notify("Miniflux 已刷新"); } catch (cause) { notify(cause instanceof Error ? cause.message : "刷新失败"); } }} aria-label="刷新订阅" title="刷新订阅"><i className="bi bi-arrow-clockwise" aria-hidden="true" /></button>
-          <button className="settingsButton" onClick={() => setSettingsOpen(true)} aria-label="打开设置对话框" title="设置"><i className="bi bi-gear" aria-hidden="true" /></button>
+          <button className={`toolbarButton ${loading ? "spinning" : ""}`} disabled={loading} onClick={async () => { try { await minifluxFetch(config, "/v1/feeds/refresh", { method: "PUT" }); await load(); refreshList(); notify(t("sync.refreshDone")); } catch (cause) { notify(errorMessage(cause, t, "sync.refreshFailed")); } }} aria-label={t("sync.refresh")} title={t("sync.refresh")}><i className="bi bi-arrow-clockwise" aria-hidden="true" /></button>
+          <button className="settingsButton" onClick={() => setSettingsOpen(true)} aria-label={t("settings.title")} title={t("settings.title")}><i className="bi bi-gear" aria-hidden="true" /></button>
         </div>
         {syncProgress && <div className="topbarProgress" aria-hidden="true"><i style={{ width: `${syncProgress.total ? Math.min(100, syncProgress.loaded / syncProgress.total * 100) : 8}%` }} /></div>}
       </header>
 
       <div className={`workspace mobile-${mobileView}`} style={{ "--sidebar-width": `${sidebarWidth}px`, "--list-width": `${listWidth}px` } as CSSProperties}>
-        <aside className="sidebar" aria-label="订阅源">
+        <aside className="sidebar" aria-label={t("sidebar.feeds")}>
           <div className="sidebarScroll" onKeyDown={handleSidebarKey}>
             <nav>{nav.map(([key, icon, label, count]) => <button data-sidebar-row key={key} className={mode === key && !topic ? "active" : ""} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setMode(key); setTopic(null); setMobileView("list"); }}><i className={`bi ${icon}`} aria-hidden="true" /><span>{label}</span><em>{count}</em></button>)}</nav>
-            <div className="sideLabel"><span>订阅</span><button type="button" onClick={() => setSubscriptionsCollapsed((current) => !current)} title={subscriptionsCollapsed ? "展开订阅" : "折叠订阅"} aria-label={subscriptionsCollapsed ? "展开订阅" : "折叠订阅"} aria-expanded={!subscriptionsCollapsed}><i className={`bi ${subscriptionsCollapsed ? "bi-chevron-right" : "bi-chevron-down"}`} aria-hidden="true" /></button></div>
+            <div className="sideLabel"><span>{t("sidebar.subscriptions")}</span><button type="button" onClick={() => setSubscriptionsCollapsed((current) => !current)} title={t(subscriptionsCollapsed ? "sidebar.expand" : "sidebar.collapse")} aria-label={t(subscriptionsCollapsed ? "sidebar.expand" : "sidebar.collapse")} aria-expanded={!subscriptionsCollapsed}><i className={`bi ${subscriptionsCollapsed ? "bi-chevron-right" : "bi-chevron-down"}`} aria-hidden="true" /></button></div>
             {!subscriptionsCollapsed && categorySources.map((category) => {
               const collapsed = collapsedCategories.has(category.id);
               const categorySelected = topic?.kind === "category" && topic.id === category.id;
               const categoryUnread = category.feeds.reduce((sum, feed) => sum + (unreadByFeed.get(feed.id) ?? 0), 0);
               return <section className="sourceGroup" key={category.id}>
                 <div className={`groupRow ${categorySelected ? "selected" : ""}`}>
-                  <button className="disclosure" onClick={() => toggleCategory(category.id)} aria-label={`${collapsed ? "展开" : "折叠"}${category.title}`} aria-expanded={!collapsed}><i className={`bi ${collapsed ? "bi-folder-fill" : "bi-folder2-open"}`} aria-hidden="true" /></button>
+                  <button className="disclosure" onClick={() => toggleCategory(category.id)} aria-label={t(collapsed ? "sidebar.expandCategory" : "sidebar.collapseCategory", { title: category.title })} aria-expanded={!collapsed}><i className={`bi ${collapsed ? "bi-folder-fill" : "bi-folder2-open"}`} aria-hidden="true" /></button>
                   <button
                     data-sidebar-row
                     className="groupHead"
@@ -1358,22 +1400,22 @@ export default function App() {
 
         <section className="feed">
           <header className="feedTitle">
-            <button className="mobileBack" onClick={() => setMobileView("sources")}>‹ 订阅源</button>
-            <div className="feedTitleText"><h1>{topicTitle || (mode === "today" ? "今天" : mode === "unread" ? "全部未读" : "已收藏")}</h1><small>{visible.length} 篇文章{error && entries.length ? " · 离线缓存" : syncedAt ? ` · ${formatZonedTime(syncedAt, activeTimeZone)} 已同步` : ""}</small></div>
-            <div className="feedTitleActions" role="group" aria-label="文章列表操作">
-              <button type="button" onClick={() => void markVisibleRead()} disabled={!visible.some((story) => story.status === "unread")} aria-label="全部标记为已读" title="全部标记为已读"><i className="bi bi-check2-all" aria-hidden="true" /></button>
-              <button type="button" className={hideRead ? "active" : ""} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead((current) => !current); }} aria-label="隐藏已读" title={hideRead ? "显示已读" : "隐藏已读"} aria-pressed={hideRead}><i className="bi bi-filter-circle" aria-hidden="true" /></button>
+            <button className="mobileBack" onClick={() => setMobileView("sources")}>‹ {t("sidebar.feeds")}</button>
+            <div className="feedTitleText"><h1>{topicTitle || t(mode === "today" ? "sidebar.today" : mode === "unread" ? "sidebar.allUnread" : "sidebar.saved")}</h1><small>{t("feed.articleCount", { count: visible.length })}{error && entries.length ? ` · ${t("feed.offline")}` : syncedAt ? ` · ${t("feed.syncedAt", { time: formatZonedTime(syncedAt, activeTimeZone) })}` : ""}</small></div>
+            <div className="feedTitleActions" role="group" aria-label={t("feed.listActions")}>
+              <button type="button" onClick={() => void markVisibleRead()} disabled={!visible.some((story) => story.status === "unread")} aria-label={t("feed.markAllRead")} title={t("feed.markAllRead")}><i className="bi bi-check2-all" aria-hidden="true" /></button>
+              <button type="button" className={hideRead ? "active" : ""} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead((current) => !current); }} aria-label={t("feed.hideRead")} title={t(hideRead ? "feed.showRead" : "feed.hideRead")} aria-pressed={hideRead}><i className="bi bi-filter-circle" aria-hidden="true" /></button>
             </div>
           </header>
           <div className="storyList">
-            {pendingNew > 0 && <button className="newArticlesPill" onClick={refreshList}>{pendingNew} 篇新文章 ↑</button>}
-            {loading && !entries.length ? <div className="empty"><b className="loadingMark">↻</b><h2>正在同步文章</h2><p>未读文章会优先显示，随后加载收藏和已读文章。</p></div>
-              : error && !entries.length ? <div className="empty errorState"><b>!</b><h2>连接失败</h2><p>{error}</p><button onClick={() => void load()}>重新连接</button></div>
+            {pendingNew > 0 && <button className="newArticlesPill" onClick={refreshList}>{t("feed.newArticles", { count: pendingNew })}</button>}
+            {loading && !entries.length ? <div className="empty"><b className="loadingMark">↻</b><h2>{t("feed.syncing")}</h2><p>{t("feed.syncingHint")}</p></div>
+              : error && !entries.length ? <div className="empty errorState"><b>!</b><h2>{t("feed.connectionFailed")}</h2><p>{t(error.key, { status: error.status })}</p><button onClick={() => void load()}>{t("feed.reconnect")}</button></div>
               : visible.length ? visible.map((story) => <article key={story.id} tabIndex={0} className={`story ${selected?.id === story.id ? "selected" : ""} ${story.status === "read" ? "read" : ""}`} onClick={() => { choose(story); setMobileView("reader"); }} onKeyDown={(event) => { if (event.key === "Enter") { choose(story); setMobileView("reader"); } }}>
                 <div className="storySource"><SourceIcon src={feedIcons.get(story.feed_id)}>{story.mark}</SourceIcon><span>{story.source}</span><time>{formatZonedTime(story.published_at, activeTimeZone)}</time>{story.starred && <b>★</b>}</div>
                 <h2>{story.title}</h2><p>{story.summary}</p>
-                <footer><i /><span>{story.status === "unread" ? "未读" : "已读"}</span><span>·</span><span>{story.reading_time || 1} 分钟</span></footer>
-              </article>) : <div className="empty"><b>✓</b><h2>这里没有文章</h2><p>换一个订阅源，或关闭“隐藏已读”。</p><button onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setQuery(""); setTopic(null); setMode("today"); setHideRead(false); }}>重置</button></div>}
+                <footer><i /><span>{t(story.status === "unread" ? "feed.unread" : "feed.read")}</span><span>·</span><span>{t("feed.minutes", { count: story.reading_time || 1 })}</span></footer>
+              </article>) : <div className="empty"><b>✓</b><h2>{t("feed.empty")}</h2><p>{t("feed.emptyHint")}</p><button onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setQuery(""); setTopic(null); setMode("today"); setHideRead(false); }}>{t("common.reset")}</button></div>}
           </div>
         </section>
         <div className="resizeHandle listHandle" onPointerDown={(event) => startResize("list", event)} onDoubleClick={() => setListWidth(430)} />
@@ -1386,25 +1428,25 @@ export default function App() {
               const depth = target.scrollHeight <= target.clientHeight ? 1 : target.scrollTop / (target.scrollHeight - target.clientHeight);
               activeEvent.current.scrollDepth = Math.max(activeEvent.current.scrollDepth, Math.min(1, depth));
             }}>
-              <div className="readerToolbar"><button className="mobileBack" onClick={() => setMobileView("list")}>‹ 文章</button><div><button onClick={() => toggleRead(selected)} title={selected.status === "read" ? "标为未读" : "标为已读"}>{selected.status === "read" ? "○" : "●"}</button><button className={selected.starred ? "pressed" : ""} title={selected.starred ? "取消收藏" : "收藏"} onClick={() => void updateEntry(selected.id, { starred: !selected.starred }, () => minifluxFetch(config, `/v1/entries/${selected.id}/bookmark`, { method: "PUT" }), selected.starred ? "已取消收藏" : "已收藏")}>{selected.starred ? "★" : "☆"}</button><a href={selected.url} target="_blank" rel="noreferrer" title="打开原文">↗</a><button title="复制链接" onClick={async () => { await navigator.clipboard.writeText(selected.url); notify("原文链接已复制"); }}>⧉</button><button title="不感兴趣" onClick={() => void setFeedback("not_interested")}>−</button></div></div>
-              <p className="crumb">{selected.category}　›　{selected.source}</p>
-              <header className="articleHead"><div><h2>{selected.title}</h2><p><SourceIcon src={feedIcons.get(selected.feed_id)}>{selected.mark}</SourceIcon>{selected.author || selected.source}　·　{formatZonedDateTime(selected.published_at, activeTimeZone)}　·　{selected.reading_time || 1} 分钟</p></div></header>
+              <div className="readerToolbar"><button className="mobileBack" onClick={() => setMobileView("list")}>‹ {t("reader.backToArticles")}</button><div><button onClick={() => toggleRead(selected)} title={t(selected.status === "read" ? "reader.markUnread" : "reader.markRead")}>{selected.status === "read" ? "○" : "●"}</button><button className={selected.starred ? "pressed" : ""} title={t(selected.starred ? "reader.unsave" : "reader.save")} onClick={() => void updateEntry(selected.id, { starred: !selected.starred }, () => minifluxFetch(config, `/v1/entries/${selected.id}/bookmark`, { method: "PUT" }), selected.starred ? t("reader.unsaved") : t("reader.saved"))}>{selected.starred ? "★" : "☆"}</button><a href={selected.url} target="_blank" rel="noreferrer" title={t("reader.openOriginal")}>↗</a><button title={t("reader.copyLink")} onClick={async () => { await navigator.clipboard.writeText(selected.url); notify(t("reader.linkCopied")); }}>⧉</button><button title={t("reader.notInterested")} onClick={() => void setFeedback("not_interested")}>−</button></div></div>
+              <p className="crumb">{selected.category} · {selected.source}</p>
+              <header className="articleHead"><div><h2>{selected.title}</h2><p><SourceIcon src={feedIcons.get(selected.feed_id)}>{selected.mark}</SourceIcon>{selected.author || selected.source} · {formatZonedDateTime(selected.published_at, activeTimeZone)} · {t("feed.minutes", { count: selected.reading_time || 1 })}</p></div></header>
               <section className="reason">
-                <button className="reasonHead" onClick={() => setReasonOpen(!reasonOpen)}><span>推荐依据</span><small>{reasonOpen ? "收起 −" : "查看 +"}</small></button>
+                <button className="reasonHead" onClick={() => setReasonOpen(!reasonOpen)}><span>{t("recommendation.reason")}</span><small>{reasonOpen ? t("recommendation.collapse") : t("recommendation.view")}</small></button>
                 {reasonOpen && <><p>{selected.reason}</p><div className="tags">{[selected.category, selected.source, ...(selected.tags ?? [])].slice(0, 4).map((tag) => <span key={tag}>{tag}</span>)}</div></>}
               </section>
               {contentLoadingId === selected.id
-                ? <div className="articleLoading" role="status"><b className="loadingMark">↻</b><p>正在加载文章正文…</p></div>
+                ? <div className="articleLoading" role="status"><b className="loadingMark">↻</b><p>{t("reader.loadingContent")}</p></div>
                 : contentError?.id === selected.id
-                  ? <div className="articleLoading errorState"><b>!</b><p>{contentError.message}</p><button onClick={() => void loadEntryContent(selected.id)}>重试</button></div>
+                  ? <div className="articleLoading errorState"><b>!</b><p>{t(contentError.error.key, { status: contentError.error.status })}</p><button onClick={() => void loadEntryContent(selected.id)}>{t("common.retry")}</button></div>
                   : <div className="body articleContent" dangerouslySetInnerHTML={{ __html: safeHtml(
                       selected.content,
                       settings.originReferrerFeeds?.[referrerScope]?.includes(selected.feed_id) ?? false,
                     ) }} />}
-              <div className="feedback"><span>这篇文章符合你的兴趣吗？</span><button onClick={() => void setFeedback("helpful")}>有帮助</button><button onClick={() => void setFeedback("not_interested")}>不感兴趣</button></div>
+              <div className="feedback"><span>{t("recommendation.feedbackQuestion")}</span><button onClick={() => void setFeedback("helpful")}>{t("recommendation.helpful")}</button><button onClick={() => void setFeedback("not_interested")}>{t("recommendation.notInterested")}</button></div>
             </div>
-            <footer className="readerFoot"><span><kbd>J</kbd><kbd>K</kbd> 上下篇　<kbd>S</kbd> 收藏　<kbd>U</kbd> 已读</span><div><button onClick={() => move(-1)}>← 上一篇</button><button onClick={() => move(1)}>下一篇 →</button></div></footer>
-          </> : <div className="empty readerEmpty"><b>☷</b><h2>选择一篇文章</h2><p>打开文章后，真实阅读行为才会用于调整“今天”。</p></div>}
+            <footer className="readerFoot"><span><kbd>J</kbd><kbd>K</kbd> {t("reader.shortcuts")}　<kbd>S</kbd> {t("reader.save")}　<kbd>U</kbd> {t("feed.read")}</span><div><button onClick={() => move(-1)}>{t("reader.previous")}</button><button onClick={() => move(1)}>{t("reader.next")}</button></div></footer>
+          </> : <div className="empty readerEmpty"><b>☷</b><h2>{t("reader.select")}</h2><p>{t("reader.selectHint")}</p></div>}
         </article>
       </div>
 
@@ -1445,7 +1487,7 @@ export default function App() {
             setSyncProgress(null);
             setContentError(null);
             setSettingsOpen(false);
-            notify("同步数据已重置，正在重新执行首次加载");
+            notify(t("sync.resetDone"));
           } finally {
             syncResetInProgress.current = false;
           }

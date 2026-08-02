@@ -1,4 +1,5 @@
 node_modules/
+.worktrees/
 .npm-cache/
 dist/
 .DS_Store

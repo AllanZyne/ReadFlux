@@ -15,9 +15,9 @@ test("sidebar icons are provided by the local Bootstrap Icons package", () => {
 });
 
 test("primary sidebar navigation uses Bootstrap Icons", () => {
-  assert.match(app, /\["today",\s*"bi-brightness-high-fill",\s*"今天",\s*todayUnreadCount\]/);
-  assert.match(app, /\["unread",\s*"bi-[^"]+",\s*"全部未读",\s*unreadCount\]/);
-  assert.match(app, /\["saved",\s*"bi-star-fill",\s*"已收藏",\s*savedCount\]/);
+  assert.match(app, /\["today",\s*"bi-brightness-high-fill",\s*t\("sidebar\.today"\),\s*todayUnreadCount\]/);
+  assert.match(app, /\["unread",\s*"bi-[^"]+",\s*t\("sidebar\.allUnread"\),\s*unreadCount\]/);
+  assert.match(app, /\["saved",\s*"bi-star-fill",\s*t\("sidebar\.saved"\),\s*savedCount\]/);
   assert.ok(app.indexOf('["today"') < app.indexOf('["unread"'));
   assert.ok(app.indexOf('["unread"') < app.indexOf('["saved"'));
   assert.match(app, /<i className=\{`bi \$\{icon\}`\} aria-hidden="true" \/>/);
@@ -28,15 +28,15 @@ test("primary sidebar navigation uses Bootstrap Icons", () => {
 test("smart feed heading distinguishes Today, All unread, and Saved", () => {
   assert.match(
     app,
-    /mode === "today"\s*\?\s*"今天"\s*:\s*mode === "unread"\s*\?\s*"全部未读"\s*:\s*"已收藏"/,
+    /mode === "today"\s*\?\s*"sidebar\.today"\s*:\s*mode === "unread"\s*\?\s*"sidebar\.allUnread"\s*:\s*"sidebar\.saved"/,
   );
 });
 
 test("article list actions live in the title bar as NetNewsWire-style icons", () => {
   const titleBar = app.match(/<header className="feedTitle">([\s\S]*?)<\/header>/)?.[1] ?? "";
 
-  assert.match(titleBar, /aria-label="全部标记为已读"[\s\S]*?bi-check2-all/);
-  assert.match(titleBar, /aria-label="隐藏已读"[\s\S]*?aria-pressed=\{hideRead\}[\s\S]*?bi-filter-circle/);
+  assert.match(titleBar, /aria-label=\{t\("feed\.markAllRead"\)\}[\s\S]*?bi-check2-all/);
+  assert.match(titleBar, /aria-label=\{t\("feed\.hideRead"\)\}[\s\S]*?aria-pressed=\{hideRead\}[\s\S]*?bi-filter-circle/);
   assert.match(titleBar, /setHideRead\(\(current\)\s*=>\s*!current\)/);
   assert.doesNotMatch(app, /className="feedTools"/);
   assert.match(styles, /\.feedTitleActions\s*\{/);
