@@ -1,4 +1,5 @@
 const dayFormatters = new Map();
+const dateTimeFormatters = new Map();
 
 function dayFormatter(timeZone) {
   if (!timeZone) return null;
@@ -18,6 +19,30 @@ function dayFormatter(timeZone) {
   return formatter;
 }
 
+function dateTimeFormatter(timeZone) {
+  if (dateTimeFormatters.has(timeZone)) return dateTimeFormatters.get(timeZone);
+  const formatter = new Intl.DateTimeFormat("en-GB-u-ca-iso8601-nu-latn", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  dateTimeFormatters.set(timeZone, formatter);
+  return formatter;
+}
+
+function zonedDateTimeParts(value, timeZone) {
+  return Object.fromEntries(
+    dateTimeFormatter(timeZone)
+      .formatToParts(new Date(value))
+      .map(({ type, value: partValue }) => [type, partValue]),
+  );
+}
+
 export function selectTimeZone(timeZone) {
   const formatter = dayFormatter(timeZone);
   if (formatter) {
@@ -27,6 +52,73 @@ export function selectTimeZone(timeZone) {
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     source: "browser",
   };
+}
+
+export function formatZonedTime(value, timeZone) {
+  const parts = zonedDateTimeParts(value, timeZone);
+  return `${parts.hour}:${parts.minute}`;
+}
+
+export function formatZonedDateTime(value, timeZone) {
+  const parts = zonedDateTimeParts(value, timeZone);
+  return `${parts.year}/${parts.month}/${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
+export function toZonedDateTimeInput(value, timeZone) {
+  const parts = zonedDateTimeParts(value, timeZone);
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
+export function zonedDateTimeInputToIso(value, timeZone, referenceValue) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+  if (!match) throw new RangeError("Invalid datetime-local value");
+  const [, year, month, day, hour, minute] = match;
+  const target = Date.UTC(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+  );
+  let guess = target;
+  const seen = new Set([guess]);
+  let candidate = guess;
+
+  for (let index = 0; index < 8; index += 1) {
+    const parts = zonedDateTimeParts(guess, timeZone);
+    const observed = Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      Number(parts.hour),
+      Number(parts.minute),
+    );
+    const next = guess + target - observed;
+    if (next === guess) {
+      candidate = guess;
+      break;
+    }
+    if (seen.has(next)) {
+      candidate = Math.max(guess, next);
+      break;
+    }
+    seen.add(next);
+    guess = next;
+    candidate = guess;
+  }
+
+  const matchingInstants = [];
+  for (let minuteOffset = -240; minuteOffset <= 240; minuteOffset += 1) {
+    const instant = candidate + minuteOffset * 60_000;
+    if (toZonedDateTimeInput(instant, timeZone) === value) matchingInstants.push(instant);
+  }
+  if (!matchingInstants.length) return new Date(candidate).toISOString();
+  if (referenceValue !== undefined) {
+    const reference = new Date(referenceValue).getTime();
+    matchingInstants.sort((a, b) => Math.abs(a - reference) - Math.abs(b - reference));
+    return new Date(matchingInstants[0]).toISOString();
+  }
+  return new Date(Math.min(...matchingInstants)).toISOString();
 }
 
 export function localDayKey(value, timeZone) {

@@ -2,7 +2,7 @@ import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useS
 import { imageReferrerPolicy, minifluxReferrerScope, updateOriginReferrerFeeds } from "./article-images";
 import { runExclusive } from "./async-lock";
 import { loadOptionalMinifluxTimeZone } from "./miniflux-timezone.mjs";
-import { compareSmartFeedEntries, countSmartFeedEntries, isEntryInSmartFeed, localDayKey, nextDayBoundary, selectTimeZone } from "./smart-feeds.mjs";
+import { compareSmartFeedEntries, countSmartFeedEntries, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, localDayKey, nextDayBoundary, selectTimeZone, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
 import {
   clearConnection,
   ConnectionConfig,
@@ -412,7 +412,7 @@ function SettingsDialog({
               </div>
               <div className="settingsForm minifluxSettings">
                 <label><span>服务器</span><input value={config.url} readOnly /></label>
-                <label className="timeZoneSetting"><span>“今天”时区</span><input value={timeZone} readOnly /><small>{timeZoneSource === "miniflux" ? "来自 Miniflux 账户设置。" : "Miniflux 时区不可用，当前使用浏览器时区。"}</small></label>
+                <label className="timeZoneSetting"><span>阅读器时区</span><input value={timeZone} readOnly /><small>{timeZoneSource === "miniflux" ? "来自 Miniflux 账户设置，应用于所有日期与时间。" : "Miniflux 时区不可用，所有日期与时间使用浏览器时区。"}</small></label>
                 <label className="lookbackSetting">
                   <span>文章加载范围</span>
                   <select disabled={profileSaving} value={settings.entryLookbackDays ?? "all"} onChange={(event) => void setEntryLookback(event.target.value)}>
@@ -463,7 +463,7 @@ function SettingsDialog({
               <div className="eventForm">
                 <label className="wide"><span>文章标题</span><input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></label>
                 <label><span>来源</span><input value={draft.source} onChange={(event) => setDraft({ ...draft, source: event.target.value })} /></label>
-                <label><span>打开时间</span><input type="datetime-local" value={draft.openedAt.slice(0, 16)} onChange={(event) => setDraft({ ...draft, openedAt: event.target.value })} /></label>
+                <label><span>打开时间</span><input type="datetime-local" value={draft.openedAt ? toZonedDateTimeInput(draft.openedAt, timeZone) : ""} onChange={(event) => setDraft({ ...draft, openedAt: event.target.value ? zonedDateTimeInputToIso(event.target.value, timeZone, draft.openedAt) : "" })} /></label>
                 <label><span>Entry ID</span><input type="number" value={draft.entryId} onChange={(event) => setDraft({ ...draft, entryId: Number(event.target.value) })} /></label>
                 <label><span>Feed ID</span><input type="number" value={draft.feedId} onChange={(event) => setDraft({ ...draft, feedId: Number(event.target.value) })} /></label>
                 <label><span>前台停留（秒）</span><input type="number" min="0" value={draft.activeSeconds} onChange={(event) => setDraft({ ...draft, activeSeconds: Number(event.target.value) })} /></label>
@@ -480,7 +480,7 @@ function SettingsDialog({
               <div className="eventTable">
                 <div className="eventTableHead"><span>文章 / 来源</span><span>行为</span><span>信号</span><span /></div>
                 {shownEvents.length ? shownEvents.map((event) => <div className="eventRow" key={event.id}>
-                  <span><strong>{event.title}</strong><small>{event.source} · {new Date(event.openedAt).toLocaleString("zh-CN")}</small></span>
+                  <span><strong>{event.title}</strong><small>{event.source} · {formatZonedDateTime(event.openedAt, timeZone)}</small></span>
                   <span><b>{Math.round(event.activeSeconds)}s</b><small>滚动 {Math.round(event.scrollDepth * 100)}% · {event.origin}</small></span>
                   <span><b>{event.feedback === "helpful" ? "有帮助" : event.feedback === "not_interested" ? "不感兴趣" : "隐式"}</b><small>{event.terms.slice(0, 4).join(" · ") || "无关键词"}</small></span>
                   <span><button onClick={() => setDraft({ ...event })}>编辑</button><button className="danger" onClick={() => void removeEvent(event)}>删除</button></span>
@@ -1352,14 +1352,14 @@ export default function App() {
         <div className="resizeHandle sidebarHandle" onPointerDown={(event) => startResize("sidebar", event)} onDoubleClick={() => setSidebarWidth(250)} />
 
         <section className="feed">
-          <header className="feedTitle"><button className="mobileBack" onClick={() => setMobileView("sources")}>‹ 订阅源</button><div><h1>{topicTitle || (mode === "today" ? "今天" : mode === "unread" ? "全部未读" : "已收藏")}</h1><small>{visible.length} 篇文章{error && entries.length ? " · 离线缓存" : syncedAt ? ` · ${syncedAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} 已同步` : ""}</small></div></header>
+          <header className="feedTitle"><button className="mobileBack" onClick={() => setMobileView("sources")}>‹ 订阅源</button><div><h1>{topicTitle || (mode === "today" ? "今天" : mode === "unread" ? "全部未读" : "已收藏")}</h1><small>{visible.length} 篇文章{error && entries.length ? " · 离线缓存" : syncedAt ? ` · ${formatZonedTime(syncedAt, activeTimeZone)} 已同步` : ""}</small></div></header>
           <div className="feedTools"><label><input type="checkbox" checked={hideRead} onChange={(event) => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead(event.target.checked); }} /> 隐藏已读</label><button onClick={() => void markVisibleRead()} disabled={!visible.some((story) => story.status === "unread")}>全部标为已读</button></div>
           <div className="storyList">
             {pendingNew > 0 && <button className="newArticlesPill" onClick={refreshList}>{pendingNew} 篇新文章 ↑</button>}
             {loading && !entries.length ? <div className="empty"><b className="loadingMark">↻</b><h2>正在同步文章</h2><p>未读文章会优先显示，随后加载收藏和已读文章。</p></div>
               : error && !entries.length ? <div className="empty errorState"><b>!</b><h2>连接失败</h2><p>{error}</p><button onClick={() => void load()}>重新连接</button></div>
               : visible.length ? visible.map((story) => <article key={story.id} tabIndex={0} className={`story ${selected?.id === story.id ? "selected" : ""} ${story.status === "read" ? "read" : ""}`} onClick={() => { choose(story); setMobileView("reader"); }} onKeyDown={(event) => { if (event.key === "Enter") { choose(story); setMobileView("reader"); } }}>
-                <div className="storySource"><SourceIcon src={feedIcons.get(story.feed_id)}>{story.mark}</SourceIcon><span>{story.source}</span><time>{new Date(story.published_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time>{story.starred && <b>★</b>}</div>
+                <div className="storySource"><SourceIcon src={feedIcons.get(story.feed_id)}>{story.mark}</SourceIcon><span>{story.source}</span><time>{formatZonedTime(story.published_at, activeTimeZone)}</time>{story.starred && <b>★</b>}</div>
                 <h2>{story.title}</h2><p>{story.summary}</p>
                 <footer><i /><span>{story.status === "unread" ? "未读" : "已读"}</span><span>·</span><span>{story.reading_time || 1} 分钟</span></footer>
               </article>) : <div className="empty"><b>✓</b><h2>这里没有文章</h2><p>换一个订阅源，或关闭“隐藏已读”。</p><button onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setQuery(""); setTopic(null); setMode("today"); setHideRead(false); }}>重置</button></div>}
@@ -1377,7 +1377,7 @@ export default function App() {
             }}>
               <div className="readerToolbar"><button className="mobileBack" onClick={() => setMobileView("list")}>‹ 文章</button><div><button onClick={() => toggleRead(selected)} title={selected.status === "read" ? "标为未读" : "标为已读"}>{selected.status === "read" ? "○" : "●"}</button><button className={selected.starred ? "pressed" : ""} title={selected.starred ? "取消收藏" : "收藏"} onClick={() => void updateEntry(selected.id, { starred: !selected.starred }, () => minifluxFetch(config, `/v1/entries/${selected.id}/bookmark`, { method: "PUT" }), selected.starred ? "已取消收藏" : "已收藏")}>{selected.starred ? "★" : "☆"}</button><a href={selected.url} target="_blank" rel="noreferrer" title="打开原文">↗</a><button title="复制链接" onClick={async () => { await navigator.clipboard.writeText(selected.url); notify("原文链接已复制"); }}>⧉</button><button title="不感兴趣" onClick={() => void setFeedback("not_interested")}>−</button></div></div>
               <p className="crumb">{selected.category}　›　{selected.source}</p>
-              <header className="articleHead"><div><h2>{selected.title}</h2><p><SourceIcon src={feedIcons.get(selected.feed_id)}>{selected.mark}</SourceIcon>{selected.author || selected.source}　·　{new Date(selected.published_at).toLocaleString("zh-CN")}　·　{selected.reading_time || 1} 分钟</p></div></header>
+              <header className="articleHead"><div><h2>{selected.title}</h2><p><SourceIcon src={feedIcons.get(selected.feed_id)}>{selected.mark}</SourceIcon>{selected.author || selected.source}　·　{formatZonedDateTime(selected.published_at, activeTimeZone)}　·　{selected.reading_time || 1} 分钟</p></div></header>
               <section className="reason">
                 <button className="reasonHead" onClick={() => setReasonOpen(!reasonOpen)}><span>推荐依据</span><small>{reasonOpen ? "收起 −" : "查看 +"}</small></button>
                 {reasonOpen && <><p>{selected.reason}</p><div className="tags">{[selected.category, selected.source, ...(selected.tags ?? [])].slice(0, 4).map((tag) => <span key={tag}>{tag}</span>)}</div></>}

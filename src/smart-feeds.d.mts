@@ -20,6 +20,14 @@ export type TimeZoneSelection = {
 };
 
 export function selectTimeZone(timeZone?: string): TimeZoneSelection;
+export function formatZonedTime(value: string | number | Date, timeZone: string): string;
+export function formatZonedDateTime(value: string | number | Date, timeZone: string): string;
+export function toZonedDateTimeInput(value: string | number | Date, timeZone: string): string;
+export function zonedDateTimeInputToIso(
+  value: string,
+  timeZone: string,
+  referenceValue?: string | number | Date,
+): string;
 export function localDayKey(value: string | number | Date, timeZone?: string): string;
 export function nextDayBoundary(value: string | number | Date, timeZone?: string): Date;
 export function isEntryInSmartFeed(

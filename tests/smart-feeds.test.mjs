@@ -3,10 +3,14 @@ import test from "node:test";
 import {
   compareSmartFeedEntries,
   countSmartFeedEntries,
+  formatZonedDateTime,
+  formatZonedTime,
   isEntryInSmartFeed,
   localDayKey,
   nextDayBoundary,
   selectTimeZone,
+  toZonedDateTimeInput,
+  zonedDateTimeInputToIso,
 } from "../src/smart-feeds.mjs";
 
 const TODAY = "2026-08-02";
@@ -52,6 +56,45 @@ test("selectTimeZone identifies Miniflux and browser timezone sources", () => {
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     source: "browser",
   });
+});
+
+test("reader timestamps are formatted in the Miniflux account timezone", () => {
+  const value = "2026-08-01T18:00:00.000Z";
+
+  assert.equal(formatZonedTime(value, "Asia/Shanghai"), "02:00");
+  assert.equal(formatZonedDateTime(value, "Asia/Shanghai"), "2026/08/02 02:00:00");
+});
+
+test("datetime-local values round-trip through the Miniflux account timezone", () => {
+  const value = "2026-08-01T18:00:00.000Z";
+
+  assert.equal(toZonedDateTimeInput(value, "Asia/Shanghai"), "2026-08-02T02:00");
+  assert.equal(
+    zonedDateTimeInputToIso("2026-08-02T02:00", "Asia/Shanghai"),
+    value,
+  );
+});
+
+test("nonexistent daylight-saving input times advance to the next valid wall time", () => {
+  assert.equal(
+    zonedDateTimeInputToIso("2026-03-08T02:30", "America/Los_Angeles"),
+    "2026-03-08T10:30:00.000Z",
+  );
+});
+
+test("ambiguous daylight-saving input preserves the existing occurrence", () => {
+  const laterOccurrence = "2026-11-01T09:30:00.000Z";
+  const input = toZonedDateTimeInput(laterOccurrence, "America/Los_Angeles");
+
+  assert.equal(input, "2026-11-01T01:30");
+  assert.equal(
+    zonedDateTimeInputToIso(input, "America/Los_Angeles", laterOccurrence),
+    laterOccurrence,
+  );
+  assert.equal(
+    zonedDateTimeInputToIso(input, "America/Los_Angeles"),
+    "2026-11-01T08:30:00.000Z",
+  );
 });
 
 test("Today includes only unread entries published on the local day", () => {
