@@ -5,6 +5,8 @@ import {
   countSmartFeedEntries,
   isEntryInSmartFeed,
   localDayKey,
+  nextDayBoundary,
+  selectTimeZone,
 } from "../src/smart-feeds.mjs";
 
 const TODAY = "2026-08-02";
@@ -23,11 +25,50 @@ test("localDayKey uses the browser-local calendar date", () => {
   assert.equal(localDayKey(value), TODAY);
 });
 
+test("localDayKey can use the Miniflux account timezone", () => {
+  const value = new Date("2026-08-01T18:00:00.000Z");
+
+  assert.equal(localDayKey(value, "Asia/Shanghai"), "2026-08-02");
+  assert.equal(localDayKey(value, "America/Los_Angeles"), "2026-08-01");
+});
+
+test("nextDayBoundary follows the account timezone across daylight saving time", () => {
+  assert.equal(
+    nextDayBoundary(new Date("2026-08-01T18:00:00.000Z"), "Asia/Shanghai").toISOString(),
+    "2026-08-02T16:00:00.000Z",
+  );
+  assert.equal(
+    nextDayBoundary(new Date("2026-03-08T08:00:00.000Z"), "America/Los_Angeles").toISOString(),
+    "2026-03-09T07:00:00.000Z",
+  );
+});
+
+test("selectTimeZone identifies Miniflux and browser timezone sources", () => {
+  assert.deepEqual(selectTimeZone("Asia/Shanghai"), {
+    timeZone: "Asia/Shanghai",
+    source: "miniflux",
+  });
+  assert.deepEqual(selectTimeZone("Mars/Olympus"), {
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    source: "browser",
+  });
+});
+
 test("Today includes only unread entries published on the local day", () => {
   assert.equal(isEntryInSmartFeed(entry(), "today", TODAY), true);
   assert.equal(isEntryInSmartFeed(entry({ status: "read" }), "today", TODAY), false);
   assert.equal(
     isEntryInSmartFeed(entry({ published_at: localTimestamp(1) }), "today", TODAY),
+    false,
+  );
+});
+
+test("Today uses the Miniflux account timezone for entry membership", () => {
+  const value = entry({ published_at: "2026-08-01T18:00:00.000Z" });
+
+  assert.equal(isEntryInSmartFeed(value, "today", "2026-08-02", "Asia/Shanghai"), true);
+  assert.equal(
+    isEntryInSmartFeed(value, "today", "2026-08-02", "America/Los_Angeles"),
     false,
   );
 });
@@ -70,4 +111,13 @@ test("smart feed counts are calculated together for the current local day", () =
     todayUnreadCount: 1,
     savedCount: 1,
   });
+});
+
+test("smart feed counts use the Miniflux account timezone", () => {
+  const entries = [entry({ published_at: "2026-08-01T18:00:00.000Z" })];
+
+  assert.equal(
+    countSmartFeedEntries(entries, "2026-08-02", "America/Los_Angeles").todayUnreadCount,
+    0,
+  );
 });

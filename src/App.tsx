@@ -1,7 +1,8 @@
 import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { imageReferrerPolicy, minifluxReferrerScope, updateOriginReferrerFeeds } from "./article-images";
 import { runExclusive } from "./async-lock";
-import { compareSmartFeedEntries, countSmartFeedEntries, isEntryInSmartFeed, localDayKey } from "./smart-feeds.mjs";
+import { loadOptionalMinifluxTimeZone } from "./miniflux-timezone.mjs";
+import { compareSmartFeedEntries, countSmartFeedEntries, isEntryInSmartFeed, localDayKey, nextDayBoundary, selectTimeZone } from "./smart-feeds.mjs";
 import {
   clearConnection,
   ConnectionConfig,
@@ -33,6 +34,7 @@ type Feed = {
 };
 type Category = { id: number; title: string };
 type FeedIcon = { id: number; data: string; mime_type: string };
+type MinifluxUser = { timezone?: string };
 type Entry = {
   id: number;
   feed_id: number;
@@ -187,6 +189,8 @@ function SettingsDialog({
   referrerScope,
   events,
   settings,
+  timeZone,
+  timeZoneSource,
   sourceWeights,
   wordWeights,
   negativeWeights,
@@ -204,6 +208,8 @@ function SettingsDialog({
   referrerScope: string;
   events: ReadingEvent[];
   settings: ProfileSettings;
+  timeZone: string;
+  timeZoneSource: "miniflux" | "browser";
   sourceWeights: Map<number, number>;
   wordWeights: Map<string, number>;
   negativeWeights: Map<string, number>;
@@ -406,6 +412,7 @@ function SettingsDialog({
               </div>
               <div className="settingsForm minifluxSettings">
                 <label><span>服务器</span><input value={config.url} readOnly /></label>
+                <label className="timeZoneSetting"><span>“今天”时区</span><input value={timeZone} readOnly /><small>{timeZoneSource === "miniflux" ? "来自 Miniflux 账户设置。" : "Miniflux 时区不可用，当前使用浏览器时区。"}</small></label>
                 <label className="lookbackSetting">
                   <span>文章加载范围</span>
                   <select disabled={profileSaving} value={settings.entryLookbackDays ?? "all"} onChange={(event) => void setEntryLookback(event.target.value)}>
@@ -553,7 +560,17 @@ export default function App() {
   const [settings, setSettings] = useState<ProfileSettings>({ theme: "day", entryLookbackDays: DEFAULT_LOOKBACK_DAYS, updatedAt: new Date(0).toISOString() });
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [mode, setMode] = useState<ListMode>("today");
-  const [todayKey, setTodayKey] = useState(() => localDayKey(new Date()));
+  const [minifluxTimeZone, setMinifluxTimeZone] = useState<string>();
+  const [todayClock, setTodayClock] = useState(() => Date.now());
+  const timeZoneSelection = useMemo(
+    () => selectTimeZone(minifluxTimeZone),
+    [minifluxTimeZone],
+  );
+  const activeTimeZone = timeZoneSelection.timeZone;
+  const todayKey = useMemo(
+    () => localDayKey(todayClock, activeTimeZone),
+    [todayClock, activeTimeZone],
+  );
   const [topic, setTopic] = useState<Topic>(null);
   const [query, setQuery] = useState("");
   const [hideRead, setHideRead] = useState(false);
@@ -603,6 +620,7 @@ export default function App() {
   const visibleEmptyRef = useRef(true);
   const modeRef = useRef(mode);
   const todayKeyRef = useRef(todayKey);
+  const timeZoneRef = useRef(activeTimeZone);
   const topicRef = useRef(topic);
   const feedsRef = useRef(feeds);
   const hideReadRef = useRef(hideRead);
@@ -617,6 +635,7 @@ export default function App() {
   useEffect(() => { listSnapshotIds.current = new Set(listReadSnapshot.keys()); }, [listReadSnapshot]);
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { todayKeyRef.current = todayKey; }, [todayKey]);
+  useEffect(() => { timeZoneRef.current = activeTimeZone; }, [activeTimeZone]);
   useEffect(() => { topicRef.current = topic; }, [topic]);
   useEffect(() => { feedsRef.current = feeds; }, [feeds]);
   useEffect(() => { hideReadRef.current = hideRead; }, [hideRead]);
@@ -624,9 +643,9 @@ export default function App() {
 
   useEffect(() => {
     const now = new Date();
-    const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    const nextMidnight = nextDayBoundary(now, activeTimeZone);
     const timer = window.setTimeout(() => {
-      setTodayKey(localDayKey(new Date()));
+      setTodayClock(Date.now());
       if (modeRef.current === "today" && !topicRef.current) {
         setVisibleIds([]);
         setEntries((current) => {
@@ -636,7 +655,7 @@ export default function App() {
       }
     }, Math.max(1_000, nextMidnight.getTime() - now.getTime() + 100));
     return () => window.clearTimeout(timer);
-  }, [todayKey]);
+  }, [todayKey, activeTimeZone]);
 
   useEffect(() => {
     let cancelled = false;
@@ -712,7 +731,12 @@ export default function App() {
       const currentHideRead = hideReadRef.current;
       const relevant = batch.filter((entry) => {
         if (listSnapshotIds.current.has(entry.id)) return false;
-        if (!currentTopic && !isEntryInSmartFeed(entry, currentMode, todayKeyRef.current)) return false;
+        if (!currentTopic && !isEntryInSmartFeed(
+          entry,
+          currentMode,
+          todayKeyRef.current,
+          timeZoneRef.current,
+        )) return false;
         if (currentHideRead && entry.status === "read") return false;
         if (currentTopic?.kind === "category") {
           const feed = feedsRef.current.find((f) => f.id === entry.feed_id);
@@ -752,10 +776,14 @@ export default function App() {
     setError("");
     const syncStartedAt = new Date().toISOString();
     try {
-      const [cached, storedState] = await Promise.all([
+      const [cached, storedState, timeZone] = await Promise.all([
         getCachedEntries<Entry>(config),
         getEntrySyncState(config),
+        loadOptionalMinifluxTimeZone(
+          () => minifluxFetch<MinifluxUser>(config, "/v1/me"),
+        ),
       ]);
+      setMinifluxTimeZone(timeZone);
       const cutoff = lookbackDays === null
         ? null
         : Date.now() - lookbackDays * 86_400_000;
@@ -1007,7 +1035,12 @@ export default function App() {
     const filtered = stories.filter((story) => {
       if (!hasQuery && !listReadSnapshot.has(story.id)) return false;
       const statusWhenListed = listReadSnapshot.get(story.id) ?? story.status;
-      if (!topic && !isEntryInSmartFeed({ ...story, status: statusWhenListed }, mode, todayKey)) return false;
+      if (!topic && !isEntryInSmartFeed(
+        { ...story, status: statusWhenListed },
+        mode,
+        todayKey,
+        activeTimeZone,
+      )) return false;
       if (hideRead && statusWhenListed === "read") return false;
       if (topic?.kind === "category" && story.categoryId !== topic.id) return false;
       if (topic?.kind === "feed" && story.feed_id !== topic.id) return false;
@@ -1028,7 +1061,7 @@ export default function App() {
       filtered.sort((a, b) => compareSmartFeedEntries(a, b, topic ? "unread" : mode));
     }
     return filtered;
-  }, [stories, mode, topic, query, hideRead, listReadSnapshot, visibleIds, todayKey]);
+  }, [stories, mode, topic, query, hideRead, listReadSnapshot, visibleIds, todayKey, activeTimeZone]);
 
   useEffect(() => {
     if (visible.length && !visibleIds.length) {
@@ -1251,8 +1284,8 @@ export default function App() {
     }
   };
   const { unreadCount, todayUnreadCount, savedCount } = useMemo(
-    () => countSmartFeedEntries(entries, todayKey),
-    [entries, todayKey],
+    () => countSmartFeedEntries(entries, todayKey, activeTimeZone),
+    [entries, todayKey, activeTimeZone],
   );
   const syncProgressLabel = syncProgress
     ? `${syncProgress.kind === "initial"
@@ -1370,6 +1403,8 @@ export default function App() {
         referrerScope={referrerScope}
         events={events}
         settings={settings}
+        timeZone={activeTimeZone}
+        timeZoneSource={timeZoneSelection.source}
         sourceWeights={interest.sources}
         wordWeights={interest.words}
         negativeWeights={interest.negatives}

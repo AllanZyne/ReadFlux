@@ -14,11 +14,19 @@ export type SmartFeedCounts = {
   savedCount: number;
 };
 
-export function localDayKey(value: string | number | Date): string;
+export type TimeZoneSelection = {
+  timeZone: string;
+  source: "miniflux" | "browser";
+};
+
+export function selectTimeZone(timeZone?: string): TimeZoneSelection;
+export function localDayKey(value: string | number | Date, timeZone?: string): string;
+export function nextDayBoundary(value: string | number | Date, timeZone?: string): Date;
 export function isEntryInSmartFeed(
   entry: SmartFeedEntry,
   mode: SmartFeedMode,
   todayKey: string,
+  timeZone?: string,
 ): boolean;
 export function compareSmartFeedEntries(
   a: SortableSmartFeedEntry,
@@ -28,4 +36,5 @@ export function compareSmartFeedEntries(
 export function countSmartFeedEntries(
   entries: SmartFeedEntry[],
   todayKey: string,
+  timeZone?: string,
 ): SmartFeedCounts;
