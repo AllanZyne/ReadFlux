@@ -15,9 +15,9 @@ backend. The browser talks directly to Miniflux.
 
 The primary product contract is:
 
-- `Today` contains unread Miniflux entries published on the browser's current
-  local calendar day and sorts them by the locally derived recommendation
-  score.
+- `Today` contains unread Miniflux entries published on the current calendar
+  day in the reader timezone and sorts them by the locally derived
+  recommendation score.
 - `All unread` contains every unread Miniflux entry and sorts them newest first.
 - Recommendation scores affect ordering only and are not shown in the list.
 - Reading an entry updates its live state without removing it from the current
@@ -50,8 +50,17 @@ build variable unless the user explicitly changes the architecture.
 - Miniflux connection: localStorage or sessionStorage.
 - Reading events, settings, cached entries, and sync progress: IndexedDB.
 - Category and subscriptions-section collapse state: localStorage.
+
 Never log, commit, upload, or add analytics around API keys, article contents,
 or reading events.
+
+## Timezone
+
+Use one timezone throughout the reader: the Miniflux account timezone, falling
+back to the browser timezone when unavailable. Use shared helpers for all date
+display and calendar logic; never mix in the device timezone. Store timestamps
+in UTC, keep absolute-time calculations unchanged, and show the active timezone
+in Sync settings.
 
 ## Recommendation behavior
 
