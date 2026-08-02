@@ -77,7 +77,7 @@ kbd{padding:2px 6px;border:1px solid #33423e;border-radius:4px;background:#1a252
 
 /* NetNewsWire-inspired reading layout */
 .topbar{height:52px;grid-template-columns:var(--sidebar-width,250px) minmax(260px,420px) 1fr;padding:0 12px;background:var(--panel)}
-.brand{gap:8px}.brand strong{font-size:18px;text-transform:none;letter-spacing:-.01em}
+.brand{gap:8px;padding-left:8px}.brand strong{font-size:18px;text-transform:none;letter-spacing:-.01em}
 .search{height:34px;border-radius:8px}.topActions{gap:7px}.toolbarButton,.settingsButton{width:34px;height:34px;display:grid;place-items:center;padding:0;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:18px;line-height:1;cursor:pointer}.toolbarButton>i,.settingsButton>i{display:block;line-height:1}.toolbarButton:hover,.settingsButton:hover{background:color-mix(in srgb,var(--text) 7%,transparent);color:var(--text)}.syncError{color:#c94848;font-size:11px}
 .workspace{height:calc(100vh - 52px);grid-template-columns:var(--sidebar-width,250px) 5px var(--list-width,430px) 5px minmax(420px,1fr)}
 .resizeHandle{position:relative;z-index:4;cursor:col-resize;background:transparent}.resizeHandle:after{content:"";position:absolute;inset:0 2px;background:var(--line)}.resizeHandle:hover:after{background:var(--mint)}
