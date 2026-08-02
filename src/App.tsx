@@ -412,7 +412,7 @@ function SettingsDialog({
               </div>
               <div className="settingsForm minifluxSettings">
                 <label><span>服务器</span><input value={config.url} readOnly /></label>
-                <label className="timeZoneSetting"><span>阅读器时区</span><input value={timeZone} readOnly /><small>{timeZoneSource === "miniflux" ? "来自 Miniflux 账户设置，应用于所有日期与时间。" : "Miniflux 时区不可用，所有日期与时间使用浏览器时区。"}</small></label>
+                <label className="timeZoneSetting"><span>时区</span><input value={timeZone} readOnly /><small>{timeZoneSource === "miniflux" ? "来自 Miniflux 账户设置，应用于所有日期与时间。" : "Miniflux 时区不可用，所有日期与时间使用浏览器时区。"}</small></label>
                 <label className="lookbackSetting">
                   <span>文章加载范围</span>
                   <select disabled={profileSaving} value={settings.entryLookbackDays ?? "all"} onChange={(event) => void setEntryLookback(event.target.value)}>
@@ -1312,8 +1312,8 @@ export default function App() {
         <div className="topActions">
           {error && <span className="syncError">同步失败</span>}
           {syncProgress && <span className="syncLabel" role="status">{syncProgressLabel}</span>}
-          <button className={`toolbarButton ${loading ? "spinning" : ""}`} disabled={loading} onClick={async () => { try { await minifluxFetch(config, "/v1/feeds/refresh", { method: "PUT" }); await load(); refreshList(); notify("Miniflux 已刷新"); } catch (cause) { notify(cause instanceof Error ? cause.message : "刷新失败"); } }} aria-label="刷新订阅" title="刷新订阅">↻</button>
-          <button className="settingsButton" onClick={() => setSettingsOpen(true)} aria-label="打开设置对话框" title="设置">⚙</button>
+          <button className={`toolbarButton ${loading ? "spinning" : ""}`} disabled={loading} onClick={async () => { try { await minifluxFetch(config, "/v1/feeds/refresh", { method: "PUT" }); await load(); refreshList(); notify("Miniflux 已刷新"); } catch (cause) { notify(cause instanceof Error ? cause.message : "刷新失败"); } }} aria-label="刷新订阅" title="刷新订阅"><i className="bi bi-arrow-clockwise" aria-hidden="true" /></button>
+          <button className="settingsButton" onClick={() => setSettingsOpen(true)} aria-label="打开设置对话框" title="设置"><i className="bi bi-gear" aria-hidden="true" /></button>
         </div>
         {syncProgress && <div className="topbarProgress" aria-hidden="true"><i style={{ width: `${syncProgress.total ? Math.min(100, syncProgress.loaded / syncProgress.total * 100) : 8}%` }} /></div>}
       </header>
