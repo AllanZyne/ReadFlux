@@ -6,3 +6,7 @@ export async function loadOptionalMinifluxTimeZone(loadUser) {
     return undefined;
   }
 }
+
+export function startOptionalMinifluxTimeZoneLoad(loadUser, onLoaded) {
+  void loadOptionalMinifluxTimeZone(loadUser).then(onLoaded);
+}

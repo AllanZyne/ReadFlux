@@ -1,7 +1,7 @@
 import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { imageReferrerPolicy, minifluxReferrerScope, updateOriginReferrerFeeds } from "./article-images";
 import { runExclusive } from "./async-lock";
-import { loadOptionalMinifluxTimeZone } from "./miniflux-timezone.mjs";
+import { startOptionalMinifluxTimeZoneLoad } from "./miniflux-timezone.mjs";
 import { compareSmartFeedEntries, countSmartFeedEntries, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, localDayKey, nextDayBoundary, selectTimeZone, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
 import {
   clearConnection,
@@ -781,14 +781,14 @@ export default function App() {
     setError("");
     const syncStartedAt = new Date().toISOString();
     try {
-      const [cached, storedState, timeZone] = await Promise.all([
+      startOptionalMinifluxTimeZoneLoad(
+        () => minifluxFetch<MinifluxUser>(config, "/v1/me"),
+        setMinifluxTimeZone,
+      );
+      const [cached, storedState] = await Promise.all([
         getCachedEntries<Entry>(config),
         getEntrySyncState(config),
-        loadOptionalMinifluxTimeZone(
-          () => minifluxFetch<MinifluxUser>(config, "/v1/me"),
-        ),
       ]);
-      setMinifluxTimeZone(timeZone);
       const cutoff = lookbackDays === null
         ? null
         : Date.now() - lookbackDays * 86_400_000;

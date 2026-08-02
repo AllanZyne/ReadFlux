@@ -36,9 +36,11 @@ function dateTimeFormatter(timeZone) {
 }
 
 function zonedDateTimeParts(value, timeZone) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
   return Object.fromEntries(
     dateTimeFormatter(timeZone)
-      .formatToParts(new Date(value))
+      .formatToParts(date)
       .map(({ type, value: partValue }) => [type, partValue]),
   );
 }
@@ -56,16 +58,19 @@ export function selectTimeZone(timeZone) {
 
 export function formatZonedTime(value, timeZone) {
   const parts = zonedDateTimeParts(value, timeZone);
+  if (!parts) return "--:--";
   return `${parts.hour}:${parts.minute}`;
 }
 
 export function formatZonedDateTime(value, timeZone) {
   const parts = zonedDateTimeParts(value, timeZone);
+  if (!parts) return "—";
   return `${parts.year}/${parts.month}/${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
 }
 
 export function toZonedDateTimeInput(value, timeZone) {
   const parts = zonedDateTimeParts(value, timeZone);
+  if (!parts) return "";
   return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
 }
 
@@ -86,6 +91,7 @@ export function zonedDateTimeInputToIso(value, timeZone, referenceValue) {
 
   for (let index = 0; index < 8; index += 1) {
     const parts = zonedDateTimeParts(guess, timeZone);
+    if (!parts) throw new RangeError("Invalid datetime-local value");
     const observed = Date.UTC(
       Number(parts.year),
       Number(parts.month) - 1,
@@ -123,6 +129,7 @@ export function zonedDateTimeInputToIso(value, timeZone, referenceValue) {
 
 export function localDayKey(value, timeZone) {
   const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
   const formatter = dayFormatter(timeZone);
   if (formatter) {
     const parts = Object.fromEntries(

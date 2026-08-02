@@ -65,6 +65,17 @@ test("reader timestamps are formatted in the Miniflux account timezone", () => {
   assert.equal(formatZonedDateTime(value, "Asia/Shanghai"), "2026/08/02 02:00:00");
 });
 
+test("invalid timestamps use stable display fallbacks and stay out of Today", () => {
+  assert.equal(formatZonedTime("not-a-date", "Asia/Shanghai"), "--:--");
+  assert.equal(formatZonedDateTime("", "Asia/Shanghai"), "—");
+  assert.equal(toZonedDateTimeInput("not-a-date", "Asia/Shanghai"), "");
+  assert.equal(localDayKey("not-a-date", "Asia/Shanghai"), "");
+  assert.equal(
+    isEntryInSmartFeed(entry({ published_at: "not-a-date" }), "today", TODAY, "Asia/Shanghai"),
+    false,
+  );
+});
+
 test("datetime-local values round-trip through the Miniflux account timezone", () => {
   const value = "2026-08-01T18:00:00.000Z";
 
