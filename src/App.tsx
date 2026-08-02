@@ -1357,8 +1357,14 @@ export default function App() {
         <div className="resizeHandle sidebarHandle" onPointerDown={(event) => startResize("sidebar", event)} onDoubleClick={() => setSidebarWidth(250)} />
 
         <section className="feed">
-          <header className="feedTitle"><button className="mobileBack" onClick={() => setMobileView("sources")}>‹ 订阅源</button><div><h1>{topicTitle || (mode === "today" ? "今天" : mode === "unread" ? "全部未读" : "已收藏")}</h1><small>{visible.length} 篇文章{error && entries.length ? " · 离线缓存" : syncedAt ? ` · ${formatZonedTime(syncedAt, activeTimeZone)} 已同步` : ""}</small></div></header>
-          <div className="feedTools"><label><input type="checkbox" checked={hideRead} onChange={(event) => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead(event.target.checked); }} /> 隐藏已读</label><button onClick={() => void markVisibleRead()} disabled={!visible.some((story) => story.status === "unread")}>全部标为已读</button></div>
+          <header className="feedTitle">
+            <button className="mobileBack" onClick={() => setMobileView("sources")}>‹ 订阅源</button>
+            <div className="feedTitleText"><h1>{topicTitle || (mode === "today" ? "今天" : mode === "unread" ? "全部未读" : "已收藏")}</h1><small>{visible.length} 篇文章{error && entries.length ? " · 离线缓存" : syncedAt ? ` · ${formatZonedTime(syncedAt, activeTimeZone)} 已同步` : ""}</small></div>
+            <div className="feedTitleActions" role="group" aria-label="文章列表操作">
+              <button type="button" onClick={() => void markVisibleRead()} disabled={!visible.some((story) => story.status === "unread")} aria-label="全部标记为已读" title="全部标记为已读"><i className="bi bi-check2-all" aria-hidden="true" /></button>
+              <button type="button" className={hideRead ? "active" : ""} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead((current) => !current); }} aria-label="隐藏已读" title={hideRead ? "显示已读" : "隐藏已读"} aria-pressed={hideRead}><i className="bi bi-filter-circle" aria-hidden="true" /></button>
+            </div>
+          </header>
           <div className="storyList">
             {pendingNew > 0 && <button className="newArticlesPill" onClick={refreshList}>{pendingNew} 篇新文章 ↑</button>}
             {loading && !entries.length ? <div className="empty"><b className="loadingMark">↻</b><h2>正在同步文章</h2><p>未读文章会优先显示，随后加载收藏和已读文章。</p></div>

@@ -32,6 +32,16 @@ test("smart feed heading distinguishes Today, All unread, and Saved", () => {
   );
 });
 
+test("article list actions live in the title bar as NetNewsWire-style icons", () => {
+  const titleBar = app.match(/<header className="feedTitle">([\s\S]*?)<\/header>/)?.[1] ?? "";
+
+  assert.match(titleBar, /aria-label="全部标记为已读"[\s\S]*?bi-check2-all/);
+  assert.match(titleBar, /aria-label="隐藏已读"[\s\S]*?aria-pressed=\{hideRead\}[\s\S]*?bi-filter-circle/);
+  assert.match(titleBar, /setHideRead\(\(current\)\s*=>\s*!current\)/);
+  assert.doesNotMatch(app, /className="feedTools"/);
+  assert.match(styles, /\.feedTitleActions\s*\{/);
+});
+
 test("the subscriptions heading toggles the whole persisted section", () => {
   assert.match(app, /readflux\.sidebar\.subscriptions-collapsed/);
   assert.match(app, /subscriptionsCollapsed\s*\?\s*"bi-chevron-right"\s*:\s*"bi-chevron-down"/);
@@ -72,9 +82,17 @@ test("a selected category highlights its folder and title as one row", () => {
   assert.match(styles, /\.groupRow\.selected \.groupHead,[^{]*\.groupRow\.selected \.disclosure\s*\{[^}]*background:transparent;[^}]*color:inherit/);
 });
 
-test("hovering either category control highlights the whole row", () => {
-  assert.match(styles, /\.groupRow:hover\s*\{[^}]*background:[^}]*color:/);
-  assert.match(styles, /\.groupRow:hover \.groupHead,[^{]*\.groupRow:hover \.disclosure\s*\{[^}]*background:transparent;[^}]*color:inherit/);
+test("category hover highlights the row without recoloring its contents", () => {
+  assert.match(styles, /\.groupRow:hover\s*\{[^}]*background:/);
+  const categoryHover = styles.match(/\.groupRow:hover\s*\{([^}]*)\}/)?.[1] ?? "";
+  const categoryContentsHover = styles.match(/\.groupRow:hover \.groupHead,[^{]*\.groupRow:hover \.disclosure\s*\{([^}]*)\}/)?.[1] ?? "";
+  const feedHover = styles.match(/\.sourceRow:hover\s*\{([^}]*)\}/)?.[1] ?? "";
+
+  assert.doesNotMatch(categoryHover, /color:/);
+  assert.match(categoryContentsHover, /background:transparent/);
+  assert.doesNotMatch(categoryContentsHover, /color:/);
+  assert.match(feedHover, /background:/);
+  assert.doesNotMatch(feedHover, /color:/);
 });
 
 test("category rows share the smart-feed row grid and horizontal padding", () => {
