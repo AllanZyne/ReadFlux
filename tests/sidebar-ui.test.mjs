@@ -15,11 +15,21 @@ test("sidebar icons are provided by the local Bootstrap Icons package", () => {
 });
 
 test("primary sidebar navigation uses Bootstrap Icons", () => {
-  assert.match(app, /\["today",\s*"bi-clock",\s*"今天",\s*unreadCount\]/);
+  assert.match(app, /\["today",\s*"bi-brightness-high-fill",\s*"今天",\s*todayUnreadCount\]/);
+  assert.match(app, /\["unread",\s*"bi-[^"]+",\s*"全部未读",\s*unreadCount\]/);
   assert.match(app, /\["saved",\s*"bi-star-fill",\s*"已收藏",\s*savedCount\]/);
+  assert.ok(app.indexOf('["today"') < app.indexOf('["unread"'));
+  assert.ok(app.indexOf('["unread"') < app.indexOf('["saved"'));
   assert.match(app, /<i className=\{`bi \$\{icon\}`\} aria-hidden="true" \/>/);
   assert.doesNotMatch(app, /<b>\{icon\}<\/b>/);
   assert.match(styles, /\.sidebar nav button>i\s*\{/);
+});
+
+test("smart feed heading distinguishes Today, All unread, and Saved", () => {
+  assert.match(
+    app,
+    /mode === "today"\s*\?\s*"今天"\s*:\s*mode === "unread"\s*\?\s*"全部未读"\s*:\s*"已收藏"/,
+  );
 });
 
 test("the subscriptions heading toggles the whole persisted section", () => {
@@ -74,6 +84,13 @@ test("category rows share the smart-feed row grid and horizontal padding", () =>
   );
   assert.match(styles, /\.disclosure\s*\{[^}]*width:24px;/);
   assert.match(styles, /\.groupHead\s*\{[^}]*padding:0;/);
+});
+
+test("sidebar icons use optical sizing for Today and All unread", () => {
+  assert.match(styles, /\.sidebar nav button>i\s*\{[^}]*font:500 15px\/1/);
+  assert.match(styles, /\.disclosure\s*\{[^}]*font-size:15px;/);
+  assert.match(styles, /\.sidebar nav button>i\.bi-brightness-high-fill\s*\{[^}]*font-size:17px;/);
+  assert.match(styles, /\.sidebar nav button>i\.bi-circle-fill\s*\{[^}]*font-size:12px;/);
 });
 
 test("the empty-state reset button uses a light surface in the day theme", () => {

@@ -15,8 +15,10 @@ backend. The browser talks directly to Miniflux.
 
 The primary product contract is:
 
-- `Today` contains every unread Miniflux entry and sorts them by the locally
-  derived recommendation score.
+- `Today` contains unread Miniflux entries published on the browser's current
+  local calendar day and sorts them by the locally derived recommendation
+  score.
+- `All unread` contains every unread Miniflux entry and sorts them newest first.
 - Recommendation scores affect ordering only and are not shown in the list.
 - Reading an entry updates its live state without removing it from the current
   list snapshot.
@@ -26,9 +28,9 @@ The primary product contract is:
 - Day and night are the only themes.
 - Settings are an in-app dialog. Recommendation data is inspectable and raw
   events can be added, edited, or deleted.
-- Category names, feed names, `Today`, and `Saved` use the same type size,
-  weight, and row height. Hierarchy comes from disclosure controls, icons, and
-  indentation.
+- Category names, feed names, `Today`, `All unread`, and `Saved` use the same
+  type size, weight, and row height. Hierarchy comes from disclosure controls,
+  icons, and indentation.
 
 ## Architecture
 

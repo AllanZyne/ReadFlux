@@ -1,6 +1,7 @@
 import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { imageReferrerPolicy, minifluxReferrerScope, updateOriginReferrerFeeds } from "./article-images";
 import { runExclusive } from "./async-lock";
+import { compareSmartFeedEntries, isEntryInSmartFeed, localDayKey } from "./smart-feeds.mjs";
 import {
   clearConnection,
   ConnectionConfig,
@@ -56,7 +57,7 @@ type Story = Entry & {
   reason: string;
 };
 type EntryPage = { total: number; entries: Entry[] };
-type ListMode = "today" | "saved";
+type ListMode = "today" | "unread" | "saved";
 type Topic = { kind: "category" | "feed"; id: number } | null;
 type SyncProgress = {
   kind: "initial" | "incremental" | "search";
@@ -552,6 +553,7 @@ export default function App() {
   const [settings, setSettings] = useState<ProfileSettings>({ theme: "day", entryLookbackDays: DEFAULT_LOOKBACK_DAYS, updatedAt: new Date(0).toISOString() });
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [mode, setMode] = useState<ListMode>("today");
+  const [todayKey, setTodayKey] = useState(() => localDayKey(new Date()));
   const [topic, setTopic] = useState<Topic>(null);
   const [query, setQuery] = useState("");
   const [hideRead, setHideRead] = useState(false);
@@ -600,6 +602,7 @@ export default function App() {
   const listSnapshotIds = useRef<Set<number>>(new Set());
   const visibleEmptyRef = useRef(true);
   const modeRef = useRef(mode);
+  const todayKeyRef = useRef(todayKey);
   const topicRef = useRef(topic);
   const feedsRef = useRef(feeds);
   const hideReadRef = useRef(hideRead);
@@ -613,10 +616,27 @@ export default function App() {
 
   useEffect(() => { listSnapshotIds.current = new Set(listReadSnapshot.keys()); }, [listReadSnapshot]);
   useEffect(() => { modeRef.current = mode; }, [mode]);
+  useEffect(() => { todayKeyRef.current = todayKey; }, [todayKey]);
   useEffect(() => { topicRef.current = topic; }, [topic]);
   useEffect(() => { feedsRef.current = feeds; }, [feeds]);
   useEffect(() => { hideReadRef.current = hideRead; }, [hideRead]);
   useEffect(() => { queryRef.current = query; }, [query]);
+
+  useEffect(() => {
+    const now = new Date();
+    const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    const timer = window.setTimeout(() => {
+      setTodayKey(localDayKey(new Date()));
+      if (modeRef.current === "today" && !topicRef.current) {
+        setVisibleIds([]);
+        setEntries((current) => {
+          setListReadSnapshot(new Map(current.map((entry) => [entry.id, entry.status])));
+          return current;
+        });
+      }
+    }, Math.max(1_000, nextMidnight.getTime() - now.getTime() + 100));
+    return () => window.clearTimeout(timer);
+  }, [todayKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -692,8 +712,7 @@ export default function App() {
       const currentHideRead = hideReadRef.current;
       const relevant = batch.filter((entry) => {
         if (listSnapshotIds.current.has(entry.id)) return false;
-        if (currentMode === "today" && !currentTopic && entry.status !== "unread") return false;
-        if (currentMode === "saved" && !entry.starred) return false;
+        if (!currentTopic && !isEntryInSmartFeed(entry, currentMode, todayKeyRef.current)) return false;
         if (currentHideRead && entry.status === "read") return false;
         if (currentTopic?.kind === "category") {
           const feed = feedsRef.current.find((f) => f.id === entry.feed_id);
@@ -988,8 +1007,7 @@ export default function App() {
     const filtered = stories.filter((story) => {
       if (!hasQuery && !listReadSnapshot.has(story.id)) return false;
       const statusWhenListed = listReadSnapshot.get(story.id) ?? story.status;
-      if (mode === "today" && !topic && statusWhenListed !== "unread") return false;
-      if (mode === "saved" && !story.starred) return false;
+      if (!topic && !isEntryInSmartFeed({ ...story, status: statusWhenListed }, mode, todayKey)) return false;
       if (hideRead && statusWhenListed === "read") return false;
       if (topic?.kind === "category" && story.categoryId !== topic.id) return false;
       if (topic?.kind === "feed" && story.feed_id !== topic.id) return false;
@@ -1004,17 +1022,13 @@ export default function App() {
         if (ai !== undefined && bi !== undefined) return ai - bi;
         if (ai !== undefined) return -1;
         if (bi !== undefined) return 1;
-        return mode === "today" && !topic
-          ? b.score - a.score
-          : new Date(b.published_at).getTime() - new Date(a.published_at).getTime();
+        return compareSmartFeedEntries(a, b, topic ? "unread" : mode);
       });
     } else {
-      filtered.sort((a, b) => mode === "today" && !topic
-        ? b.score - a.score
-        : new Date(b.published_at).getTime() - new Date(a.published_at).getTime());
+      filtered.sort((a, b) => compareSmartFeedEntries(a, b, topic ? "unread" : mode));
     }
     return filtered;
-  }, [stories, mode, topic, query, hideRead, listReadSnapshot, visibleIds]);
+  }, [stories, mode, topic, query, hideRead, listReadSnapshot, visibleIds, todayKey]);
 
   useEffect(() => {
     if (visible.length && !visibleIds.length) {
@@ -1237,6 +1251,7 @@ export default function App() {
     }
   };
   const unreadCount = entries.filter((entry) => entry.status === "unread").length;
+  const todayUnreadCount = entries.filter((entry) => isEntryInSmartFeed(entry, "today", todayKey)).length;
   const savedCount = entries.filter((entry) => entry.starred).length;
   const syncProgressLabel = syncProgress
     ? `${syncProgress.kind === "initial"
@@ -1250,7 +1265,8 @@ export default function App() {
   }} />;
 
   const nav = [
-    ["today", "bi-clock", "今天", unreadCount],
+    ["today", "bi-brightness-high-fill", "今天", todayUnreadCount],
+    ["unread", "bi-circle-fill", "全部未读", unreadCount],
     ["saved", "bi-star-fill", "已收藏", savedCount],
   ] as const;
 
@@ -1302,7 +1318,7 @@ export default function App() {
         <div className="resizeHandle sidebarHandle" onPointerDown={(event) => startResize("sidebar", event)} onDoubleClick={() => setSidebarWidth(250)} />
 
         <section className="feed">
-          <header className="feedTitle"><button className="mobileBack" onClick={() => setMobileView("sources")}>‹ 订阅源</button><div><h1>{topicTitle || (mode === "today" ? "今天" : "已收藏")}</h1><small>{visible.length} 篇文章{error && entries.length ? " · 离线缓存" : syncedAt ? ` · ${syncedAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} 已同步` : ""}</small></div></header>
+          <header className="feedTitle"><button className="mobileBack" onClick={() => setMobileView("sources")}>‹ 订阅源</button><div><h1>{topicTitle || (mode === "today" ? "今天" : mode === "unread" ? "全部未读" : "已收藏")}</h1><small>{visible.length} 篇文章{error && entries.length ? " · 离线缓存" : syncedAt ? ` · ${syncedAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} 已同步` : ""}</small></div></header>
           <div className="feedTools"><label><input type="checkbox" checked={hideRead} onChange={(event) => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead(event.target.checked); }} /> 隐藏已读</label><button onClick={() => void markVisibleRead()} disabled={!visible.some((story) => story.status === "unread")}>全部标为已读</button></div>
           <div className="storyList">
             {pendingNew > 0 && <button className="newArticlesPill" onClick={refreshList}>{pendingNew} 篇新文章 ↑</button>}
