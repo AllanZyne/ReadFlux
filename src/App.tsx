@@ -1362,7 +1362,7 @@ export default function App() {
             <div className="feedTitleText"><h1>{topicTitle || (mode === "today" ? "今天" : mode === "unread" ? "全部未读" : "已收藏")}</h1><small>{visible.length} 篇文章{error && entries.length ? " · 离线缓存" : syncedAt ? ` · ${formatZonedTime(syncedAt, activeTimeZone)} 已同步` : ""}</small></div>
             <div className="feedTitleActions" role="group" aria-label="文章列表操作">
               <button type="button" onClick={() => void markVisibleRead()} disabled={!visible.some((story) => story.status === "unread")} aria-label="全部标记为已读" title="全部标记为已读"><i className="bi bi-check2-all" aria-hidden="true" /></button>
-              <button type="button" className={hideRead ? "active" : ""} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead(!hideRead); }} aria-label="隐藏已读" title={hideRead ? "显示已读" : "隐藏已读"} aria-pressed={hideRead}><i className="bi bi-filter-circle" aria-hidden="true" /></button>
+              <button type="button" className={hideRead ? "active" : ""} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead((current) => !current); }} aria-label="隐藏已读" title={hideRead ? "显示已读" : "隐藏已读"} aria-pressed={hideRead}><i className="bi bi-filter-circle" aria-hidden="true" /></button>
             </div>
           </header>
           <div className="storyList">

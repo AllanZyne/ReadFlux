@@ -37,6 +37,7 @@ test("article list actions live in the title bar as NetNewsWire-style icons", ()
 
   assert.match(titleBar, /aria-label="全部标记为已读"[\s\S]*?bi-check2-all/);
   assert.match(titleBar, /aria-label="隐藏已读"[\s\S]*?aria-pressed=\{hideRead\}[\s\S]*?bi-filter-circle/);
+  assert.match(titleBar, /setHideRead\(\(current\)\s*=>\s*!current\)/);
   assert.doesNotMatch(app, /className="feedTools"/);
   assert.match(styles, /\.feedTitleActions\s*\{/);
 });
