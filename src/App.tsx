@@ -1160,7 +1160,7 @@ export default function App() {
       if (!activeEvent.current || document.visibilityState !== "visible" || !document.hasFocus()) return;
       if (document.querySelector("[aria-modal='true']")) return;
       activeEvent.current.activeSeconds += 5;
-      setReadingSeconds(activeEvent.current.activeSeconds);
+      setReadingSeconds((s) => s + 5);
       void persistActive();
     }, 5000);
     const flush = () => { commitActiveEvent(); void persistActive(); };
@@ -1207,7 +1207,8 @@ export default function App() {
   const choose = useCallback((story: Story, origin?: ReadingEvent["origin"]) => {
     void persistActive();
     setSelectedId(story.id);
-    setReadingSeconds(0);
+    const prior = events.filter((e) => e.entryId === story.id).reduce((sum, e) => sum + e.activeSeconds, 0);
+    setReadingSeconds(prior);
     setContentError(null);
     if (!story.content.trim()) void loadEntryContent(story.id);
     readerRef.current?.scrollTo({ top: 0 });
@@ -1239,7 +1240,7 @@ export default function App() {
       }), t("reader.markedRead"));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, mode, query, visible, persistActive, loadEntryContent, entryLabels, t]);
+  }, [config, mode, query, visible, events, persistActive, loadEntryContent, entryLabels, t]);
 
   const move = useCallback((delta: number) => {
     if (!visible.length) return;
