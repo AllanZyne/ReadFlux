@@ -765,14 +765,14 @@ export default function App() {
 
   const mergeEntryBatch = useCallback(async (batch: Entry[]) => {
     if (!config || !batch.length) return;
-    const updatedIds: number[] = [];
+    const updatedIds = new Set<number>();
     setEntries((current) => {
       const merged = new Map(current.map((entry) => [entry.id, entry]));
       batch.forEach((entry) => {
         const cached = merged.get(entry.id);
         if (cached && cached.status === "read" && entry.changed_at && cached.changed_at
           && entry.changed_at > cached.changed_at) {
-          updatedIds.push(entry.id);
+          updatedIds.add(entry.id);
         }
         merged.set(entry.id, {
           ...cached,
@@ -782,8 +782,10 @@ export default function App() {
       });
       return [...merged.values()];
     });
-    if (updatedIds.length) {
-      await Promise.all(updatedIds.map((id) => addEntryLabel(config, id, "updated")));
+    if (updatedIds.size) {
+      try {
+        await Promise.all([...updatedIds].map((id) => addEntryLabel(config, id, "updated")));
+      } catch { /* label persistence is best-effort */ }
       setEntryLabels((current) => {
         const next = new Map(current);
         updatedIds.forEach((id) => {

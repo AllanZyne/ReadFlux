@@ -207,17 +207,19 @@ export async function saveEntrySyncState(config: ConnectionConfig, state: EntryS
 
 export async function resetEntrySync(config: ConnectionConfig) {
   const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
-  const transaction = db.transaction([ENTRY_CACHE, SETTINGS], "readwrite");
-  const cursorRequest = transaction.objectStore(ENTRY_CACHE)
-    .index("scope")
-    .openCursor(IDBKeyRange.only(scope));
-  cursorRequest.onsuccess = () => {
-    const cursor = cursorRequest.result;
-    if (!cursor) return;
-    cursor.delete();
-    cursor.continue();
-  };
-  cursorRequest.onerror = () => transaction.abort();
+  const transaction = db.transaction([ENTRY_CACHE, ENTRY_LABELS, SETTINGS], "readwrite");
+  for (const storeName of [ENTRY_CACHE, ENTRY_LABELS]) {
+    const cursorRequest = transaction.objectStore(storeName)
+      .index("scope")
+      .openCursor(IDBKeyRange.only(scope));
+    cursorRequest.onsuccess = () => {
+      const cursor = cursorRequest.result;
+      if (!cursor) return;
+      cursor.delete();
+      cursor.continue();
+    };
+    cursorRequest.onerror = () => transaction.abort();
+  }
   transaction.objectStore(SETTINGS).delete(`entry-sync-state:${scope}`);
   await transactionComplete(transaction);
   db.close();
