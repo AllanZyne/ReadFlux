@@ -644,6 +644,8 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [syncedAt, setSyncedAt] = useState<Date | null>(null);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
   const [contentLoadingId, setContentLoadingId] = useState<number | null>(null);
   const [contentError, setContentError] = useState<{ id: number; error: LocalizedError } | null>(null);
@@ -653,6 +655,7 @@ export default function App() {
   const [referrerScopeState, setReferrerScopeState] = useState({ url: "", scope: "" });
   const activeEvent = useRef<ReadingEvent | null>(null);
   const readerRef = useRef<HTMLDivElement | null>(null);
+  const refreshInFlight = useRef(false);
   const syncInFlight = useRef(false);
   const syncQueued = useRef(false);
   const syncResetInProgress = useRef(false);
@@ -665,7 +668,7 @@ export default function App() {
   const feedsRef = useRef(feeds);
   const hideReadRef = useRef(hideRead);
   const queryRef = useRef(query);
-  const loadRef = useRef<(options?: { background?: boolean }) => Promise<void>>(async () => {});
+  const loadRef = useRef<(options?: { background?: boolean }) => Promise<boolean>>(async () => false);
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -809,10 +812,10 @@ export default function App() {
     : settings.entryLookbackDays;
 
   const load = useCallback(async (options?: { background?: boolean }) => {
-    if (!config) return;
+    if (!config) return false;
     if (syncResetInProgress.current || syncInFlight.current) {
       syncQueued.current = true;
-      return;
+      return false;
     }
     const background = options?.background ?? false;
     syncInFlight.current = true;
@@ -912,10 +915,12 @@ export default function App() {
         });
         setPendingNew(0);
       }
+      return true;
     } catch (cause) {
       setError(cause instanceof TypeError
         ? { key: "connect.directFailed" }
         : errorDetails(cause, "errors.connect"));
+      return false;
     } finally {
       setLoading(false);
       setSyncProgress(null);
@@ -966,7 +971,7 @@ export default function App() {
   useEffect(() => {
     if (!config) return;
     const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") void loadRef.current({ background: true });
+      if (document.visibilityState === "visible" && !refreshInFlight.current) void loadRef.current({ background: true });
     }, 5 * 60_000);
     return () => { window.clearInterval(timer); };
   }, [config]);
@@ -1253,7 +1258,6 @@ export default function App() {
     const handler = (event: KeyboardEvent) => {
       if (settingsOpen) return;
       if (["INPUT", "TEXTAREA"].includes((event.target as HTMLElement).tagName)) return;
-      if (event.key === "/") { event.preventDefault(); document.querySelector<HTMLInputElement>("#search")?.focus(); }
       if (event.key.toLowerCase() === "j" || event.key === "ArrowDown") move(1);
       if (event.key.toLowerCase() === "k" || event.key === "ArrowUp") move(-1);
       if (event.key.toLowerCase() === "n") {
@@ -1345,6 +1349,39 @@ export default function App() {
     setConfig(nextConfig);
   }} />;
 
+  const refreshBusy = refreshing || loading;
+  const refreshStatus = refreshFailed || error
+    ? t("sync.failed")
+    : syncProgress
+      ? syncProgressLabel
+      : refreshing
+        ? t("sync.latest")
+        : syncedAt
+          ? t("feed.syncedAt", { time: formatZonedTime(syncedAt, activeTimeZone) })
+          : t("sync.refresh");
+  const refreshFeeds = async () => {
+    if (refreshInFlight.current || loading) return;
+    refreshInFlight.current = true;
+    setRefreshing(true);
+    setRefreshFailed(false);
+    try {
+      await minifluxFetch(config, "/v1/feeds/refresh", { method: "PUT" });
+      const syncSucceeded = await load();
+      if (!syncSucceeded) {
+        setRefreshFailed(true);
+        return;
+      }
+      refreshList();
+      notify(t("sync.refreshDone"));
+    } catch (cause) {
+      setRefreshFailed(true);
+      notify(errorMessage(cause, t, "sync.refreshFailed"));
+    } finally {
+      refreshInFlight.current = false;
+      setRefreshing(false);
+    }
+  };
+
   const nav = [
     ["today", "bi-brightness-high-fill", t("sidebar.today"), todayUnreadCount],
     ["unread", "bi-circle-fill", t("sidebar.allUnread"), unreadCount],
@@ -1353,20 +1390,18 @@ export default function App() {
 
   return (
     <main className="shell" data-theme={settings.theme}>
-      <header className="topbar">
-        <div className="brand"><strong>ReadFlux</strong></div>
-        <label className="search"><span>⌕</span><input id="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("sidebar.search")} /><kbd>/</kbd></label>
-        <div className="topActions">
-          {error && <span className="syncError">{t("sync.failed")}</span>}
-          {syncProgress && <span className="syncLabel" role="status">{syncProgressLabel}</span>}
-          <button className={`toolbarButton ${loading ? "spinning" : ""}`} disabled={loading} onClick={async () => { try { await minifluxFetch(config, "/v1/feeds/refresh", { method: "PUT" }); await load(); refreshList(); notify(t("sync.refreshDone")); } catch (cause) { notify(errorMessage(cause, t, "sync.refreshFailed")); } }} aria-label={t("sync.refresh")} title={t("sync.refresh")}><i className="bi bi-arrow-clockwise" aria-hidden="true" /></button>
-          <button className="settingsButton" onClick={() => setSettingsOpen(true)} aria-label={t("settings.title")} title={t("settings.title")}><i className="bi bi-gear" aria-hidden="true" /></button>
-        </div>
-        {syncProgress && <div className="topbarProgress" aria-hidden="true"><i style={{ width: `${syncProgress.total ? Math.min(100, syncProgress.loaded / syncProgress.total * 100) : 8}%` }} /></div>}
-      </header>
-
       <div className={`workspace mobile-${mobileView}`} style={{ "--sidebar-width": `${sidebarWidth}px`, "--list-width": `${listWidth}px` } as CSSProperties}>
         <aside className="sidebar" aria-label={t("sidebar.feeds")}>
+          <header className="sidebarHeader">
+            <div className="sidebarBrand">
+              <strong>ReadFlux</strong>
+            </div>
+            <div className="sidebarHeaderActions">
+              <button className={`toolbarButton ${refreshBusy ? "spinning" : ""} ${refreshFailed || error ? "failed" : ""}`} aria-disabled={refreshBusy} onClick={() => void refreshFeeds()} aria-label={refreshStatus} title={refreshStatus}><i className={`bi ${refreshFailed || error ? "bi-exclamation-triangle-fill" : "bi-arrow-clockwise"}`} aria-hidden="true" /></button>
+              <button className="settingsButton" onClick={() => setSettingsOpen(true)} aria-label={t("settings.title")} title={t("settings.title")}><i className="bi bi-gear" aria-hidden="true" /></button>
+            </div>
+            {syncProgress && <div className="sidebarProgress" aria-hidden="true"><i style={{ width: `${syncProgress.total ? Math.min(100, syncProgress.loaded / syncProgress.total * 100) : 8}%` }} /></div>}
+          </header>
           <div className="sidebarScroll" onKeyDown={handleSidebarKey}>
             <nav>{nav.map(([key, icon, label, count]) => <button data-sidebar-row key={key} className={mode === key && !topic ? "active" : ""} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setMode(key); setTopic(null); setMobileView("list"); }}><i className={`bi ${icon}`} aria-hidden="true" /><span>{label}</span><em>{count}</em></button>)}</nav>
             <div className="sideLabel"><span>{t("sidebar.subscriptions")}</span><button type="button" onClick={() => setSubscriptionsCollapsed((current) => !current)} title={t(subscriptionsCollapsed ? "sidebar.expand" : "sidebar.collapse")} aria-label={t(subscriptionsCollapsed ? "sidebar.expand" : "sidebar.collapse")} aria-expanded={!subscriptionsCollapsed}><i className={`bi ${subscriptionsCollapsed ? "bi-chevron-right" : "bi-chevron-down"}`} aria-hidden="true" /></button></div>
@@ -1401,7 +1436,7 @@ export default function App() {
         <section className="feed">
           <header className="feedTitle">
             <button className="mobileBack" onClick={() => setMobileView("sources")}>‹ {t("sidebar.feeds")}</button>
-            <div className="feedTitleText"><h1>{topicTitle || t(mode === "today" ? "sidebar.today" : mode === "unread" ? "sidebar.allUnread" : "sidebar.saved")}</h1><small>{t("feed.articleCount", { count: visible.length })}{error && entries.length ? ` · ${t("feed.offline")}` : syncedAt ? ` · ${t("feed.syncedAt", { time: formatZonedTime(syncedAt, activeTimeZone) })}` : ""}</small></div>
+            <div className="feedTitleText"><h1>{topicTitle || t(mode === "today" ? "sidebar.today" : mode === "unread" ? "sidebar.allUnread" : "sidebar.saved")}</h1><small>{t("feed.articleCount", { count: visible.length })}{error && entries.length ? ` · ${t("feed.offline")}` : ""}</small></div>
             <div className="feedTitleActions" role="group" aria-label={t("feed.listActions")}>
               <button type="button" onClick={() => void markVisibleRead()} disabled={!visible.some((story) => story.status === "unread")} aria-label={t("feed.markAllRead")} title={t("feed.markAllRead")}><i className="bi bi-check2-all" aria-hidden="true" /></button>
               <button type="button" className={hideRead ? "active" : ""} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead((current) => !current); }} aria-label={t("feed.hideRead")} title={t(hideRead ? "feed.showRead" : "feed.hideRead")} aria-pressed={hideRead}><i className="bi bi-filter-circle" aria-hidden="true" /></button>
