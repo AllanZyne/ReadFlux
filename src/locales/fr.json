@@ -210,6 +210,7 @@
     "unread": "Non lu",
     "read": "Lu",
     "updated": "Mis à jour",
+    "saved": "Enregistré",
     "minutes_one": "{{count}} minute",
     "minutes_other": "{{count}} minutes",
     "empty": "Aucun article ici",

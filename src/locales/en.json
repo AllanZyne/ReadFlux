@@ -210,6 +210,7 @@
     "unread": "Unread",
     "read": "Read",
     "updated": "Updated",
+    "saved": "Saved",
     "minutes_one": "{{count}} minute",
     "minutes_other": "{{count}} minutes",
     "empty": "No articles here",
