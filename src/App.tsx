@@ -1401,6 +1401,7 @@ export default function App() {
               <button className="settingsButton" onClick={() => setSettingsOpen(true)} aria-label={t("settings.title")} title={t("settings.title")}><i className="bi bi-gear" aria-hidden="true" /></button>
             </div>
             {syncProgress && <div className="sidebarProgress" aria-hidden="true"><i style={{ width: `${syncProgress.total ? Math.min(100, syncProgress.loaded / syncProgress.total * 100) : 8}%` }} /></div>}
+            <span className="sr-only" role="status">{refreshStatus}</span>
           </header>
           <div className="sidebarScroll" onKeyDown={handleSidebarKey}>
             <nav>{nav.map(([key, icon, label, count]) => <button data-sidebar-row key={key} className={mode === key && !topic ? "active" : ""} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setMode(key); setTopic(null); setMobileView("list"); }}><i className={`bi ${icon}`} aria-hidden="true" /><span>{label}</span><em>{count}</em></button>)}</nav>
