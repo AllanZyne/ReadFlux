@@ -817,7 +817,18 @@ export default function App() {
         if (currentTopic?.kind === "feed" && entry.feed_id !== currentTopic.id) return false;
         return true;
       });
-      const updatedInList = [...updatedIds].filter((id) => listSnapshotIds.current.has(id));
+      const updatedInList = batch.filter((entry) => {
+        if (!updatedIds.has(entry.id)) return false;
+        if (!listSnapshotIds.current.has(entry.id)) return false;
+        if (!currentTopic && !isEntryInSmartFeed(entry, currentMode, todayKeyRef.current, timeZoneRef.current)) return false;
+        if (currentHideRead && entry.status === "read") return false;
+        if (currentTopic?.kind === "category") {
+          const feed = feedsRef.current.find((f) => f.id === entry.feed_id);
+          if (feed?.category?.id !== currentTopic.id) return false;
+        }
+        if (currentTopic?.kind === "feed" && entry.feed_id !== currentTopic.id) return false;
+        return true;
+      });
       const pending = relevant.length + updatedInList.length;
       if (pending) {
         if (visibleEmptyRef.current) {
@@ -1207,7 +1218,7 @@ export default function App() {
   const choose = useCallback((story: Story, origin?: ReadingEvent["origin"]) => {
     void persistActive();
     setSelectedId(story.id);
-    const prior = events.filter((e) => e.entryId === story.id).reduce((sum, e) => sum + e.activeSeconds, 0);
+    const prior = events.reduce((sum, e) => e.entryId === story.id ? sum + e.activeSeconds : sum, 0);
     setReadingSeconds(prior);
     setContentError(null);
     if (!story.content.trim()) void loadEntryContent(story.id);
@@ -1220,7 +1231,7 @@ export default function App() {
       terms: termsOf(`${story.title} ${story.summary}`),
       origin: origin ?? (query ? "search" : mode === "today" ? "recommendation" : mode === "saved" ? "saved" : "feed"),
       readingTime: story.reading_time,
-      listPosition: visible.findIndex((s) => s.id === story.id),
+      listPosition: (() => { const i = visible.findIndex((s) => s.id === story.id); return i >= 0 ? i : undefined; })(),
     });
     void putReadingEvent(activeEvent.current);
     if (config && entryLabels.get(story.id)?.includes("updated")) {
