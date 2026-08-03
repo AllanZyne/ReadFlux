@@ -13,7 +13,7 @@ test("entry sync defaults to 30 days and keeps starred entries outside the cutof
 });
 
 test("entry cache is connection-scoped and records resumable sync state", () => {
-  assert.match(client, /DB_VERSION\s*=\s*2/);
+  assert.match(client, /DB_VERSION\s*=\s*3/);
   assert.match(client, /createIndex\("scope",\s*"scope"\)/);
   assert.match(client, /initialSyncComplete:\s*boolean/);
   assert.match(client, /phase\?:\s*EntrySyncPhase/);

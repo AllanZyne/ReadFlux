@@ -209,6 +209,7 @@
     "reconnect": "Reconnect",
     "unread": "Unread",
     "read": "Read",
+    "updated": "Updated",
     "minutes_one": "{{count}} minute",
     "minutes_other": "{{count}} minutes",
     "empty": "No articles here",

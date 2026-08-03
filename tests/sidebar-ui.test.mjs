@@ -15,7 +15,7 @@ test("sidebar icons are provided by the local Bootstrap Icons package", () => {
 });
 
 test("primary sidebar navigation uses Bootstrap Icons", () => {
-  assert.match(app, /\["today",\s*"bi-brightness-high-fill",\s*t\("sidebar\.today"\),\s*todayUnreadCount\]/);
+  assert.match(app, /\["today",\s*"bi-brightness-high-fill",\s*t\("sidebar\.today"\),\s*todayCount\]/);
   assert.match(app, /\["unread",\s*"bi-[^"]+",\s*t\("sidebar\.allUnread"\),\s*unreadCount\]/);
   assert.match(app, /\["saved",\s*"bi-star-fill",\s*t\("sidebar\.saved"\),\s*savedCount\]/);
   assert.ok(app.indexOf('["today"') < app.indexOf('["unread"'));

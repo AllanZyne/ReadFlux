@@ -47,10 +47,11 @@ export type ReadingEvent = {
 const LOCAL_CONFIG = "readflux.miniflux.local";
 const SESSION_CONFIG = "readflux.miniflux.session";
 const DB_NAME = "readflux-profile";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const EVENTS = "reading-events";
 const SETTINGS = "settings";
 const ENTRY_CACHE = "entry-cache";
+const ENTRY_LABELS = "entry-labels";
 
 type CacheableEntry = {
   id: number;
@@ -60,6 +61,13 @@ type EntryCacheRecord<T extends CacheableEntry = CacheableEntry> = {
   key: string;
   scope: string;
   entry: T;
+};
+
+type EntryLabelRecord = {
+  key: string;
+  scope: string;
+  entryId: number;
+  labels: string[];
 };
 
 export function getConnection(): ConnectionConfig | null {
@@ -132,6 +140,10 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(SETTINGS)) db.createObjectStore(SETTINGS);
       if (!db.objectStoreNames.contains(ENTRY_CACHE)) {
         const store = db.createObjectStore(ENTRY_CACHE, { keyPath: "key" });
+        store.createIndex("scope", "scope");
+      }
+      if (!db.objectStoreNames.contains(ENTRY_LABELS)) {
+        const store = db.createObjectStore(ENTRY_LABELS, { keyPath: "key" });
         store.createIndex("scope", "scope");
       }
     };
@@ -303,6 +315,44 @@ export function newReadingEvent(input: Omit<ReadingEvent, "id" | "openedAt" | "u
     activeSeconds: 0,
     scrollDepth: 0,
   };
+}
+
+export async function getEntryLabels(config: ConnectionConfig): Promise<Map<number, string[]>> {
+  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
+  const records = await requestResult(
+    db.transaction(ENTRY_LABELS).objectStore(ENTRY_LABELS).index("scope").getAll(scope),
+  ) as EntryLabelRecord[];
+  db.close();
+  return new Map(records.filter((r) => r.labels.length).map((r) => [r.entryId, r.labels]));
+}
+
+export async function addEntryLabel(config: ConnectionConfig, entryId: number, label: string) {
+  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
+  const key = `${scope}:${entryId}`;
+  const transaction = db.transaction(ENTRY_LABELS, "readwrite");
+  const store = transaction.objectStore(ENTRY_LABELS);
+  const existing = await requestResult(store.get(key)) as EntryLabelRecord | undefined;
+  const labels = existing?.labels ?? [];
+  if (!labels.includes(label)) {
+    store.put({ key, scope, entryId, labels: [...labels, label] });
+  }
+  await transactionComplete(transaction);
+  db.close();
+}
+
+export async function removeEntryLabel(config: ConnectionConfig, entryId: number, label: string) {
+  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
+  const key = `${scope}:${entryId}`;
+  const transaction = db.transaction(ENTRY_LABELS, "readwrite");
+  const store = transaction.objectStore(ENTRY_LABELS);
+  const existing = await requestResult(store.get(key)) as EntryLabelRecord | undefined;
+  if (existing) {
+    const labels = existing.labels.filter((l) => l !== label);
+    if (labels.length) store.put({ key, scope, entryId, labels });
+    else store.delete(key);
+  }
+  await transactionComplete(transaction);
+  db.close();
 }
 
 function bytesToBase64(bytes: Uint8Array) {

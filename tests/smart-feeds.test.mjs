@@ -108,9 +108,9 @@ test("ambiguous daylight-saving input preserves the existing occurrence", () => 
   );
 });
 
-test("Today includes only unread entries published on the local day", () => {
+test("Today includes all entries published on the local day regardless of read status", () => {
   assert.equal(isEntryInSmartFeed(entry(), "today", TODAY), true);
-  assert.equal(isEntryInSmartFeed(entry({ status: "read" }), "today", TODAY), false);
+  assert.equal(isEntryInSmartFeed(entry({ status: "read" }), "today", TODAY), true);
   assert.equal(
     isEntryInSmartFeed(entry({ published_at: localTimestamp(1) }), "today", TODAY),
     false,
@@ -162,7 +162,7 @@ test("smart feed counts are calculated together for the current local day", () =
 
   assert.deepEqual(countSmartFeedEntries(entries, TODAY), {
     unreadCount: 2,
-    todayUnreadCount: 1,
+    todayCount: 2,
     savedCount: 1,
   });
 });
@@ -171,7 +171,7 @@ test("smart feed counts use the Miniflux account timezone", () => {
   const entries = [entry({ published_at: "2026-08-01T18:00:00.000Z" })];
 
   assert.equal(
-    countSmartFeedEntries(entries, "2026-08-02", "America/Los_Angeles").todayUnreadCount,
+    countSmartFeedEntries(entries, "2026-08-02", "America/Los_Angeles").todayCount,
     0,
   );
 });

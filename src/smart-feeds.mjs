@@ -159,7 +159,7 @@ export function nextDayBoundary(value, timeZone) {
 
 export function isEntryInSmartFeed(entry, mode, todayKey, timeZone) {
   if (mode === "today") {
-    return entry.status === "unread" && localDayKey(entry.published_at, timeZone) === todayKey;
+    return localDayKey(entry.published_at, timeZone) === todayKey;
   }
   if (mode === "unread") return entry.status === "unread";
   return entry.starred;
@@ -172,13 +172,11 @@ export function compareSmartFeedEntries(a, b, mode) {
 }
 
 export function countSmartFeedEntries(entries, todayKey, timeZone) {
-  const counts = { unreadCount: 0, todayUnreadCount: 0, savedCount: 0 };
+  const counts = { unreadCount: 0, todayCount: 0, savedCount: 0 };
 
   for (const entry of entries) {
-    if (entry.status === "unread") {
-      counts.unreadCount += 1;
-      if (localDayKey(entry.published_at, timeZone) === todayKey) counts.todayUnreadCount += 1;
-    }
+    if (entry.status === "unread") counts.unreadCount += 1;
+    if (localDayKey(entry.published_at, timeZone) === todayKey) counts.todayCount += 1;
     if (entry.starred) counts.savedCount += 1;
   }
 
