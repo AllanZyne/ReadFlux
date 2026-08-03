@@ -165,10 +165,19 @@ export function isEntryInSmartFeed(entry, mode, todayKey, timeZone) {
   return entry.starred;
 }
 
-export function compareSmartFeedEntries(a, b, mode) {
-  return mode === "today"
-    ? b.score - a.score
-    : new Date(b.published_at).getTime() - new Date(a.published_at).getTime();
+function statusPriority(entry, labels) {
+  if (labels?.get(entry.id)?.includes("updated")) return 2;
+  if (entry.status === "unread") return 1;
+  return 0;
+}
+
+export function compareSmartFeedEntries(a, b, mode, labels) {
+  if (mode === "today") {
+    const sp = statusPriority(b, labels) - statusPriority(a, labels);
+    if (sp !== 0) return sp;
+    return b.score - a.score;
+  }
+  return new Date(b.published_at).getTime() - new Date(a.published_at).getTime();
 }
 
 export function countSmartFeedEntries(entries, todayKey, timeZone) {
