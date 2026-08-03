@@ -7,12 +7,14 @@ import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { startOptionalMinifluxTimeZoneLoad } from "./miniflux-timezone.mjs";
 import { compareSmartFeedEntries, countSmartFeedEntries, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, localDayKey, nextDayBoundary, selectTimeZone, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
 import {
+  addEntryLabel,
   clearConnection,
   ConnectionConfig,
   deleteReadingEvent,
   EntrySyncPhase,
   getCachedEntries,
   getConnection,
+  getEntryLabels,
   getEntrySyncState,
   getProfileSettings,
   getReadingEvents,
@@ -24,6 +26,7 @@ import {
   ProfileSettings,
   putReadingEvent,
   ReadingEvent,
+  removeEntryLabel,
   resetEntrySync,
   saveConnection,
   saveEntrySyncState,
@@ -49,6 +52,7 @@ type Entry = {
   content: string;
   author?: string;
   published_at: string;
+  changed_at?: string;
   starred: boolean;
   reading_time?: number;
   tags?: string[];
@@ -651,6 +655,7 @@ export default function App() {
   const [contentError, setContentError] = useState<{ id: number; error: LocalizedError } | null>(null);
   const [error, setError] = useState<LocalizedError | null>(null);
   const [pendingNew, setPendingNew] = useState(0);
+  const [entryLabels, setEntryLabels] = useState<Map<number, string[]>>(new Map());
   const [visibleIds, setVisibleIds] = useState<number[]>([]);
   const [referrerScopeState, setReferrerScopeState] = useState({ url: "", scope: "" });
   const activeEvent = useRef<ReadingEvent | null>(null);
@@ -760,10 +765,15 @@ export default function App() {
 
   const mergeEntryBatch = useCallback(async (batch: Entry[]) => {
     if (!config || !batch.length) return;
+    const updatedIds = new Set<number>();
     setEntries((current) => {
       const merged = new Map(current.map((entry) => [entry.id, entry]));
       batch.forEach((entry) => {
         const cached = merged.get(entry.id);
+        if (cached && cached.status === "read" && entry.changed_at && cached.changed_at
+          && entry.changed_at > cached.changed_at) {
+          updatedIds.add(entry.id);
+        }
         merged.set(entry.id, {
           ...cached,
           ...entry,
@@ -772,6 +782,19 @@ export default function App() {
       });
       return [...merged.values()];
     });
+    if (updatedIds.size) {
+      try {
+        await Promise.all([...updatedIds].map((id) => addEntryLabel(config, id, "updated")));
+      } catch { /* label persistence is best-effort */ }
+      setEntryLabels((current) => {
+        const next = new Map(current);
+        updatedIds.forEach((id) => {
+          const labels = next.get(id) ?? [];
+          if (!labels.includes("updated")) next.set(id, [...labels, "updated"]);
+        });
+        return next;
+      });
+    }
     if (!queryRef.current.trim()) {
       const currentMode = modeRef.current;
       const currentTopic = topicRef.current;
@@ -827,10 +850,12 @@ export default function App() {
         () => minifluxFetch<MinifluxUser>(config, "/v1/me"),
         setMinifluxTimeZone,
       );
-      const [cached, storedState] = await Promise.all([
+      const [cached, storedState, labels] = await Promise.all([
         getCachedEntries<Entry>(config),
         getEntrySyncState(config),
+        getEntryLabels(config),
       ]);
+      setEntryLabels(labels);
       const cutoff = lookbackDays === null
         ? null
         : Date.now() - lookbackDays * 86_400_000;
@@ -1188,6 +1213,16 @@ export default function App() {
       origin: origin ?? (query ? "search" : mode === "today" ? "recommendation" : mode === "saved" ? "saved" : "feed"),
     });
     void putReadingEvent(activeEvent.current);
+    if (config && entryLabels.get(story.id)?.includes("updated")) {
+      void removeEntryLabel(config, story.id, "updated");
+      setEntryLabels((current) => {
+        const next = new Map(current);
+        const labels = (next.get(story.id) ?? []).filter((l) => l !== "updated");
+        if (labels.length) next.set(story.id, labels);
+        else next.delete(story.id);
+        return next;
+      });
+    }
     if (story.status === "unread" && config) {
       void updateEntry(story.id, { status: "read" }, () => minifluxFetch(config, "/v1/entries", {
         method: "PUT",
@@ -1195,7 +1230,7 @@ export default function App() {
       }), t("reader.markedRead"));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, mode, query, persistActive, loadEntryContent, t]);
+  }, [config, mode, query, persistActive, loadEntryContent, entryLabels, t]);
 
   const move = useCallback((delta: number) => {
     if (!visible.length) return;
@@ -1334,7 +1369,7 @@ export default function App() {
       rows[Math.max(0, Math.min(rows.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))]?.focus();
     }
   };
-  const { unreadCount, todayUnreadCount, savedCount } = useMemo(
+  const { unreadCount, todayCount, savedCount } = useMemo(
     () => countSmartFeedEntries(entries, todayKey, activeTimeZone),
     [entries, todayKey, activeTimeZone],
   );
@@ -1383,7 +1418,7 @@ export default function App() {
   };
 
   const nav = [
-    ["today", "bi-brightness-high-fill", t("sidebar.today"), todayUnreadCount],
+    ["today", "bi-brightness-high-fill", t("sidebar.today"), todayCount],
     ["unread", "bi-circle-fill", t("sidebar.allUnread"), unreadCount],
     ["saved", "bi-star-fill", t("sidebar.saved"), savedCount],
   ] as const;
@@ -1447,10 +1482,10 @@ export default function App() {
             {pendingNew > 0 && <button className="newArticlesPill" onClick={refreshList}>{t("feed.newArticles", { count: pendingNew })}</button>}
             {loading && !entries.length ? <div className="empty"><b className="loadingMark">↻</b><h2>{t("feed.syncing")}</h2><p>{t("feed.syncingHint")}</p></div>
               : error && !entries.length ? <div className="empty errorState"><b>!</b><h2>{t("feed.connectionFailed")}</h2><p>{t(error.key, { status: error.status })}</p><button onClick={() => void load()}>{t("feed.reconnect")}</button></div>
-              : visible.length ? visible.map((story) => <article key={story.id} tabIndex={0} className={`story ${selected?.id === story.id ? "selected" : ""} ${story.status === "read" ? "read" : ""}`} onClick={() => { choose(story); setMobileView("reader"); }} onKeyDown={(event) => { if (event.key === "Enter") { choose(story); setMobileView("reader"); } }}>
+              : visible.length ? visible.map((story) => <article key={story.id} tabIndex={0} className={`story ${selected?.id === story.id ? "selected" : ""} ${story.status === "read" ? "read" : ""} ${entryLabels.has(story.id) && entryLabels.get(story.id)!.includes("updated") ? "updated" : ""}`} onClick={() => { choose(story); setMobileView("reader"); }} onKeyDown={(event) => { if (event.key === "Enter") { choose(story); setMobileView("reader"); } }}>
                 <div className="storySource"><SourceIcon src={feedIcons.get(story.feed_id)}>{story.mark}</SourceIcon><span>{story.source}</span><time>{formatZonedTime(story.published_at, activeTimeZone)}</time>{story.starred && <b>★</b>}</div>
                 <h2>{story.title}</h2><p>{story.summary}</p>
-                <footer><i /><span>{t(story.status === "unread" ? "feed.unread" : "feed.read")}</span><span>·</span><span>{t("feed.minutes", { count: story.reading_time || 1 })}</span></footer>
+                <footer><i /><span>{t(story.status === "unread" ? "feed.unread" : entryLabels.get(story.id)?.includes("updated") ? "feed.updated" : story.starred ? "feed.saved" : "feed.read")}</span><span>·</span><span>{t("feed.minutes", { count: story.reading_time || 1 })}</span></footer>
               </article>) : <div className="empty"><b>✓</b><h2>{t("feed.empty")}</h2><p>{t("feed.emptyHint")}</p><button onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setQuery(""); setTopic(null); setMode("today"); setHideRead(false); }}>{t("common.reset")}</button></div>}
           </div>
         </section>

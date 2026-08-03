@@ -209,6 +209,8 @@
     "reconnect": "重新连接",
     "unread": "未读",
     "read": "已读",
+    "updated": "已更新",
+    "saved": "已收藏",
     "minutes_one": "{{count}} 分钟",
     "minutes_other": "{{count}} 分钟",
     "empty": "这里没有文章",

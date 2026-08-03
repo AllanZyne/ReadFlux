@@ -10,7 +10,7 @@ export type SortableSmartFeedEntry = SmartFeedEntry & { score: number };
 
 export type SmartFeedCounts = {
   unreadCount: number;
-  todayUnreadCount: number;
+  todayCount: number;
   savedCount: number;
 };
 

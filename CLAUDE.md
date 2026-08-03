@@ -15,7 +15,7 @@ backend. The browser talks directly to Miniflux.
 
 The primary product contract is:
 
-- `Today` contains unread Miniflux entries published on the current calendar
+- `Today` contains all Miniflux entries published on the current calendar
   day in the reader timezone and sorts them by the locally derived
   recommendation score.
 - `All unread` contains every unread Miniflux entry and sorts them newest first.

@@ -13,8 +13,9 @@ test("entry sync defaults to 30 days and keeps starred entries outside the cutof
 });
 
 test("entry cache is connection-scoped and records resumable sync state", () => {
-  assert.match(client, /DB_VERSION\s*=\s*2/);
+  assert.match(client, /DB_VERSION\s*=\s*3/);
   assert.match(client, /createIndex\("scope",\s*"scope"\)/);
+  assert.match(client, /ENTRY_LABELS\s*=\s*"entry-labels"/);
   assert.match(client, /initialSyncComplete:\s*boolean/);
   assert.match(client, /phase\?:\s*EntrySyncPhase/);
   assert.match(client, /offset\?:\s*number/);
@@ -27,7 +28,7 @@ test("later refreshes use the Miniflux changed-after filter", () => {
 
 test("sync data can be reset without deleting profile data or credentials", () => {
   assert.match(client, /export async function resetEntrySync/);
-  assert.match(client, /db\.transaction\(\[ENTRY_CACHE,\s*SETTINGS\],\s*"readwrite"\)/);
+  assert.match(client, /db\.transaction\(\[ENTRY_CACHE,\s*ENTRY_LABELS,\s*SETTINGS\],\s*"readwrite"\)/);
   assert.match(client, /\.openCursor\(IDBKeyRange\.only\(scope\)\)/);
   assert.doesNotMatch(client, /getAllKeys\(scope\)/);
   assert.match(client, /delete\(`entry-sync-state:\$\{scope\}`\)/);
