@@ -10,7 +10,8 @@
 html,body{width:100%;min-height:100%;margin:0;background:var(--bg);color:var(--text)}
 body{overflow:hidden;font-family:var(--font-geist-mono),"SFMono-Regular",Consolas,monospace}
 button,input{font:inherit} button{color:inherit}
-.shell{min-height:100vh;background:radial-gradient(circle at 78% -20%,rgba(42,119,83,.13),transparent 31%),linear-gradient(#081310,#07100e)}
+.shell{min-height:100vh;background:radial-gradient(circle at 78% -20%,rgba(42,119,83,.13),transparent 31%),linear-gradient(#081310,#07100e);user-select:none}
+.body,.articleHead h2,.articleHead a,.toast,input,textarea{user-select:text}
 
 .wave{color:var(--mint);font-size:21px;letter-spacing:-5px;text-shadow:0 0 10px rgba(126,224,173,.3)}
 kbd{padding:2px 6px;border:1px solid #33423e;border-radius:4px;background:#1a2522;color:#99a6a2;font-size:9px;box-shadow:0 1px #000}
