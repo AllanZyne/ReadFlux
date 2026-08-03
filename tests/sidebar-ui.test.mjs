@@ -132,3 +132,52 @@ test("the sidebar no longer links to Miniflux", () => {
   assert.doesNotMatch(styles, /\.manage\s*\{\s*position/);
   assert.doesNotMatch(styles, /\.manage:hover/);
 });
+
+test("the source sidebar owns the app title and global actions", () => {
+  const sidebar = app.match(/<aside className="sidebar"[\s\S]*?<\/aside>/)?.[0] ?? "";
+  const sidebarBrand = sidebar.match(/<div className="sidebarBrand">([\s\S]*?)<\/div>/)?.[1] ?? "";
+  const feedTitle = app.match(/<header className="feedTitle">([\s\S]*?)<\/header>/)?.[1] ?? "";
+
+  assert.match(sidebar, /<header className="sidebarHeader">/);
+  assert.match(sidebar, /<strong>ReadFlux<\/strong>/);
+  assert.match(sidebar, /bi-arrow-clockwise/);
+  assert.match(sidebar, /setSettingsOpen\(true\)/);
+  assert.match(sidebar, /className="sidebarProgress"/);
+  assert.doesNotMatch(sidebarBrand, /syncProgressLabel|syncError|feed\.syncedAt/);
+  assert.doesNotMatch(feedTitle, /feed\.syncedAt/);
+  assert.doesNotMatch(app, /<header className="topbar">/);
+  assert.doesNotMatch(app, /id="search"/);
+});
+
+test("the refresh button exposes sync state on hover and changes icon after failure", () => {
+  assert.match(app, /const refreshStatus = [\s\S]*?syncProgressLabel[\s\S]*?refreshing[\s\S]*?sync\.latest[\s\S]*?syncedAt[\s\S]*?feed\.syncedAt/);
+  assert.match(app, /title=\{refreshStatus\}/);
+  assert.match(app, /aria-label=\{refreshStatus\}/);
+  assert.match(app, /const refreshBusy = refreshing \|\| loading/);
+  assert.match(app, /aria-disabled=\{refreshBusy\}/);
+  assert.match(app, /const refreshFeeds = async \(\) => \{\s*if \(refreshInFlight\.current \|\| loading\) return;/);
+  assert.doesNotMatch(app, /className=\{`toolbarButton[^>]*\sdisabled=\{loading\}/);
+  assert.match(app, /refreshFailed \|\| error \? "bi-exclamation-triangle-fill" : "bi-arrow-clockwise"/);
+  assert.match(app, /setRefreshFailed\(false\)[\s\S]*?setRefreshFailed\(true\)/);
+  assert.match(app, /refreshInFlight\.current = true;[\s\S]*?setRefreshing\(true\)[\s\S]*?finally\s*\{\s*refreshInFlight\.current = false;[\s\S]*?setRefreshing\(false\)/);
+  assert.match(app, /const syncSucceeded = await load\(\);\s*if \(!syncSucceeded\)\s*\{[\s\S]*?setRefreshFailed\(true\);[\s\S]*?return;/);
+  assert.match(app, /setSyncedAt\(new Date\(\)\);[\s\S]*?return true;[\s\S]*?catch \(cause\)[\s\S]*?return false;/);
+  assert.match(styles, /\.toolbarButton\.failed\s*\{[^}]*color:/);
+  assert.match(styles, /\.toolbarButton\.spinning>i\s*\{[^}]*animation:spin/);
+});
+
+test("the three-column workspace fills the viewport without a global banner", () => {
+  assert.match(styles, /\.workspace\s*\{[^}]*height:100vh;/);
+  assert.match(styles, /\.sidebarHeader\s*\{[^}]*height:72px;/);
+  assert.doesNotMatch(styles, /\.topbar\s*\{/);
+});
+
+test("article panel headers do not draw horizontal divider lines", () => {
+  const feedTitleRules = [...styles.matchAll(/\.feedTitle\s*\{([^}]*)\}/g)];
+  const readerToolbarRules = [...styles.matchAll(/\.readerToolbar\s*\{([^}]*)\}/g)];
+
+  assert.ok(feedTitleRules.length > 0);
+  assert.ok(readerToolbarRules.length > 0);
+  assert.ok(feedTitleRules.every((match) => !/border-bottom\s*:/.test(match[1])));
+  assert.ok(readerToolbarRules.every((match) => !/border-bottom\s*:/.test(match[1])));
+});
