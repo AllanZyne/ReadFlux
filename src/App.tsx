@@ -377,6 +377,7 @@ function SettingsDialog({
   const negativeCount = events.filter((event) => event.feedback === "not_interested").length;
   const sourceName = new Map<number, string>();
   events.forEach((event) => sourceName.set(event.feedId, event.source));
+  feeds.forEach((feed) => sourceName.set(feed.id, feed.title));
   const topSources = [...sourceWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
   const topWords = [...wordWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
   const topNegatives = [...negativeWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
@@ -658,6 +659,7 @@ export default function App() {
   const [entryLabels, setEntryLabels] = useState<Map<number, string[]>>(new Map());
   const [visibleIds, setVisibleIds] = useState<number[]>([]);
   const [referrerScopeState, setReferrerScopeState] = useState({ url: "", scope: "" });
+  const [readingSeconds, setReadingSeconds] = useState(0);
   const activeEvent = useRef<ReadingEvent | null>(null);
   const readerRef = useRef<HTMLDivElement | null>(null);
   const refreshInFlight = useRef(false);
@@ -815,7 +817,9 @@ export default function App() {
         if (currentTopic?.kind === "feed" && entry.feed_id !== currentTopic.id) return false;
         return true;
       });
-      if (relevant.length) {
+      const updatedInList = [...updatedIds].filter((id) => listSnapshotIds.current.has(id));
+      const pending = relevant.length + updatedInList.length;
+      if (pending) {
         if (visibleEmptyRef.current) {
           setListReadSnapshot((current) => {
             const next = new Map(current);
@@ -823,7 +827,7 @@ export default function App() {
             return next;
           });
         } else {
-          setPendingNew((n) => n + relevant.length);
+          setPendingNew((n) => n + pending);
         }
       }
     }
@@ -1132,13 +1136,13 @@ export default function App() {
         if (ai !== undefined && bi !== undefined) return ai - bi;
         if (ai !== undefined) return -1;
         if (bi !== undefined) return 1;
-        return compareSmartFeedEntries(a, b, topic ? "unread" : mode);
+        return compareSmartFeedEntries(a, b, topic ? "unread" : mode, entryLabels);
       });
     } else {
-      filtered.sort((a, b) => compareSmartFeedEntries(a, b, topic ? "unread" : mode));
+      filtered.sort((a, b) => compareSmartFeedEntries(a, b, topic ? "unread" : mode, entryLabels));
     }
     return filtered;
-  }, [stories, mode, topic, query, hideRead, listReadSnapshot, visibleIds, todayKey, activeTimeZone]);
+  }, [stories, mode, topic, query, hideRead, listReadSnapshot, visibleIds, todayKey, activeTimeZone, entryLabels]);
 
   useEffect(() => {
     if (visible.length && !visibleIds.length) {
@@ -1154,7 +1158,9 @@ export default function App() {
   useEffect(() => {
     const timer = window.setInterval(() => {
       if (!activeEvent.current || document.visibilityState !== "visible" || !document.hasFocus()) return;
+      if (document.querySelector("[aria-modal='true']")) return;
       activeEvent.current.activeSeconds += 5;
+      setReadingSeconds(activeEvent.current.activeSeconds);
       void persistActive();
     }, 5000);
     const flush = () => { commitActiveEvent(); void persistActive(); };
@@ -1201,6 +1207,7 @@ export default function App() {
   const choose = useCallback((story: Story, origin?: ReadingEvent["origin"]) => {
     void persistActive();
     setSelectedId(story.id);
+    setReadingSeconds(0);
     setContentError(null);
     if (!story.content.trim()) void loadEntryContent(story.id);
     readerRef.current?.scrollTo({ top: 0 });
@@ -1211,6 +1218,8 @@ export default function App() {
       source: story.source,
       terms: termsOf(`${story.title} ${story.summary}`),
       origin: origin ?? (query ? "search" : mode === "today" ? "recommendation" : mode === "saved" ? "saved" : "feed"),
+      readingTime: story.reading_time,
+      listPosition: visible.findIndex((s) => s.id === story.id),
     });
     void putReadingEvent(activeEvent.current);
     if (config && entryLabels.get(story.id)?.includes("updated")) {
@@ -1230,7 +1239,7 @@ export default function App() {
       }), t("reader.markedRead"));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, mode, query, persistActive, loadEntryContent, entryLabels, t]);
+  }, [config, mode, query, visible, persistActive, loadEntryContent, entryLabels, t]);
 
   const move = useCallback((delta: number) => {
     if (!visible.length) return;
@@ -1501,7 +1510,7 @@ export default function App() {
             }}>
               <div className="readerToolbar"><button className="mobileBack" onClick={() => setMobileView("list")}>‹ {t("reader.backToArticles")}</button><div><button onClick={() => toggleRead(selected)} title={t(selected.status === "read" ? "reader.markUnread" : "reader.markRead")}>{selected.status === "read" ? "○" : "●"}</button><button className={selected.starred ? "pressed" : ""} title={t(selected.starred ? "reader.unsave" : "reader.save")} onClick={() => void updateEntry(selected.id, { starred: !selected.starred }, () => minifluxFetch(config, `/v1/entries/${selected.id}/bookmark`, { method: "PUT" }), selected.starred ? t("reader.unsaved") : t("reader.saved"))}>{selected.starred ? "★" : "☆"}</button><a href={selected.url} target="_blank" rel="noreferrer" title={t("reader.openOriginal")}>↗</a><button title={t("reader.copyLink")} onClick={async () => { await navigator.clipboard.writeText(selected.url); notify(t("reader.linkCopied")); }}>⧉</button><button title={t("reader.notInterested")} onClick={() => void setFeedback("not_interested")}>−</button></div></div>
               <p className="crumb">{selected.category} · {selected.source}</p>
-              <header className="articleHead"><div><h2>{selected.title}</h2><p><SourceIcon src={feedIcons.get(selected.feed_id)}>{selected.mark}</SourceIcon>{selected.author || selected.source} · {formatZonedDateTime(selected.published_at, activeTimeZone)} · {t("feed.minutes", { count: selected.reading_time || 1 })}</p></div></header>
+              <header className="articleHead"><div><h2>{selected.title}</h2><p><SourceIcon src={feedIcons.get(selected.feed_id)}>{selected.mark}</SourceIcon>{selected.author || selected.source} · {formatZonedDateTime(selected.published_at, activeTimeZone)} · {t("feed.minutes", { count: selected.reading_time || 1 })}{readingSeconds > 0 && ` · ${Math.floor(readingSeconds / 60)}:${String(readingSeconds % 60).padStart(2, "0")}`}</p></div></header>
               <section className="reason">
                 <button className="reasonHead" onClick={() => setReasonOpen(!reasonOpen)}><span>{t("recommendation.reason")}</span><small>{reasonOpen ? t("recommendation.collapse") : t("recommendation.view")}</small></button>
                 {reasonOpen && <><p>{selected.reason}</p><div className="tags">{[selected.category, selected.source, ...(selected.tags ?? [])].slice(0, 4).map((tag) => <span key={tag}>{tag}</span>)}</div></>}

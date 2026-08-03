@@ -41,6 +41,8 @@ export type ReadingEvent = {
   scrollDepth: number;
   origin: "recommendation" | "feed" | "search" | "saved";
   feedback?: "helpful" | "not_interested";
+  readingTime?: number;
+  listPosition?: number;
   updatedAt: string;
 };
 
@@ -307,7 +309,7 @@ export async function saveProfileSettings(settings: ProfileSettings) {
   db.close();
 }
 
-export function newReadingEvent(input: Omit<ReadingEvent, "id" | "openedAt" | "updatedAt" | "activeSeconds" | "scrollDepth">): ReadingEvent {
+export function newReadingEvent(input: Omit<ReadingEvent, "id" | "openedAt" | "updatedAt" | "activeSeconds" | "scrollDepth" | "readingTime" | "listPosition"> & { readingTime?: number; listPosition?: number }): ReadingEvent {
   const now = new Date().toISOString();
   return {
     ...input,

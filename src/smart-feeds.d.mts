@@ -37,9 +37,10 @@ export function isEntryInSmartFeed(
   timeZone?: string,
 ): boolean;
 export function compareSmartFeedEntries(
-  a: SortableSmartFeedEntry,
-  b: SortableSmartFeedEntry,
+  a: SortableSmartFeedEntry & { id: number },
+  b: SortableSmartFeedEntry & { id: number },
   mode: SmartFeedMode,
+  labels?: Map<number, string[]>,
 ): number;
 export function countSmartFeedEntries(
   entries: SmartFeedEntry[],
