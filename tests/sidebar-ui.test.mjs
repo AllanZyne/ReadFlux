@@ -181,3 +181,80 @@ test("article panel headers do not draw horizontal divider lines", () => {
   assert.ok(feedTitleRules.every((match) => !/border-bottom\s*:/.test(match[1])));
   assert.ok(readerToolbarRules.every((match) => !/border-bottom\s*:/.test(match[1])));
 });
+
+test("image loading settings offer scoped defaults and per-feed overrides", () => {
+  assert.match(app, /updateDefaultImageLoadingMode/);
+  assert.match(app, /updateFeedImageLoadingMode/);
+  assert.match(app, /value="direct-no-referrer"/);
+  assert.match(app, /value="direct-origin"/);
+  assert.match(app, /imageProxyAvailable && <option value="proxy"/);
+  assert.match(app, /value="inherit"/);
+  assert.match(styles, /\.imageDefaultMode\s*\{/);
+  assert.match(styles, /\.feedSettingRow>select\s*\{/);
+});
+
+test("proxy mode is exposed only after probing decodable links from the current server", () => {
+  assert.match(app, /\/v1\/entries\?limit=20&order=published_at&direction=desc/);
+  assert.match(app, /containsMinifluxProxyURL\(entry\.content, config\.url\)/);
+  assert.match(app, /imageProxySupport\.url === config\.url/);
+  assert.match(app, /shouldRefreshProxyContent\(selected\.content, config\.url, selectedImageMode, alreadyAttempted\)/);
+});
+
+test("settings give feeds a dedicated tab between sync and recommendation", () => {
+  assert.match(app, /useState<"general" \| "sync" \| "feeds" \| "recommendation">/);
+  const tabs = app.match(/<nav className="settingsTabs"[\s\S]*?<\/nav>/)?.[0] ?? "";
+  assert.ok(tabs.indexOf('tab === "sync"') < tabs.indexOf('tab === "feeds"'));
+  assert.ok(tabs.indexOf('tab === "feeds"') < tabs.indexOf('tab === "recommendation"'));
+  assert.match(tabs, /t\("settings\.feeds"\)/);
+});
+
+test("global image mode lives in sync while per-feed mode uses a master-detail inspector", () => {
+  const generalStart = app.indexOf('{tab === "general" && <>');
+  const syncStart = app.indexOf('{tab === "sync" && <>');
+  const feedsStart = app.indexOf('{tab === "feeds" &&');
+  const recommendationStart = app.indexOf('{tab === "recommendation" &&');
+  const generalPanel = app.slice(generalStart, syncStart);
+  const syncPanel = app.slice(syncStart, feedsStart);
+  const feedsPanel = app.slice(feedsStart, recommendationStart);
+
+  assert.doesNotMatch(generalPanel, /setDefaultImageMode|setFeedImageMode/);
+  assert.match(syncPanel, /setDefaultImageMode/);
+  assert.doesNotMatch(syncPanel, /setFeedImageMode/);
+  assert.match(feedsPanel, /className="feedSettingsLayout"/);
+  assert.match(feedsPanel, /className="feedSettingsNav"/);
+  assert.match(feedsPanel, /setSelectedFeedId\(feed\.id\)/);
+  assert.match(feedsPanel, /className="feedSettingsInspector"/);
+  assert.match(feedsPanel, /setFeedImageMode\(selectedFeed\.id, event\.target\.value\)/);
+  assert.match(styles, /\.feedSettingsLayout\s*\{/);
+  assert.match(styles, /\.feedSettingRow\s*\{/);
+});
+
+test("all settings and onboarding selects share the lightweight outlined treatment", () => {
+  assert.match(
+    styles,
+    /:is\(\.settingsDialog,\.connectCard\) select\s*\{[^}]*appearance:none;[^}]*padding-right:38px;[^}]*background-image:url\([^}]*background-position:right 12px center;[^}]*cursor:pointer;/,
+  );
+  assert.match(styles, /:is\(\.settingsDialog,\.connectCard\) select:hover\s*\{[^}]*border-color:/);
+  assert.match(styles, /:is\(\.settingsDialog,\.connectCard\) select:focus\s*\{[^}]*box-shadow:/);
+  assert.match(styles, /:is\(\.settingsDialog,\.connectCard\) select:disabled\s*\{[^}]*cursor:not-allowed;/);
+  assert.doesNotMatch(styles, /:where\(\.settingsDialog,\.connectCard\) select/);
+});
+
+test("Miniflux range and image defaults use the same compact sync row", () => {
+  const syncStart = app.indexOf('{tab === "sync" && <>');
+  const feedsStart = app.indexOf('{tab === "feeds" &&');
+  const syncPanel = app.slice(syncStart, feedsStart);
+
+  assert.equal([...syncPanel.matchAll(/className="syncSelectSetting[^"]*"/g)].length, 2);
+  assert.match(
+    styles,
+    /\.syncSelectSetting\s*\{[^}]*grid-template-columns:minmax\(150px,180px\) minmax\(220px,1fr\);[^}]*align-items:center;/,
+  );
+  assert.match(styles, /\.syncSelectSetting small\s*\{[^}]*grid-column:2;/);
+});
+
+test("settings dialog typography keeps labels and supporting text readable", () => {
+  assert.match(styles, /\.settingsDialog label>span\s*\{[^}]*font-size:13px;[^}]*font-weight:500;/);
+  assert.match(styles, /\.settingsDialog :is\(input,select\)\s*\{[^}]*font-size:13px;/);
+  assert.match(styles, /\.settingsDialog :is\(p,small\)\s*\{[^}]*font-size:12px;/);
+});
