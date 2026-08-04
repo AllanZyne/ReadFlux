@@ -1,7 +1,18 @@
 import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
-import { imageReferrerPolicy, minifluxReferrerScope, updateOriginReferrerFeeds } from "./article-images";
+import {
+  containsMinifluxProxyURL,
+  detectMinifluxProxySupport,
+  imageReferrerPolicy,
+  imageURLForMode,
+  minifluxReferrerScope,
+  resolveImageLoadingMode,
+  shouldRefreshProxyContent,
+  updateDefaultImageLoadingMode,
+  updateFeedImageLoadingMode,
+  type ImageLoadingMode,
+} from "./article-images";
 import { runExclusive } from "./async-lock";
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { startOptionalMinifluxTimeZoneLoad } from "./miniflux-timezone.mjs";
@@ -151,7 +162,7 @@ async function loadEntryPages(
 
 }
 
-function safeHtml(html: string, useOriginReferrer = false) {
+function safeHtml(html: string, minifluxURL: string, imageMode: ImageLoadingMode) {
   if (typeof window === "undefined") return "";
   const parsed = new DOMParser().parseFromString(html, "text/html");
   parsed.querySelectorAll("script,style,iframe,object,embed,form,video,audio,source").forEach((node) => node.remove());
@@ -167,11 +178,20 @@ function safeHtml(html: string, useOriginReferrer = false) {
     link.setAttribute("rel", "noopener noreferrer");
   });
   parsed.querySelectorAll("img").forEach((image) => {
-    const src = image.getAttribute("src") ?? "";
+    const currentSrc = image.getAttribute("src") ?? "";
+    const src = imageURLForMode(currentSrc, minifluxURL, imageMode);
     if (!/^https?:\/\//i.test(src)) image.remove();
     else {
+      image.setAttribute("src", src);
+      const srcset = image.getAttribute("srcset");
+      if (srcset) {
+        image.setAttribute("srcset", srcset.replace(
+          /https?:\/\/[^\s,]+/gi,
+          (candidate) => imageURLForMode(candidate, minifluxURL, imageMode),
+        ));
+      }
       image.setAttribute("loading", "lazy");
-      image.setAttribute("referrerpolicy", imageReferrerPolicy(useOriginReferrer));
+      image.setAttribute("referrerpolicy", imageReferrerPolicy(imageMode));
     }
   });
   return parsed.body.innerHTML;
@@ -203,6 +223,7 @@ function SettingsDialog({
   config,
   feeds,
   referrerScope,
+  imageProxyAvailable,
   events,
   settings,
   timeZone,
@@ -213,6 +234,7 @@ function SettingsDialog({
   starredCount,
   onClose,
   onSettingsChange,
+  onImageModeChange,
   onEventsChange,
   onDisconnect,
   onResetSync,
@@ -222,6 +244,7 @@ function SettingsDialog({
   config: ConnectionConfig;
   feeds: Feed[];
   referrerScope: string;
+  imageProxyAvailable: boolean;
   events: ReadingEvent[];
   settings: ProfileSettings;
   timeZone: string;
@@ -232,6 +255,7 @@ function SettingsDialog({
   starredCount: number;
   onClose: () => void;
   onSettingsChange: (settings: ProfileSettings) => void;
+  onImageModeChange: (feedId?: number) => void;
   onEventsChange: (events: ReadingEvent[]) => void;
   onDisconnect: () => void;
   onResetSync: () => Promise<void>;
@@ -239,7 +263,8 @@ function SettingsDialog({
   notify: (message: string) => void;
 }) {
   const { t, i18n } = useTranslation();
-  const [tab, setTab] = useState<"general" | "sync" | "recommendation">("general");
+  const [tab, setTab] = useState<"general" | "sync" | "feeds" | "recommendation">("general");
+  const [selectedFeedId, setSelectedFeedId] = useState<number | null>(null);
   const [resetting, setResetting] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
   const [eventQuery, setEventQuery] = useState("");
@@ -293,17 +318,34 @@ function SettingsDialog({
     if (saved) await i18n.changeLanguage(language);
   };
 
-  const setOriginReferrerFeed = async (feedId: number, useOrigin: boolean) => {
+  const setDefaultImageMode = async (mode: ImageLoadingMode) => {
     if (!referrerScope) return;
-    await saveProfileChange((current) => ({
+    const saved = await saveProfileChange((current) => ({
       ...current,
-      originReferrerFeeds: updateOriginReferrerFeeds(
-        current.originReferrerFeeds ?? {},
+      imageLoadingPreferences: updateDefaultImageLoadingMode(
+        current.imageLoadingPreferences,
+        referrerScope,
+        mode,
+      ),
+      updatedAt: new Date().toISOString(),
+    }), t("settings.imageSaveFailed"));
+    if (saved) onImageModeChange();
+  };
+
+  const setFeedImageMode = async (feedId: number, value: string) => {
+    if (!referrerScope) return;
+    const mode = value === "inherit" ? null : value as ImageLoadingMode;
+    const saved = await saveProfileChange((current) => ({
+      ...current,
+      imageLoadingPreferences: updateFeedImageLoadingMode(
+        current.imageLoadingPreferences,
         referrerScope,
         feedId,
-        useOrigin,
+        mode,
       ),
+      updatedAt: new Date().toISOString(),
     }), t("settings.imageSaveFailed"));
+    if (saved) onImageModeChange(feedId);
   };
 
   const setEntryLookback = async (value: string) => {
@@ -384,6 +426,9 @@ function SettingsDialog({
   const shownEvents = [...events]
     .filter((event) => !eventQuery.trim() || `${event.title} ${event.source} ${event.terms.join(" ")}`.toLowerCase().includes(eventQuery.trim().toLowerCase()))
     .sort((a, b) => b.openedAt.localeCompare(a.openedAt));
+  const sortedFeeds = [...feeds]
+    .sort((a, b) => `${a.category?.title ?? ""}\n${a.title}`.localeCompare(`${b.category?.title ?? ""}\n${b.title}`, i18n.resolvedLanguage ?? "en"));
+  const selectedFeed = sortedFeeds.find((feed) => feed.id === selectedFeedId) ?? sortedFeeds[0] ?? null;
 
   return (
     <div className="settingsBackdrop" role="presentation" onMouseDown={(event) => {
@@ -397,6 +442,7 @@ function SettingsDialog({
         <nav className="settingsTabs" aria-label={t("settings.categories")}>
           <button className={tab === "general" ? "active" : ""} onClick={() => setTab("general")}>{t("settings.general")}</button>
           <button className={tab === "sync" ? "active" : ""} onClick={() => setTab("sync")}>{t("settings.sync")}</button>
+          <button className={tab === "feeds" ? "active" : ""} onClick={() => setTab("feeds")}>{t("settings.feeds")}</button>
           <button className={tab === "recommendation" ? "active" : ""} onClick={() => setTab("recommendation")}>{t("settings.recommendation")} <span>{events.length}</span></button>
         </nav>
 
@@ -425,23 +471,6 @@ function SettingsDialog({
                 </label>
               </div>
             </section>
-            <section>
-              <div className="settingTitle"><div><h3>{t("settings.imageCompatibility")}</h3><p>{t("settings.imageCompatibilityHint")}</p></div></div>
-              <div className="originFeedList">
-                {feeds.length && referrerScope ? [...feeds]
-                  .sort((a, b) => `${a.category?.title ?? ""}\n${a.title}`.localeCompare(`${b.category?.title ?? ""}\n${b.title}`, i18n.resolvedLanguage ?? "en"))
-                  .map((feed) => <label key={feed.id}>
-                    <input
-                      type="checkbox"
-                      checked={settings.originReferrerFeeds?.[referrerScope]?.includes(feed.id) ?? false}
-                      disabled={profileSaving}
-                      onChange={(event) => void setOriginReferrerFeed(feed.id, event.target.checked)}
-                    />
-                    <span><strong>{feed.title}</strong><small>{feed.category?.title ?? t("settings.uncategorized")}</small></span>
-                  </label>)
-                  : <p>{feeds.length ? t("settings.preparingFeeds") : t("settings.noFeeds")}</p>}
-              </div>
-            </section>
             <section className="privacyBox">
               <strong>{t("settings.localBoundary")}</strong>
               <p>{t("settings.localBoundaryHint")}</p>
@@ -457,12 +486,27 @@ function SettingsDialog({
               <div className="settingsForm minifluxSettings">
                 <label><span>{t("sync.server")}</span><input value={config.url} readOnly /></label>
                 <label className="timeZoneSetting"><span>{t("sync.timeZone")}</span><input value={timeZone} readOnly /><small>{t(timeZoneSource === "miniflux" ? "sync.timeZoneMinifluxHint" : "sync.timeZoneBrowserHint")}</small></label>
-                <label className="lookbackSetting">
+                <label className="syncSelectSetting">
                   <span>{t("sync.range")}</span>
                   <select disabled={profileSaving} value={settings.entryLookbackDays ?? "all"} onChange={(event) => void setEntryLookback(event.target.value)}>
                     {LOOKBACK_OPTIONS.map((option) => <option key={option.value ?? "all"} value={option.value ?? "all"}>{t(option.key)}</option>)}
                   </select>
                   <small>{t("sync.rangeHint")}</small>
+                </label>
+                <label className="syncSelectSetting imageDefaultMode">
+                  <span>{t("settings.imageDefault")}</span>
+                  <select
+                    disabled={profileSaving || !referrerScope}
+                    value={settings.imageLoadingPreferences[referrerScope]?.defaultMode === "proxy" && !imageProxyAvailable
+                      ? "direct-no-referrer"
+                      : settings.imageLoadingPreferences[referrerScope]?.defaultMode ?? "direct-no-referrer"}
+                    onChange={(event) => void setDefaultImageMode(event.target.value as ImageLoadingMode)}
+                  >
+                    <option value="direct-no-referrer">{t("settings.imageModeDirectNoReferrer")}</option>
+                    <option value="direct-origin">{t("settings.imageModeDirectOrigin")}</option>
+                    {imageProxyAvailable && <option value="proxy">{t("settings.imageModeProxy")}</option>}
+                  </select>
+                  <small>{imageProxyAvailable ? t("settings.imageDefaultHint") : t("settings.imageProxyUnavailable")}</small>
                 </label>
                 <div className="syncDataActions">
                   <div><strong>{t("sync.resetTitle")}</strong><p>{t("sync.resetHint")}</p></div>
@@ -472,6 +516,48 @@ function SettingsDialog({
               </div>
             </section>
           </>}
+
+          {tab === "feeds" && <section className="feedSettingsSection">
+            <div className="settingTitle"><div><h3>{t("settings.feedSettingsTitle")}</h3><p>{t("settings.feedSettingsHint")}</p></div></div>
+            {selectedFeed && referrerScope ? <div className="feedSettingsLayout">
+              <nav className="feedSettingsNav" aria-label={t("settings.feedList")}>
+                {sortedFeeds.map((feed) => <button
+                  key={feed.id}
+                  type="button"
+                  className={feed.id === selectedFeed.id ? "selected" : ""}
+                  aria-current={feed.id === selectedFeed.id ? "true" : undefined}
+                  onClick={() => setSelectedFeedId(feed.id)}
+                >
+                  <SourceIcon>{feed.title.slice(0, 1).toUpperCase()}</SourceIcon>
+                  <span><strong>{feed.title}</strong><small>{feed.category?.title ?? t("settings.uncategorized")}</small></span>
+                </button>)}
+              </nav>
+              <div className="feedSettingsInspector">
+                <header>
+                  <SourceIcon>{selectedFeed.title.slice(0, 1).toUpperCase()}</SourceIcon>
+                  <div><h3>{selectedFeed.title}</h3><p>{selectedFeed.category?.title ?? t("settings.uncategorized")}</p></div>
+                </header>
+                <section>
+                  <div className="settingTitle"><div><h3>{t("settings.imageCompatibility")}</h3><p>{t("settings.imageCompatibilityHint")}</p></div></div>
+                  <label className="feedSettingRow">
+                    <span>{t("settings.imageLoading")}</span>
+                    <select
+                      disabled={profileSaving}
+                      value={settings.imageLoadingPreferences[referrerScope]?.feedModes[String(selectedFeed.id)] === "proxy" && !imageProxyAvailable
+                        ? "inherit"
+                        : settings.imageLoadingPreferences[referrerScope]?.feedModes[String(selectedFeed.id)] ?? "inherit"}
+                      onChange={(event) => void setFeedImageMode(selectedFeed.id, event.target.value)}
+                    >
+                      <option value="inherit">{t("settings.imageModeInherit")}</option>
+                      <option value="direct-no-referrer">{t("settings.imageModeDirectNoReferrer")}</option>
+                      <option value="direct-origin">{t("settings.imageModeDirectOrigin")}</option>
+                      {imageProxyAvailable && <option value="proxy">{t("settings.imageModeProxy")}</option>}
+                    </select>
+                  </label>
+                </section>
+              </div>
+            </div> : <p className="feedSettingsEmpty">{feeds.length ? t("settings.preparingFeeds") : t("settings.noFeeds")}</p>}
+          </section>}
 
           {tab === "recommendation" && <div className="recommendationData">
             <section className="dataIntro">
@@ -603,7 +689,7 @@ export default function App() {
   const [feeds, setFeeds] = useState<Feed[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [events, setEvents] = useState<ReadingEvent[]>([]);
-  const [settings, setSettings] = useState<ProfileSettings>({ theme: "day", entryLookbackDays: DEFAULT_LOOKBACK_DAYS, updatedAt: new Date(0).toISOString() });
+  const [settings, setSettings] = useState<ProfileSettings>({ theme: "day", entryLookbackDays: DEFAULT_LOOKBACK_DAYS, imageLoadingPreferences: {}, updatedAt: new Date(0).toISOString() });
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [mode, setMode] = useState<ListMode>("today");
   const [minifluxTimeZone, setMinifluxTimeZone] = useState<string>();
@@ -659,6 +745,7 @@ export default function App() {
   const [entryLabels, setEntryLabels] = useState<Map<number, string[]>>(new Map());
   const [visibleIds, setVisibleIds] = useState<number[]>([]);
   const [referrerScopeState, setReferrerScopeState] = useState({ url: "", scope: "" });
+  const [imageProxySupport, setImageProxySupport] = useState({ url: "", available: false });
   const [readingSeconds, setReadingSeconds] = useState(0);
   const activeEvent = useRef<ReadingEvent | null>(null);
   const readerRef = useRef<HTMLDivElement | null>(null);
@@ -676,6 +763,7 @@ export default function App() {
   const hideReadRef = useRef(hideRead);
   const queryRef = useRef(query);
   const loadRef = useRef<(options?: { background?: boolean }) => Promise<boolean>>(async () => false);
+  const proxyRefreshKey = useRef("");
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -721,6 +809,9 @@ export default function App() {
   const referrerScope = config && referrerScopeState.url === config.url
     ? referrerScopeState.scope
     : "";
+  const imageProxyAvailable = Boolean(config
+    && imageProxySupport.url === config.url
+    && imageProxySupport.available);
 
   useEffect(() => {
     Promise.all([getReadingEvents(), getProfileSettings()]).then(async ([history, profile]) => {
@@ -767,6 +858,9 @@ export default function App() {
 
   const mergeEntryBatch = useCallback(async (batch: Entry[]) => {
     if (!config || !batch.length) return;
+    if (batch.some((entry) => containsMinifluxProxyURL(entry.content, config.url))) {
+      setImageProxySupport({ url: config.url, available: true });
+    }
     const updatedIds = new Set<number>();
     setEntries((current) => {
       const merged = new Map(current.map((entry) => [entry.id, entry]));
@@ -877,15 +971,23 @@ export default function App() {
       const scopedCache = cached.filter((entry) =>
         entry.starred || cutoff === null || new Date(entry.published_at).getTime() >= cutoff);
       setEntries(scopedCache);
+      setImageProxySupport({ url: config.url, available: false });
       if (!listSnapshotIds.current.size || !scopedCache.some((e) => listSnapshotIds.current.has(e.id))) {
         setListReadSnapshot(new Map(scopedCache.map((entry) => [entry.id, entry.status])));
       }
-      const [feedData, categoryData] = await Promise.all([
+      const [feedData, categoryData, proxyProbe] = await Promise.all([
         minifluxFetch<Feed[]>(config, "/v1/feeds"),
         minifluxFetch<Category[]>(config, "/v1/categories"),
+        minifluxFetch<EntryPage>(config, "/v1/entries?limit=20&order=published_at&direction=desc")
+          .catch(() => null),
       ]);
       setFeeds(feedData ?? []);
       setCategories(categoryData ?? []);
+      const proxyAvailable = detectMinifluxProxySupport(proxyProbe?.entries ?? [], config.url);
+      setImageProxySupport({ url: config.url, available: proxyAvailable });
+      if (proxyAvailable && proxyProbe) {
+        await mergeEntryBatch(proxyProbe.entries);
+      }
       setSelectedId((current) => current && scopedCache.some((entry) => entry.id === current) ? current : null);
 
       const needsInitialSync = !storedState?.initialSyncComplete
@@ -1165,6 +1267,14 @@ export default function App() {
   useEffect(() => { visibleEmptyRef.current = !visible.length; }, [visible]);
 
   const selected = stories.find((story) => story.id === selectedId) ?? null;
+  const selectedImageMode = selected
+    ? resolveImageLoadingMode(
+        settings.imageLoadingPreferences,
+        referrerScope,
+        selected.feed_id,
+        imageProxyAvailable,
+      )
+    : "direct-no-referrer";
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -1214,6 +1324,18 @@ export default function App() {
       setContentLoadingId((current) => current === id ? null : current);
     }
   }, [config, entries]);
+
+  useEffect(() => {
+    if (!config || !selected || selectedImageMode !== "proxy") {
+      proxyRefreshKey.current = "";
+      return;
+    }
+    const refreshKey = `${config.url}:${selected.id}`;
+    const alreadyAttempted = proxyRefreshKey.current === refreshKey;
+    if (!shouldRefreshProxyContent(selected.content, config.url, selectedImageMode, alreadyAttempted)) return;
+    proxyRefreshKey.current = refreshKey;
+    void loadEntryContent(selected.id);
+  }, [config, selected, selectedImageMode, loadEntryContent]);
 
   const choose = useCallback((story: Story, origin?: ReadingEvent["origin"]) => {
     void persistActive();
@@ -1533,7 +1655,8 @@ export default function App() {
                   ? <div className="articleLoading errorState"><b>!</b><p>{t(contentError.error.key, { status: contentError.error.status })}</p><button onClick={() => void loadEntryContent(selected.id)}>{t("common.retry")}</button></div>
                   : <div className="body articleContent" dangerouslySetInnerHTML={{ __html: safeHtml(
                       selected.content,
-                      settings.originReferrerFeeds?.[referrerScope]?.includes(selected.feed_id) ?? false,
+                      config.url,
+                      selectedImageMode,
                     ) }} />}
               <div className="feedback"><span>{t("recommendation.feedbackQuestion")}</span><button onClick={() => void setFeedback("helpful")}>{t("recommendation.helpful")}</button><button onClick={() => void setFeedback("not_interested")}>{t("recommendation.notInterested")}</button></div>
             </div>
@@ -1546,6 +1669,7 @@ export default function App() {
         config={config}
         feeds={feeds}
         referrerScope={referrerScope}
+        imageProxyAvailable={imageProxyAvailable}
         events={events}
         settings={settings}
         timeZone={activeTimeZone}
@@ -1556,6 +1680,11 @@ export default function App() {
         starredCount={savedCount}
         onClose={() => setSettingsOpen(false)}
         onSettingsChange={setSettings}
+        onImageModeChange={(feedId) => {
+          if (selected && (feedId === undefined || feedId === selected.feed_id)) {
+            void loadEntryContent(selected.id);
+          }
+        }}
         onEventsChange={(next) => {
           if (activeEvent.current && !next.some((event) => event.id === activeEvent.current?.id)) activeEvent.current = null;
           setEvents(next);

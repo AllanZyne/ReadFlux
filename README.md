@@ -19,6 +19,8 @@ and ranks unread articles published today into a personalized **Today** view.
 - Stable unread-list snapshots, so articles do not disappear while being read
 - Day and night themes
 - English, Simplified Chinese, and French interfaces selectable in Settings
+- Per-server and per-feed image loading choices for original images with or
+  without an Origin referrer, plus Miniflux proxy links when the server exposes them
 - Continuous keyboard reading, adjustable column widths, and mobile navigation
 - Inspection, editing, and deletion of reading events, feed preferences, and
   keyword preferences

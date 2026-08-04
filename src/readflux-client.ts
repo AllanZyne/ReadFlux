@@ -1,4 +1,8 @@
-import type { OriginReferrerFeeds } from "./article-images";
+import {
+  isImageLoadingMode,
+  type ImageLoadingMode,
+  type ImageLoadingPreferences,
+} from "./article-images.ts";
 import { isSupportedLanguage, type SupportedLanguage } from "./languages.ts";
 
 export type ConnectionConfig = {
@@ -13,11 +17,14 @@ export type ProfileSettings = {
   theme: ThemeName;
   language?: SupportedLanguage;
   entryLookbackDays?: number | null;
-  originReferrerFeeds?: OriginReferrerFeeds;
+  imageLoadingPreferences: ImageLoadingPreferences;
   updatedAt: string;
 };
 
-type StoredProfileSettings = Partial<ProfileSettings> & { webdav?: unknown };
+type StoredProfileSettings = Partial<ProfileSettings> & {
+  originReferrerFeeds?: Record<string, number[]>;
+  webdav?: unknown;
+};
 
 export type EntrySyncPhase = "unread" | "starred" | "read";
 
@@ -273,7 +280,7 @@ export async function getProfileSettings(): Promise<ProfileSettings> {
   const value = await requestResult(db.transaction(SETTINGS).objectStore(SETTINGS).get("profile"));
   db.close();
   const settings = normalizeProfileSettings(value);
-  if (hasLegacyWebDavSettings(value)) await saveProfileSettings(settings);
+  if (hasLegacyWebDavSettings(value) || hasLegacyImageSettings(value)) await saveProfileSettings(settings);
   return settings;
 }
 
@@ -286,14 +293,54 @@ export function hasLegacyWebDavSettings(value: unknown) {
   return stored !== undefined && "webdav" in stored;
 }
 
+function hasLegacyImageSettings(value: unknown) {
+  const stored = storedProfileSettings(value);
+  return stored !== undefined && "originReferrerFeeds" in stored;
+}
+
+function normalizeImageLoadingPreferences(value: unknown): ImageLoadingPreferences {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  const normalized: ImageLoadingPreferences = {};
+  for (const [scope, scopedValue] of Object.entries(value)) {
+    if (typeof scopedValue !== "object" || scopedValue === null || Array.isArray(scopedValue)) continue;
+    const candidate = scopedValue as { defaultMode?: unknown; feedModes?: unknown };
+    if (!isImageLoadingMode(candidate.defaultMode)) continue;
+    const feedModes: Record<string, ImageLoadingMode> = {};
+    if (typeof candidate.feedModes === "object" && candidate.feedModes !== null && !Array.isArray(candidate.feedModes)) {
+      for (const [feedId, mode] of Object.entries(candidate.feedModes)) {
+        if (/^\d+$/.test(feedId) && isImageLoadingMode(mode)) feedModes[feedId] = mode;
+      }
+    }
+    normalized[scope] = { defaultMode: candidate.defaultMode, feedModes };
+  }
+  return normalized;
+}
+
+function migrateOriginReferrerFeeds(value: unknown): ImageLoadingPreferences {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  const migrated: ImageLoadingPreferences = {};
+  for (const [scope, feedIds] of Object.entries(value)) {
+    if (!Array.isArray(feedIds)) continue;
+    const feedModes: Record<string, ImageLoadingMode> = {};
+    feedIds.forEach((feedId) => {
+      if (Number.isSafeInteger(feedId) && feedId >= 0) feedModes[String(feedId)] = "direct-origin";
+    });
+    migrated[scope] = { defaultMode: "direct-no-referrer", feedModes };
+  }
+  return migrated;
+}
+
 export function normalizeProfileSettings(value?: unknown): ProfileSettings {
   const stored = storedProfileSettings(value);
   const language = stored?.language;
+  const imageLoadingPreferences = stored?.imageLoadingPreferences === undefined
+    ? migrateOriginReferrerFeeds(stored?.originReferrerFeeds)
+    : normalizeImageLoadingPreferences(stored.imageLoadingPreferences);
   return {
     theme: stored?.theme === "night" ? "night" : "day",
     ...(isSupportedLanguage(language) ? { language } : {}),
     entryLookbackDays: stored?.entryLookbackDays === undefined ? 30 : stored.entryLookbackDays,
-    originReferrerFeeds: stored?.originReferrerFeeds ?? {},
+    imageLoadingPreferences,
     updatedAt: stored?.updatedAt ?? new Date(0).toISOString(),
   };
 }
