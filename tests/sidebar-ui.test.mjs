@@ -232,11 +232,12 @@ test("global image mode lives in sync while per-feed mode uses a master-detail i
 test("all settings and onboarding selects share the lightweight outlined treatment", () => {
   assert.match(
     styles,
-    /:where\(\.settingsDialog,\.connectCard\) select\s*\{[^}]*appearance:none;[^}]*background-image:url\([^}]*background-position:right 12px center;[^}]*cursor:pointer;/,
+    /:is\(\.settingsDialog,\.connectCard\) select\s*\{[^}]*appearance:none;[^}]*padding-right:38px;[^}]*background-image:url\([^}]*background-position:right 12px center;[^}]*cursor:pointer;/,
   );
-  assert.match(styles, /:where\(\.settingsDialog,\.connectCard\) select:hover\s*\{[^}]*border-color:/);
-  assert.match(styles, /:where\(\.settingsDialog,\.connectCard\) select:focus\s*\{[^}]*box-shadow:/);
-  assert.match(styles, /:where\(\.settingsDialog,\.connectCard\) select:disabled\s*\{[^}]*cursor:not-allowed;/);
+  assert.match(styles, /:is\(\.settingsDialog,\.connectCard\) select:hover\s*\{[^}]*border-color:/);
+  assert.match(styles, /:is\(\.settingsDialog,\.connectCard\) select:focus\s*\{[^}]*box-shadow:/);
+  assert.match(styles, /:is\(\.settingsDialog,\.connectCard\) select:disabled\s*\{[^}]*cursor:not-allowed;/);
+  assert.doesNotMatch(styles, /:where\(\.settingsDialog,\.connectCard\) select/);
 });
 
 test("Miniflux range and image defaults use the same compact sync row", () => {
