@@ -13,6 +13,7 @@ import {
   updateFeedImageLoadingMode,
   type ImageLoadingMode,
 } from "./article-images";
+import { articleMediaURL, youtubeEmbedURL } from "./article-content";
 import { runExclusive } from "./async-lock";
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { startOptionalMinifluxTimeZoneLoad } from "./miniflux-timezone.mjs";
@@ -165,7 +166,48 @@ async function loadEntryPages(
 function safeHtml(html: string, minifluxURL: string, imageMode: ImageLoadingMode) {
   if (typeof window === "undefined") return "";
   const parsed = new DOMParser().parseFromString(html, "text/html");
-  parsed.querySelectorAll("script,style,iframe,object,embed,form,video,audio,source").forEach((node) => node.remove());
+  parsed.querySelectorAll("script,style,object,embed,form,audio,track").forEach((node) => node.remove());
+  parsed.querySelectorAll("iframe").forEach((frame) => {
+    const src = youtubeEmbedURL(frame.getAttribute("src") ?? "");
+    if (!src) {
+      frame.remove();
+      return;
+    }
+    frame.setAttribute("src", src);
+    frame.setAttribute("loading", "eager");
+    frame.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
+    frame.setAttribute("allow", "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share");
+    frame.setAttribute("allowfullscreen", "");
+    if (!frame.getAttribute("title")) frame.setAttribute("title", "YouTube video player");
+  });
+  parsed.querySelectorAll("video").forEach((video) => {
+    const src = articleMediaURL(video.getAttribute("src") ?? "", minifluxURL);
+    if (src) video.setAttribute("src", src);
+    else video.removeAttribute("src");
+
+    video.querySelectorAll("source").forEach((source) => {
+      const sourceSrc = articleMediaURL(source.getAttribute("src") ?? "", minifluxURL);
+      if (!sourceSrc) source.remove();
+      else source.setAttribute("src", sourceSrc);
+    });
+    if (!src && !video.querySelector("source")) {
+      video.remove();
+      return;
+    }
+
+    const poster = articleMediaURL(video.getAttribute("poster") ?? "", minifluxURL);
+    if (poster) {
+      video.setAttribute("poster", imageURLForMode(poster, minifluxURL, imageMode));
+      video.setAttribute("referrerpolicy", imageReferrerPolicy(imageMode));
+    } else video.removeAttribute("poster");
+    video.removeAttribute("autoplay");
+    video.setAttribute("controls", "");
+    video.setAttribute("playsinline", "");
+    video.setAttribute("preload", "metadata");
+  });
+  parsed.querySelectorAll("source").forEach((source) => {
+    if (!source.closest("video")) source.remove();
+  });
   parsed.querySelectorAll("*").forEach((node) => {
     [...node.attributes].forEach((attribute) => {
       if (attribute.name.startsWith("on") || attribute.name === "style" || attribute.name === "srcdoc") {
@@ -178,6 +220,10 @@ function safeHtml(html: string, minifluxURL: string, imageMode: ImageLoadingMode
     link.setAttribute("rel", "noopener noreferrer");
   });
   parsed.querySelectorAll("img").forEach((image) => {
+    const parentLink = image.parentElement?.tagName === "A" ? image.parentElement : null;
+    if (parentLink?.children.length === 1 && parentLink.textContent?.trim()) {
+      image.classList.add("articleInlineIcon");
+    }
     const currentSrc = image.getAttribute("src") ?? "";
     const src = imageURLForMode(currentSrc, minifluxURL, imageMode);
     if (!/^https?:\/\//i.test(src)) image.remove();
