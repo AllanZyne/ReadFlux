@@ -36,3 +36,23 @@ export function articleMediaURL(value: string, baseURL?: string): string | null 
     return null;
   }
 }
+
+export function isWeiboLivePhotoURL(value: string): boolean {
+  try {
+    const wrapper = new URL(value);
+    if (
+      wrapper.protocol !== "https:"
+      || wrapper.hostname.toLowerCase() !== "video.weibo.com"
+      || wrapper.pathname !== "/media/play"
+    ) return false;
+
+    const livePhoto = wrapper.searchParams.get("livephoto");
+    if (!livePhoto) return false;
+    const media = new URL(livePhoto);
+    return media.protocol === "https:"
+      && /(^|\.)sinaimg\.cn$/i.test(media.hostname)
+      && media.pathname.toLowerCase().endsWith(".mov");
+  } catch {
+    return false;
+  }
+}

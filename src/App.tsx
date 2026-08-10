@@ -13,7 +13,7 @@ import {
   updateFeedImageLoadingMode,
   type ImageLoadingMode,
 } from "./article-images";
-import { articleMediaURL, youtubeEmbedURL } from "./article-content";
+import { articleMediaURL, isWeiboLivePhotoURL, youtubeEmbedURL } from "./article-content";
 import { runExclusive } from "./async-lock";
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { startOptionalMinifluxTimeZoneLoad } from "./miniflux-timezone.mjs";
@@ -201,9 +201,37 @@ function safeHtml(html: string, minifluxURL: string, imageMode: ImageLoadingMode
       video.setAttribute("referrerpolicy", imageReferrerPolicy(imageMode));
     } else video.removeAttribute("poster");
     video.removeAttribute("autoplay");
-    video.setAttribute("controls", "");
     video.setAttribute("playsinline", "");
     video.setAttribute("preload", "metadata");
+    if (src && isWeiboLivePhotoURL(src)) {
+      video.removeAttribute("controls");
+      video.removeAttribute("poster");
+      video.setAttribute("muted", "");
+      video.setAttribute("loop", "");
+      video.setAttribute("preload", "auto");
+      video.classList.add("articleLivePhoto");
+      const frame = parsed.createElement("span");
+      frame.className = "articleLivePhotoFrame";
+      frame.setAttribute("role", "button");
+      frame.setAttribute("tabindex", "0");
+      frame.setAttribute("aria-label", "Live Photo");
+      frame.setAttribute("aria-pressed", "false");
+      const posterImage = poster ? parsed.createElement("img") : null;
+      if (posterImage && poster) {
+        frame.classList.add("hasPoster");
+        posterImage.className = "articleLivePhotoPoster";
+        posterImage.setAttribute("src", imageURLForMode(poster, minifluxURL, imageMode));
+        posterImage.setAttribute("loading", "lazy");
+        posterImage.setAttribute("referrerpolicy", "origin");
+        posterImage.setAttribute("alt", "");
+      }
+      const badge = parsed.createElement("span");
+      badge.className = "articleLivePhotoBadge";
+      badge.setAttribute("aria-hidden", "true");
+      badge.textContent = "● LIVE";
+      video.replaceWith(frame);
+      frame.append(...(posterImage ? [posterImage, video, badge] : [video, badge]));
+    } else video.setAttribute("controls", "");
   });
   parsed.querySelectorAll("source").forEach((source) => {
     if (!source.closest("video")) source.remove();
@@ -241,6 +269,28 @@ function safeHtml(html: string, minifluxURL: string, imageMode: ImageLoadingMode
     }
   });
   return parsed.body.innerHTML;
+}
+
+function toggleLivePhoto(target: EventTarget | null) {
+  if (!(target instanceof Element)) return false;
+  const frame = target.closest<HTMLElement>(".articleLivePhotoFrame");
+  const video = frame?.querySelector("video");
+  if (!frame || !video) return false;
+  if (video.paused) {
+    video.muted = true;
+    void video.play().then(() => {
+      frame.classList.add("playing");
+      frame.setAttribute("aria-pressed", "true");
+    }).catch(() => {
+      frame.classList.remove("playing");
+      frame.setAttribute("aria-pressed", "false");
+    });
+  } else {
+    video.pause();
+    frame.classList.remove("playing");
+    frame.setAttribute("aria-pressed", "false");
+  }
+  return true;
 }
 
 const SourceIcon = ({ children, src }: { children: React.ReactNode; src?: string }) => (
@@ -1699,7 +1749,9 @@ export default function App() {
                 ? <div className="articleLoading" role="status"><b className="loadingMark">↻</b><p>{t("reader.loadingContent")}</p></div>
                 : contentError?.id === selected.id
                   ? <div className="articleLoading errorState"><b>!</b><p>{t(contentError.error.key, { status: contentError.error.status })}</p><button onClick={() => void loadEntryContent(selected.id)}>{t("common.retry")}</button></div>
-                  : <div className="body articleContent" dangerouslySetInnerHTML={{ __html: safeHtml(
+                  : <div className="body articleContent" onClick={(event) => toggleLivePhoto(event.target)} onKeyDown={(event) => {
+                    if ((event.key === "Enter" || event.key === " ") && toggleLivePhoto(event.target)) event.preventDefault();
+                  }} dangerouslySetInnerHTML={{ __html: safeHtml(
                       selected.content,
                       config.url,
                       selectedImageMode,

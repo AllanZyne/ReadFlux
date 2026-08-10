@@ -68,3 +68,22 @@ test("linked text icons stay inline without changing linked article images", asy
   assert.match(app, /image\.classList\.add\("articleInlineIcon"\)/);
   assert.match(css, /\.articleContent img\.articleInlineIcon\{display:inline-block;/);
 });
+
+test("Weibo Live Photo wrappers are distinguished from ordinary videos", () => {
+  const livePhoto = "https://video.weibo.com/media/play?livephoto=https%3A%2F%2Flivephoto.us.sinaimg.cn%2Fexample.mov";
+  assert.equal(articleContent.isWeiboLivePhotoURL(livePhoto), true);
+  assert.equal(articleContent.isWeiboLivePhotoURL("https://video.weibo.com/media/play?id=123"), false);
+  assert.equal(articleContent.isWeiboLivePhotoURL("https://video.example/media/play?livephoto=https%3A%2F%2Flivephoto.us.sinaimg.cn%2Fexample.mov"), false);
+  assert.equal(articleContent.isWeiboLivePhotoURL("https://video.weibo.com/media/play?livephoto=javascript%3Aalert(1)"), false);
+});
+
+test("Live Photos use an accessible click-to-loop presentation", async () => {
+  const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const css = await readFile(new URL("../src/index.css", import.meta.url), "utf8");
+  assert.match(app, /video\.classList\.add\("articleLivePhoto"\)/);
+  assert.match(app, /frame\.setAttribute\("role", "button"\)/);
+  assert.match(app, /toggleLivePhoto\(event\.target\)/);
+  assert.match(app, /posterImage\.setAttribute\("referrerpolicy", "origin"\)/);
+  assert.match(css, /\.articleLivePhotoBadge\{/);
+  assert.match(css, /\.articleLivePhotoFrame\.playing \.articleLivePhotoPoster\{opacity:0\}/);
+});
