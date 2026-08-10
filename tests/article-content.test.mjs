@@ -28,9 +28,18 @@ test("non-YouTube, non-embed, and unsafe iframe URLs are rejected", () => {
   assert.equal(articleContent.youtubeEmbedURL("javascript:alert(1)"), null);
 });
 
+test("YouTube embeds cannot request autoplay", () => {
+  assert.equal(
+    articleContent.youtubeEmbedURL("https://www.youtube.com/embed/dQw4w9WgXcQ?autoplay=1&si=abc"),
+    "https://www.youtube.com/embed/dQw4w9WgXcQ?si=abc",
+  );
+});
+
 test("YouTube frames load eagerly for Safari's nested article scroller", async () => {
   const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
   assert.match(app, /frame\.setAttribute\("loading", "eager"\)/);
+  assert.match(app, /frame\.setAttribute\("referrerpolicy", "no-referrer"\)/);
+  assert.doesNotMatch(app, /frame\.setAttribute\("allow", "[^"]*autoplay/);
 });
 
 test("native article media accepts HTTP(S) sources and rejects unsafe protocols", () => {
@@ -54,6 +63,14 @@ test("article sanitizer preserves controlled native video playback", async () =>
   assert.match(app, /parsed\.querySelectorAll\("video"\)/);
   assert.match(app, /video\.removeAttribute\("autoplay"\)/);
   assert.match(app, /video\.setAttribute\("controls", ""\)/);
+  assert.match(app, /video\.querySelectorAll\("track"\)/);
+  assert.match(app, /const trackSrc = articleMediaURL/);
+  assert.match(app, /parsed\.querySelectorAll\("source,track"\)/);
+});
+
+test("native videos retain their intrinsic aspect ratio", async () => {
+  const css = await readFile(new URL("../src/index.css", import.meta.url), "utf8");
+  assert.match(css, /\.articleContent video\{aspect-ratio:auto\}/);
 });
 
 test("native media requests do not leak a referrer rejected by media CDNs", async () => {

@@ -20,6 +20,7 @@ export function youtubeEmbedURL(value: string): string | null {
     ) return null;
 
     url.protocol = "https:";
+    url.searchParams.delete("autoplay");
     return url.href;
   } catch {
     return null;

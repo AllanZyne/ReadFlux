@@ -305,6 +305,7 @@ kbd{padding:2px 6px;border:1px solid #33423e;border-radius:4px;background:#1a252
   .workspace.mobile-sources .sidebarScroll{padding:14px 10px}
   .workspace.mobile-sources .sourceGroup{display:block}
 }
+.articleContent video{aspect-ratio:auto}
 .articleContent .articleLivePhotoPoster{width:100%;margin:0;border-radius:0}
 .articleLivePhotoFrame.hasPoster .articleLivePhoto{position:absolute;inset:0;height:100%;opacity:0}
 .articleLivePhotoFrame.playing .articleLivePhoto{opacity:1}

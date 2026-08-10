@@ -166,7 +166,7 @@ async function loadEntryPages(
 function safeHtml(html: string, minifluxURL: string, imageMode: ImageLoadingMode) {
   if (typeof window === "undefined") return "";
   const parsed = new DOMParser().parseFromString(html, "text/html");
-  parsed.querySelectorAll("script,style,object,embed,form,audio,track").forEach((node) => node.remove());
+  parsed.querySelectorAll("script,style,object,embed,form,audio").forEach((node) => node.remove());
   parsed.querySelectorAll("iframe").forEach((frame) => {
     const src = youtubeEmbedURL(frame.getAttribute("src") ?? "");
     if (!src) {
@@ -175,8 +175,8 @@ function safeHtml(html: string, minifluxURL: string, imageMode: ImageLoadingMode
     }
     frame.setAttribute("src", src);
     frame.setAttribute("loading", "eager");
-    frame.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
-    frame.setAttribute("allow", "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share");
+    frame.setAttribute("referrerpolicy", "no-referrer");
+    frame.setAttribute("allow", "accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share");
     frame.setAttribute("allowfullscreen", "");
     if (!frame.getAttribute("title")) frame.setAttribute("title", "YouTube video player");
   });
@@ -189,6 +189,11 @@ function safeHtml(html: string, minifluxURL: string, imageMode: ImageLoadingMode
       const sourceSrc = articleMediaURL(source.getAttribute("src") ?? "", minifluxURL);
       if (!sourceSrc) source.remove();
       else source.setAttribute("src", sourceSrc);
+    });
+    video.querySelectorAll("track").forEach((track) => {
+      const trackSrc = articleMediaURL(track.getAttribute("src") ?? "", minifluxURL);
+      if (!trackSrc) track.remove();
+      else track.setAttribute("src", trackSrc);
     });
     if (!src && !video.querySelector("source")) {
       video.remove();
@@ -233,8 +238,8 @@ function safeHtml(html: string, minifluxURL: string, imageMode: ImageLoadingMode
       frame.append(...(posterImage ? [posterImage, video, badge] : [video, badge]));
     } else video.setAttribute("controls", "");
   });
-  parsed.querySelectorAll("source").forEach((source) => {
-    if (!source.closest("video")) source.remove();
+  parsed.querySelectorAll("source,track").forEach((mediaChild) => {
+    if (!mediaChild.closest("video")) mediaChild.remove();
   });
   parsed.querySelectorAll("*").forEach((node) => {
     [...node.attributes].forEach((attribute) => {
