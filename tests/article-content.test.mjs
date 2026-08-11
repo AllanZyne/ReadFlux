@@ -35,10 +35,10 @@ test("YouTube embeds cannot request autoplay", () => {
   );
 });
 
-test("YouTube frames load eagerly for Safari's nested article scroller", async () => {
+test("YouTube frames load eagerly and use the selected media referrer policy", async () => {
   const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
   assert.match(app, /frame\.setAttribute\("loading", "eager"\)/);
-  assert.match(app, /frame\.setAttribute\("referrerpolicy", "no-referrer"\)/);
+  assert.match(app, /frame\.setAttribute\("referrerpolicy", imageReferrerPolicy\(imageMode\)\)/);
   assert.doesNotMatch(app, /frame\.setAttribute\("allow", "[^"]*autoplay/);
 });
 
@@ -65,6 +65,7 @@ test("article sanitizer preserves controlled native video playback", async () =>
   assert.match(app, /video\.setAttribute\("controls", ""\)/);
   assert.match(app, /video\.querySelectorAll\("track"\)/);
   assert.match(app, /const trackSrc = articleMediaURL/);
+  assert.match(app, /video\.setAttribute\("referrerpolicy", imageReferrerPolicy\(imageMode\)\)/);
   assert.match(app, /parsed\.querySelectorAll\("source,track"\)/);
 });
 
