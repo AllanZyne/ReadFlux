@@ -74,6 +74,11 @@ test("native videos retain their intrinsic aspect ratio", async () => {
   assert.match(css, /\.articleContent video\{aspect-ratio:auto\}/);
 });
 
+test("the first article paragraph uses the normal paragraph style", async () => {
+  const css = await readFile(new URL("../src/index.css", import.meta.url), "utf8");
+  assert.doesNotMatch(css, /\.body\s*>\s*p:first-child/);
+});
+
 test("native media requests do not leak a referrer rejected by media CDNs", async () => {
   const page = await readFile(new URL("../index.html", import.meta.url), "utf8");
   assert.match(page, /<meta name="referrer" content="no-referrer" \/>/);
