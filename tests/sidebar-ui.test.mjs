@@ -186,12 +186,18 @@ test("reading-time ticks stay isolated from the memoized article body", () => {
   const metadataStart = app.indexOf("function ArticleMetadata(");
   const articleBodyStart = app.indexOf("const ArticleBody = memo(");
   const eventDraftStart = app.indexOf("type EventDraft", articleBodyStart);
+
+  assert.ok(metadataStart >= 0, "ArticleMetadata component not found");
+  assert.ok(articleBodyStart > metadataStart, "ArticleBody must follow ArticleMetadata");
+  assert.ok(eventDraftStart > articleBodyStart, "EventDraft must follow ArticleBody");
+
   const metadata = app.slice(metadataStart, articleBodyStart);
   const articleBody = app.slice(articleBodyStart, eventDraftStart);
 
   assert.match(metadata, /useState\(initialReadingSeconds\)/);
   assert.match(metadata, /onReadingTick\(\)[\s\S]*?setReadingSeconds/);
   assert.match(metadata, /className="articleReadingTime"/);
+  assert.match(app, /key=\{`\$\{selected\.id\}:\$\{selectedReadingSeconds\}`\}/);
   assert.match(articleBody, /const markup = useMemo/);
   assert.match(articleBody, /dangerouslySetInnerHTML=\{markup\}/);
   assert.doesNotMatch(articleBody, /readingSeconds|onReadingTick/);

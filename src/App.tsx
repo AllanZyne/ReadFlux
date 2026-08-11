@@ -1412,6 +1412,9 @@ export default function App() {
   useEffect(() => { visibleEmptyRef.current = !visible.length; }, [visible]);
 
   const selected = stories.find((story) => story.id === selectedId) ?? null;
+  const selectedReadingSeconds = selected
+    ? events.reduce((sum, event) => event.entryId === selected.id ? sum + event.activeSeconds : sum, 0)
+    : 0;
   const selectedImageMode = selected
     ? resolveImageLoadingMode(
         settings.imageLoadingPreferences,
@@ -1790,11 +1793,11 @@ export default function App() {
               <div className="readerToolbar"><button className="mobileBack" onClick={() => setMobileView("list")}>‹ {t("reader.backToArticles")}</button><div><button onClick={() => toggleRead(selected)} title={t(selected.status === "read" ? "reader.markUnread" : "reader.markRead")}>{selected.status === "read" ? "○" : "●"}</button><button className={selected.starred ? "pressed" : ""} title={t(selected.starred ? "reader.unsave" : "reader.save")} onClick={() => void updateEntry(selected.id, { starred: !selected.starred }, () => minifluxFetch(config, `/v1/entries/${selected.id}/bookmark`, { method: "PUT" }), selected.starred ? t("reader.unsaved") : t("reader.saved"))}>{selected.starred ? "★" : "☆"}</button><a href={selected.url} target="_blank" rel="noreferrer" title={t("reader.openOriginal")}>↗</a><button title={t("reader.copyLink")} onClick={async () => { await navigator.clipboard.writeText(selected.url); notify(t("reader.linkCopied")); }}>⧉</button><button title={t("reader.notInterested")} onClick={() => void setFeedback("not_interested")}>−</button></div></div>
               <p className="crumb">{selected.category} · {selected.source}</p>
               <ArticleMetadata
-                key={selected.id}
+                key={`${selected.id}:${selectedReadingSeconds}`}
                 story={selected}
                 feedIcon={feedIcons.get(selected.feed_id)}
                 timeZone={activeTimeZone}
-                initialReadingSeconds={events.reduce((sum, event) => event.entryId === selected.id ? sum + event.activeSeconds : sum, 0)}
+                initialReadingSeconds={selectedReadingSeconds}
                 onReadingTick={recordReadingTick}
                 t={t}
               />
