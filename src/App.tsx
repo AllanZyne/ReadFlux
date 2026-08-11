@@ -175,7 +175,7 @@ function safeHtml(html: string, minifluxURL: string, imageMode: ImageLoadingMode
     }
     frame.setAttribute("src", src);
     frame.setAttribute("loading", "eager");
-    frame.setAttribute("referrerpolicy", "no-referrer");
+    frame.setAttribute("referrerpolicy", imageReferrerPolicy(imageMode));
     frame.setAttribute("allow", "accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share");
     frame.setAttribute("allowfullscreen", "");
     if (!frame.getAttribute("title")) frame.setAttribute("title", "YouTube video player");
@@ -200,10 +200,10 @@ function safeHtml(html: string, minifluxURL: string, imageMode: ImageLoadingMode
       return;
     }
 
+    video.setAttribute("referrerpolicy", imageReferrerPolicy(imageMode));
     const poster = articleMediaURL(video.getAttribute("poster") ?? "", minifluxURL);
     if (poster) {
       video.setAttribute("poster", imageURLForMode(poster, minifluxURL, imageMode));
-      video.setAttribute("referrerpolicy", imageReferrerPolicy(imageMode));
     } else video.removeAttribute("poster");
     video.removeAttribute("autoplay");
     video.setAttribute("playsinline", "");

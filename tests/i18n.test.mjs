@@ -66,6 +66,13 @@ test("catalog interpolation preserves dynamic article counts", async () => {
   assert.equal(instance.t("feed.markedRead", { count: 2 }), "2 articles marqués comme lus");
 });
 
+test("media loading labels describe the shared image and video policy", async () => {
+  const chinese = JSON.parse(await readFile(new URL("../src/locales/zh-CN.json", import.meta.url), "utf8"));
+  assert.equal(chinese.settings.imageDefault, "默认媒体加载方式");
+  assert.equal(chinese.settings.imageLoading, "媒体加载方式");
+  assert.match(chinese.settings.imageCompatibilityHint, /图片和视频/);
+});
+
 test("the React interface uses catalog keys instead of embedded Chinese copy", async () => {
   const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
   const main = await readFile(new URL("../src/main.tsx", import.meta.url), "utf8");

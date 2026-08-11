@@ -182,7 +182,7 @@ test("article panel headers do not draw horizontal divider lines", () => {
   assert.ok(readerToolbarRules.every((match) => !/border-bottom\s*:/.test(match[1])));
 });
 
-test("image loading settings offer scoped defaults and per-feed overrides", () => {
+test("media loading settings offer scoped defaults and per-feed overrides", () => {
   assert.match(app, /updateDefaultImageLoadingMode/);
   assert.match(app, /updateFeedImageLoadingMode/);
   assert.match(app, /value="direct-no-referrer"/);
