@@ -198,6 +198,7 @@ test("reading-time ticks stay isolated from the memoized article body", () => {
   assert.match(metadata, /onReadingTick\(\)[\s\S]*?setReadingSeconds/);
   assert.match(metadata, /className="articleReadingTime"/);
   assert.match(app, /key=\{`\$\{selected\.id\}:\$\{selectedReadingSeconds\}`\}/);
+  assert.match(app, /const updatedActiveEvent = next\.find[\s\S]*?activeEvent\.current = updatedActiveEvent \? \{ \.\.\.updatedActiveEvent \} : null/);
   assert.match(articleBody, /const markup = useMemo/);
   assert.match(articleBody, /dangerouslySetInnerHTML=\{markup\}/);
   assert.doesNotMatch(articleBody, /readingSeconds|onReadingTick/);

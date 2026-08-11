@@ -1838,7 +1838,10 @@ export default function App() {
           }
         }}
         onEventsChange={(next) => {
-          if (activeEvent.current && !next.some((event) => event.id === activeEvent.current?.id)) activeEvent.current = null;
+          if (activeEvent.current) {
+            const updatedActiveEvent = next.find((event) => event.id === activeEvent.current?.id);
+            activeEvent.current = updatedActiveEvent ? { ...updatedActiveEvent } : null;
+          }
           setEvents(next);
         }}
         onDisconnect={() => {
