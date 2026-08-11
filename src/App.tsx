@@ -1,4 +1,4 @@
-import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CSSProperties, FormEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import {
@@ -303,6 +303,51 @@ const SourceIcon = ({ children, src }: { children: React.ReactNode; src?: string
     {src ? <img src={src} alt="" /> : children}
   </span>
 );
+
+function ArticleMetadata({
+  story,
+  feedIcon,
+  timeZone,
+  initialReadingSeconds,
+  onReadingTick,
+  t,
+}: {
+  story: Story;
+  feedIcon?: string;
+  timeZone: string;
+  initialReadingSeconds: number;
+  onReadingTick: () => boolean;
+  t: TFunction;
+}) {
+  const [readingSeconds, setReadingSeconds] = useState(initialReadingSeconds);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (onReadingTick()) setReadingSeconds((seconds) => seconds + 5);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [onReadingTick]);
+
+  return <header className="articleHead"><div><h2>{story.title}</h2><p><SourceIcon src={feedIcon}>{story.mark}</SourceIcon>{story.author || story.source} · {formatZonedDateTime(story.published_at, timeZone)} · {t("feed.minutes", { count: story.reading_time || 1 })}{readingSeconds > 0 && <span className="articleReadingTime">· {Math.floor(readingSeconds / 60)}:{String(readingSeconds % 60).padStart(2, "0")}</span>}</p></div></header>;
+}
+
+const ArticleBody = memo(function ArticleBody({
+  content,
+  minifluxURL,
+  imageMode,
+}: {
+  content: string;
+  minifluxURL: string;
+  imageMode: ImageLoadingMode;
+}) {
+  const markup = useMemo(() => ({
+    __html: safeHtml(content, minifluxURL, imageMode),
+  }), [content, minifluxURL, imageMode]);
+
+  return <div className="body articleContent" onClick={(event) => toggleLivePhoto(event.target)} onKeyDown={(event) => {
+    if ((event.key === "Enter" || event.key === " ") && toggleLivePhoto(event.target)) event.preventDefault();
+  }} dangerouslySetInnerHTML={markup} />;
+});
 
 type EventDraft = Omit<ReadingEvent, "id" | "updatedAt"> & { id?: string };
 
@@ -847,7 +892,6 @@ export default function App() {
   const [visibleIds, setVisibleIds] = useState<number[]>([]);
   const [referrerScopeState, setReferrerScopeState] = useState({ url: "", scope: "" });
   const [imageProxySupport, setImageProxySupport] = useState({ url: "", available: false });
-  const [readingSeconds, setReadingSeconds] = useState(0);
   const activeEvent = useRef<ReadingEvent | null>(null);
   const readerRef = useRef<HTMLDivElement | null>(null);
   const refreshInFlight = useRef(false);
@@ -1377,17 +1421,18 @@ export default function App() {
       )
     : "direct-no-referrer";
 
+  const recordReadingTick = useCallback(() => {
+    if (!activeEvent.current || document.visibilityState !== "visible" || !document.hasFocus()) return false;
+    if (document.querySelector("[aria-modal='true']")) return false;
+    activeEvent.current.activeSeconds += 5;
+    void persistActive();
+    return true;
+  }, [persistActive]);
+
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (!activeEvent.current || document.visibilityState !== "visible" || !document.hasFocus()) return;
-      if (document.querySelector("[aria-modal='true']")) return;
-      activeEvent.current.activeSeconds += 5;
-      setReadingSeconds((s) => s + 5);
-      void persistActive();
-    }, 5000);
     const flush = () => { commitActiveEvent(); void persistActive(); };
     window.addEventListener("pagehide", flush);
-    return () => { window.clearInterval(timer); window.removeEventListener("pagehide", flush); commitActiveEvent(); void persistActive(); };
+    return () => { window.removeEventListener("pagehide", flush); commitActiveEvent(); void persistActive(); };
   }, [persistActive, commitActiveEvent]);
 
   const updateEntry = async (id: number, patch: Partial<Entry>, request: () => Promise<unknown>, success: string) => {
@@ -1439,10 +1484,9 @@ export default function App() {
   }, [config, selected, selectedImageMode, loadEntryContent]);
 
   const choose = useCallback((story: Story, origin?: ReadingEvent["origin"]) => {
+    commitActiveEvent();
     void persistActive();
     setSelectedId(story.id);
-    const prior = events.reduce((sum, e) => e.entryId === story.id ? sum + e.activeSeconds : sum, 0);
-    setReadingSeconds(prior);
     setContentError(null);
     if (!story.content.trim()) void loadEntryContent(story.id);
     readerRef.current?.scrollTo({ top: 0 });
@@ -1474,7 +1518,7 @@ export default function App() {
       }), t("reader.markedRead"));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, mode, query, visible, events, persistActive, loadEntryContent, entryLabels, t]);
+  }, [config, mode, query, visible, persistActive, commitActiveEvent, loadEntryContent, entryLabels, t]);
 
   const move = useCallback((delta: number) => {
     if (!visible.length) return;
@@ -1745,7 +1789,15 @@ export default function App() {
             }}>
               <div className="readerToolbar"><button className="mobileBack" onClick={() => setMobileView("list")}>‹ {t("reader.backToArticles")}</button><div><button onClick={() => toggleRead(selected)} title={t(selected.status === "read" ? "reader.markUnread" : "reader.markRead")}>{selected.status === "read" ? "○" : "●"}</button><button className={selected.starred ? "pressed" : ""} title={t(selected.starred ? "reader.unsave" : "reader.save")} onClick={() => void updateEntry(selected.id, { starred: !selected.starred }, () => minifluxFetch(config, `/v1/entries/${selected.id}/bookmark`, { method: "PUT" }), selected.starred ? t("reader.unsaved") : t("reader.saved"))}>{selected.starred ? "★" : "☆"}</button><a href={selected.url} target="_blank" rel="noreferrer" title={t("reader.openOriginal")}>↗</a><button title={t("reader.copyLink")} onClick={async () => { await navigator.clipboard.writeText(selected.url); notify(t("reader.linkCopied")); }}>⧉</button><button title={t("reader.notInterested")} onClick={() => void setFeedback("not_interested")}>−</button></div></div>
               <p className="crumb">{selected.category} · {selected.source}</p>
-              <header className="articleHead"><div><h2>{selected.title}</h2><p><SourceIcon src={feedIcons.get(selected.feed_id)}>{selected.mark}</SourceIcon>{selected.author || selected.source} · {formatZonedDateTime(selected.published_at, activeTimeZone)} · {t("feed.minutes", { count: selected.reading_time || 1 })}{readingSeconds > 0 && ` · ${Math.floor(readingSeconds / 60)}:${String(readingSeconds % 60).padStart(2, "0")}`}</p></div></header>
+              <ArticleMetadata
+                key={selected.id}
+                story={selected}
+                feedIcon={feedIcons.get(selected.feed_id)}
+                timeZone={activeTimeZone}
+                initialReadingSeconds={events.reduce((sum, event) => event.entryId === selected.id ? sum + event.activeSeconds : sum, 0)}
+                onReadingTick={recordReadingTick}
+                t={t}
+              />
               <section className="reason">
                 <button className="reasonHead" onClick={() => setReasonOpen(!reasonOpen)}><span>{t("recommendation.reason")}</span><small>{reasonOpen ? t("recommendation.collapse") : t("recommendation.view")}</small></button>
                 {reasonOpen && <><p>{selected.reason}</p><div className="tags">{[selected.category, selected.source, ...(selected.tags ?? [])].slice(0, 4).map((tag) => <span key={tag}>{tag}</span>)}</div></>}
@@ -1754,13 +1806,7 @@ export default function App() {
                 ? <div className="articleLoading" role="status"><b className="loadingMark">↻</b><p>{t("reader.loadingContent")}</p></div>
                 : contentError?.id === selected.id
                   ? <div className="articleLoading errorState"><b>!</b><p>{t(contentError.error.key, { status: contentError.error.status })}</p><button onClick={() => void loadEntryContent(selected.id)}>{t("common.retry")}</button></div>
-                  : <div className="body articleContent" onClick={(event) => toggleLivePhoto(event.target)} onKeyDown={(event) => {
-                    if ((event.key === "Enter" || event.key === " ") && toggleLivePhoto(event.target)) event.preventDefault();
-                  }} dangerouslySetInnerHTML={{ __html: safeHtml(
-                      selected.content,
-                      config.url,
-                      selectedImageMode,
-                    ) }} />}
+                  : <ArticleBody content={selected.content} minifluxURL={config.url} imageMode={selectedImageMode} />}
               <div className="feedback"><span>{t("recommendation.feedbackQuestion")}</span><button onClick={() => void setFeedback("helpful")}>{t("recommendation.helpful")}</button><button onClick={() => void setFeedback("not_interested")}>{t("recommendation.notInterested")}</button></div>
             </div>
             <footer className="readerFoot"><span><kbd>J</kbd><kbd>K</kbd> {t("reader.shortcuts")}　<kbd>S</kbd> {t("reader.save")}　<kbd>U</kbd> {t("feed.read")}</span><div><button onClick={() => move(-1)}>{t("reader.previous")}</button><button onClick={() => move(1)}>{t("reader.next")}</button></div></footer>
