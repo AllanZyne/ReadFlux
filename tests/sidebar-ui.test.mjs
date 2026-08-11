@@ -182,6 +182,29 @@ test("article panel headers do not draw horizontal divider lines", () => {
   assert.ok(readerToolbarRules.every((match) => !/border-bottom\s*:/.test(match[1])));
 });
 
+test("reading-time ticks stay isolated from the memoized article body", () => {
+  const metadataStart = app.indexOf("function ArticleMetadata(");
+  const articleBodyStart = app.indexOf("const ArticleBody = memo(");
+  const eventDraftStart = app.indexOf("type EventDraft", articleBodyStart);
+
+  assert.ok(metadataStart >= 0, "ArticleMetadata component not found");
+  assert.ok(articleBodyStart > metadataStart, "ArticleBody must follow ArticleMetadata");
+  assert.ok(eventDraftStart > articleBodyStart, "EventDraft must follow ArticleBody");
+
+  const metadata = app.slice(metadataStart, articleBodyStart);
+  const articleBody = app.slice(articleBodyStart, eventDraftStart);
+
+  assert.match(metadata, /useState\(initialReadingSeconds\)/);
+  assert.match(metadata, /onReadingTick\(\)[\s\S]*?setReadingSeconds/);
+  assert.match(metadata, /className="articleReadingTime"/);
+  assert.match(app, /key=\{`\$\{selected\.id\}:\$\{selectedReadingSeconds\}`\}/);
+  assert.match(app, /const updatedActiveEvent = next\.find[\s\S]*?activeEvent\.current = updatedActiveEvent \? \{ \.\.\.updatedActiveEvent \} : null/);
+  assert.match(articleBody, /const markup = useMemo/);
+  assert.match(articleBody, /dangerouslySetInnerHTML=\{markup\}/);
+  assert.doesNotMatch(articleBody, /readingSeconds|onReadingTick/);
+  assert.match(styles, /\.articleReadingTime\s*\{[^}]*color:var\(--mint\);[^}]*font-variant-numeric:tabular-nums/);
+});
+
 test("media loading settings offer scoped defaults and per-feed overrides", () => {
   assert.match(app, /updateDefaultImageLoadingMode/);
   assert.match(app, /updateFeedImageLoadingMode/);
