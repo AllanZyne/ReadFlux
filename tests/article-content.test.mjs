@@ -58,6 +58,17 @@ test("native article media accepts HTTP(S) sources and rejects unsafe protocols"
   assert.equal(articleContent.articleMediaURL("   ", "https://reader.example/miniflux"), null);
 });
 
+test("expired signed Weibo media URLs are rejected without affecting other media", () => {
+  const expired = "https://f.video.weibocdn.com/path/video.mp4?Expires=1786457601&ssig=old";
+  const active = "https://f.video.weibocdn.com/path/video.mp4?Expires=1786547601&ssig=current";
+  const now = 1_786_540_575_000;
+
+  assert.equal(articleContent.isExpiredWeiboMediaURL(expired, now), true);
+  assert.equal(articleContent.isExpiredWeiboMediaURL(active, now), false);
+  assert.equal(articleContent.isExpiredWeiboMediaURL("https://video.example/video.mp4?Expires=1", now), false);
+  assert.equal(articleContent.isExpiredWeiboMediaURL("not a URL", now), false);
+});
+
 test("article sanitizer preserves controlled native video playback", async () => {
   const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
   assert.match(app, /parsed\.querySelectorAll\("video"\)/);
@@ -67,6 +78,8 @@ test("article sanitizer preserves controlled native video playback", async () =>
   assert.match(app, /const trackSrc = articleMediaURL/);
   assert.match(app, /video\.setAttribute\("referrerpolicy", imageReferrerPolicy\(imageMode\)\)/);
   assert.match(app, /parsed\.querySelectorAll\("source,track"\)/);
+  assert.match(app, /isExpiredWeiboMediaURL\(sourceSrc\)/);
+  assert.match(app, /video\.replaceWith\(\.\.\.fallbackNodes\)/);
 });
 
 test("native videos retain their intrinsic aspect ratio", async () => {
