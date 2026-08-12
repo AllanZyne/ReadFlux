@@ -17,6 +17,7 @@ and ranks unread articles published today into a personalized **Today** view.
 - Ordinary articles load from the latest 30 days by default, with an adjustable
   range during first connection and in Settings; saved articles are unlimited
 - Stable unread-list snapshots, so articles do not disappear while being read
+- GitHub Pages-safe article permalinks using `#/article/:entryId`
 - Day and night themes
 - English, Simplified Chinese, and French interfaces selectable in Settings
 - Per-server and per-feed image loading choices for original images with or
