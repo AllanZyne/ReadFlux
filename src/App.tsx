@@ -17,6 +17,7 @@ import { articleMediaURL, isWeiboLivePhotoURL, youtubeEmbedURL } from "./article
 import { runExclusive } from "./async-lock";
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { startOptionalMinifluxTimeZoneLoad } from "./miniflux-timezone.mjs";
+import { articleHash, articlePermalink, parseAppRoute, type AppRoute } from "./routes";
 import { compareSmartFeedEntries, countSmartFeedEntries, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, localDayKey, nextDayBoundary, selectTimeZone, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
 import {
   addEntryLabel,
@@ -837,6 +838,7 @@ export default function App() {
   const [events, setEvents] = useState<ReadingEvent[]>([]);
   const [settings, setSettings] = useState<ProfileSettings>({ theme: "day", entryLookbackDays: DEFAULT_LOOKBACK_DAYS, imageLoadingPreferences: {}, updatedAt: new Date(0).toISOString() });
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [route, setRoute] = useState<AppRoute>(() => parseAppRoute(window.location.hash));
   const [mode, setMode] = useState<ListMode>("today");
   const [minifluxTimeZone, setMinifluxTimeZone] = useState<string>();
   const [todayClock, setTodayClock] = useState(() => Date.now());
@@ -909,10 +911,24 @@ export default function App() {
   const queryRef = useRef(query);
   const loadRef = useRef<(options?: { background?: boolean }) => Promise<boolean>>(async () => false);
   const proxyRefreshKey = useRef("");
+  const routeRef = useRef(route);
 
   const notify = useCallback((message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(""), 2200);
+  }, []);
+
+  const navigateToArticle = useCallback((entryId: number) => {
+    const hash = articleHash(entryId);
+    if (window.location.hash === hash) return;
+    window.history.pushState(null, "", hash);
+    setRoute({ kind: "article", entryId });
+  }, []);
+
+  const navigateToList = useCallback(() => {
+    if (window.location.hash === "#/") return;
+    window.history.pushState(null, "", "#/");
+    setRoute({ kind: "list" });
   }, []);
 
   useEffect(() => { listSnapshotIds.current = new Set(listReadSnapshot.keys()); }, [listReadSnapshot]);
@@ -923,6 +939,17 @@ export default function App() {
   useEffect(() => { feedsRef.current = feeds; }, [feeds]);
   useEffect(() => { hideReadRef.current = hideRead; }, [hideRead]);
   useEffect(() => { queryRef.current = query; }, [query]);
+  useEffect(() => { routeRef.current = route; }, [route]);
+
+  useEffect(() => {
+    const readRoute = () => setRoute(parseAppRoute(window.location.hash));
+    window.addEventListener("hashchange", readRoute);
+    window.addEventListener("popstate", readRoute);
+    return () => {
+      window.removeEventListener("hashchange", readRoute);
+      window.removeEventListener("popstate", readRoute);
+    };
+  }, []);
 
   useEffect(() => {
     const now = new Date();
@@ -1115,7 +1142,14 @@ export default function App() {
         : Date.now() - lookbackDays * 86_400_000;
       const scopedCache = cached.filter((entry) =>
         entry.starred || cutoff === null || new Date(entry.published_at).getTime() >= cutoff);
-      setEntries(scopedCache);
+      const routedEntryId = routeRef.current.kind === "article" ? routeRef.current.entryId : null;
+      const routedCachedEntry = routedEntryId === null
+        ? undefined
+        : cached.find((entry) => entry.id === routedEntryId);
+      const loadedCache = routedCachedEntry && !scopedCache.some((entry) => entry.id === routedCachedEntry.id)
+        ? [...scopedCache, routedCachedEntry]
+        : scopedCache;
+      setEntries(loadedCache);
       setImageProxySupport({ url: config.url, available: false });
       if (!listSnapshotIds.current.size || !scopedCache.some((e) => listSnapshotIds.current.has(e.id))) {
         setListReadSnapshot(new Map(scopedCache.map((entry) => [entry.id, entry.status])));
@@ -1133,7 +1167,7 @@ export default function App() {
       if (proxyAvailable && proxyProbe) {
         await mergeEntryBatch(proxyProbe.entries);
       }
-      setSelectedId((current) => current && scopedCache.some((entry) => entry.id === current) ? current : null);
+      setSelectedId((current) => current && loadedCache.some((entry) => entry.id === current) ? current : null);
 
       const needsInitialSync = !storedState?.initialSyncComplete
         || storedState.lookbackDays !== lookbackDays;
@@ -1180,8 +1214,12 @@ export default function App() {
         const changedAfter = Math.max(0, Math.floor(new Date(storedState.updatedAt).getTime() / 1000) - 1);
         await loadEntryPages(config, { changed_after: String(changedAfter) }, async (batch, loaded, total) => {
           setSyncProgress({ kind: "incremental", loaded, total });
+          const activeRoute = routeRef.current;
           const visibleBatch = batch.filter((entry) =>
-            entry.starred || cutoff === null || new Date(entry.published_at).getTime() >= cutoff);
+            entry.starred
+            || (activeRoute.kind === "article" && entry.id === activeRoute.entryId)
+            || cutoff === null
+            || new Date(entry.published_at).getTime() >= cutoff);
           const hiddenIds = new Set(batch.filter((entry) => !visibleBatch.includes(entry)).map((entry) => entry.id));
           if (hiddenIds.size) setEntries((current) => current.filter((entry) => !hiddenIds.has(entry.id)));
           await mergeEntryBatch(visibleBatch);
@@ -1462,7 +1500,9 @@ export default function App() {
       const merged = local
         ? { ...local, ...remote, status: local.status, starred: local.starred }
         : remote;
-      setEntries((all) => all.map((entry) => entry.id === id ? merged : entry));
+      setEntries((all) => all.some((entry) => entry.id === id)
+        ? all.map((entry) => entry.id === id ? merged : entry)
+        : [...all, merged]);
       await putCachedEntries(config, [merged]);
     } catch (cause) {
       setContentError({
@@ -1473,6 +1513,17 @@ export default function App() {
       setContentLoadingId((current) => current === id ? null : current);
     }
   }, [config, entries]);
+
+  useEffect(() => {
+    if (route.kind !== "article" || !config || loading) return;
+    if (entries.some((entry) => entry.id === route.entryId)) return;
+    if (contentLoadingId === route.entryId || contentError?.id === route.entryId) return;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void loadEntryContent(route.entryId);
+    });
+    return () => { cancelled = true; };
+  }, [route, config, loading, entries, contentLoadingId, contentError, loadEntryContent]);
 
   useEffect(() => {
     if (!config || !selected || selectedImageMode !== "proxy") {
@@ -1487,6 +1538,7 @@ export default function App() {
   }, [config, selected, selectedImageMode, loadEntryContent]);
 
   const choose = useCallback((story: Story, origin?: ReadingEvent["origin"]) => {
+    navigateToArticle(story.id);
     commitActiveEvent();
     void persistActive();
     setSelectedId(story.id);
@@ -1521,7 +1573,29 @@ export default function App() {
       }), t("reader.markedRead"));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, mode, query, visible, persistActive, commitActiveEvent, loadEntryContent, entryLabels, t]);
+  }, [config, mode, query, visible, persistActive, commitActiveEvent, loadEntryContent, entryLabels, navigateToArticle, t]);
+
+  useEffect(() => {
+    if (route.kind === "article") {
+      const routedStory = stories.find((story) => story.id === route.entryId);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- route changes control the responsive pane
+      setMobileView("reader");
+      if (routedStory && selectedId !== routedStory.id) choose(routedStory, "feed");
+      if (!routedStory && selectedId !== null) {
+        commitActiveEvent();
+        void persistActive();
+        activeEvent.current = null;
+        setSelectedId(null);
+      }
+      return;
+    }
+    if (selectedId !== null) {
+      commitActiveEvent();
+      void persistActive();
+      activeEvent.current = null;
+      setSelectedId(null);
+    }
+  }, [route, stories, selectedId, choose, commitActiveEvent, persistActive]);
 
   const move = useCallback((delta: number) => {
     if (!visible.length) return;
@@ -1617,7 +1691,8 @@ export default function App() {
     }
     if (feedback === "not_interested") {
       const next = visible.find((story) => story.id !== selected.id);
-      setSelectedId(next?.id ?? null);
+      if (next) choose(next);
+      else navigateToList();
       notify(t("recommendation.reduced"));
     } else {
       notify(t("recommendation.reinforced"));
@@ -1790,7 +1865,7 @@ export default function App() {
               const depth = target.scrollHeight <= target.clientHeight ? 1 : target.scrollTop / (target.scrollHeight - target.clientHeight);
               activeEvent.current.scrollDepth = Math.max(activeEvent.current.scrollDepth, Math.min(1, depth));
             }}>
-              <div className="readerToolbar"><button className="mobileBack" onClick={() => setMobileView("list")}>‹ {t("reader.backToArticles")}</button><div><button onClick={() => toggleRead(selected)} title={t(selected.status === "read" ? "reader.markUnread" : "reader.markRead")}>{selected.status === "read" ? "○" : "●"}</button><button className={selected.starred ? "pressed" : ""} title={t(selected.starred ? "reader.unsave" : "reader.save")} onClick={() => void updateEntry(selected.id, { starred: !selected.starred }, () => minifluxFetch(config, `/v1/entries/${selected.id}/bookmark`, { method: "PUT" }), selected.starred ? t("reader.unsaved") : t("reader.saved"))}>{selected.starred ? "★" : "☆"}</button><a href={selected.url} target="_blank" rel="noreferrer" title={t("reader.openOriginal")}>↗</a><button title={t("reader.copyLink")} onClick={async () => { await navigator.clipboard.writeText(selected.url); notify(t("reader.linkCopied")); }}>⧉</button><button title={t("reader.notInterested")} onClick={() => void setFeedback("not_interested")}>−</button></div></div>
+              <div className="readerToolbar"><button className="mobileBack" onClick={() => { navigateToList(); setMobileView("list"); }}>‹ {t("reader.backToArticles")}</button><div><button onClick={() => toggleRead(selected)} title={t(selected.status === "read" ? "reader.markUnread" : "reader.markRead")}>{selected.status === "read" ? "○" : "●"}</button><button className={selected.starred ? "pressed" : ""} title={t(selected.starred ? "reader.unsave" : "reader.save")} onClick={() => void updateEntry(selected.id, { starred: !selected.starred }, () => minifluxFetch(config, `/v1/entries/${selected.id}/bookmark`, { method: "PUT" }), selected.starred ? t("reader.unsaved") : t("reader.saved"))}>{selected.starred ? "★" : "☆"}</button><a href={selected.url} target="_blank" rel="noreferrer" title={t("reader.openOriginal")}>↗</a><button title={t("reader.copyLink")} onClick={async () => { await navigator.clipboard.writeText(articlePermalink(window.location.href, selected.id)); notify(t("reader.linkCopied")); }}>⧉</button><button title={t("reader.notInterested")} onClick={() => void setFeedback("not_interested")}>−</button></div></div>
               <p className="crumb">{selected.category} · {selected.source}</p>
               <ArticleMetadata
                 key={`${selected.id}:${selectedReadingSeconds}`}
@@ -1813,7 +1888,12 @@ export default function App() {
               <div className="feedback"><span>{t("recommendation.feedbackQuestion")}</span><button onClick={() => void setFeedback("helpful")}>{t("recommendation.helpful")}</button><button onClick={() => void setFeedback("not_interested")}>{t("recommendation.notInterested")}</button></div>
             </div>
             <footer className="readerFoot"><span><kbd>J</kbd><kbd>K</kbd> {t("reader.shortcuts")}　<kbd>S</kbd> {t("reader.save")}　<kbd>U</kbd> {t("feed.read")}</span><div><button onClick={() => move(-1)}>{t("reader.previous")}</button><button onClick={() => move(1)}>{t("reader.next")}</button></div></footer>
-          </> : <div className="empty readerEmpty"><b>☷</b><h2>{t("reader.select")}</h2><p>{t("reader.selectHint")}</p></div>}
+          </> : route.kind === "article" ? <div className={`empty readerEmpty ${contentError?.id === route.entryId ? "errorState" : ""}`}>
+            <b className={contentError?.id === route.entryId ? "" : "loadingMark"}>{contentError?.id === route.entryId ? "!" : "↻"}</b>
+            <h2>{t(contentError?.id === route.entryId ? "reader.contentFailed" : "reader.loadingContent")}</h2>
+            {contentError?.id === route.entryId && <p>{t(contentError.error.key, { status: contentError.error.status })}</p>}
+            <div>{contentError?.id === route.entryId && <button onClick={() => void loadEntryContent(route.entryId)}>{t("common.retry")}</button>}<button onClick={navigateToList}>{t("reader.backToArticles")}</button></div>
+          </div> : <div className="empty readerEmpty"><b>☷</b><h2>{t("reader.select")}</h2><p>{t("reader.selectHint")}</p></div>}
         </article>
       </div>
 
