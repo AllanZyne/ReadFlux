@@ -1405,6 +1405,10 @@ export default function App() {
     }
     return filtered;
   }, [stories, mode, topic, query, hideRead, listReadSnapshot, visibleIds, todayKey, activeTimeZone, entryLabels]);
+  const visibleUnreadCount = useMemo(
+    () => visible.reduce((count, story) => count + (story.status === "unread" ? 1 : 0), 0),
+    [visible],
+  );
 
   useEffect(() => {
     if (visible.length && !visibleIds.length) {
@@ -1582,11 +1586,10 @@ export default function App() {
   }, []);
 
   const requestMarkVisibleRead = useCallback(() => {
-    const unreadCount = visible.filter((story) => story.status === "unread").length;
-    if (!unreadCount) return notify(t("feed.noUnread"));
+    if (!visibleUnreadCount) return notify(t("feed.noUnread"));
     positionMarkAllRead();
     setMarkAllReadOpen(true);
-  }, [notify, positionMarkAllRead, t, visible]);
+  }, [notify, positionMarkAllRead, t, visibleUnreadCount]);
 
   const dismissMarkAllRead = useCallback(() => {
     setMarkAllReadOpen(false);
@@ -1812,7 +1815,7 @@ export default function App() {
             <button className="mobileBack" onClick={() => setMobileView("sources")}>‹ {t("sidebar.feeds")}</button>
             <div className="feedTitleText"><h1>{topicTitle || t(mode === "today" ? "sidebar.today" : mode === "unread" ? "sidebar.allUnread" : "sidebar.saved")}</h1><small>{t("feed.articleCount", { count: visible.length })}{error && entries.length ? ` · ${t("feed.offline")}` : ""}</small></div>
             <div className="feedTitleActions" role="group" aria-label={t("feed.listActions")}>
-              <button ref={markAllReadButtonRef} type="button" className={markAllReadOpen ? "markAllReadSpotlight" : ""} onClick={requestMarkVisibleRead} disabled={!visible.some((story) => story.status === "unread")} aria-label={t("feed.markAllRead")} title={t("feed.markAllRead")}><i className="bi bi-check2-all" aria-hidden="true" /></button>
+              <button ref={markAllReadButtonRef} type="button" className={markAllReadOpen ? "markAllReadSpotlight" : ""} onClick={requestMarkVisibleRead} disabled={!visibleUnreadCount} aria-label={t("feed.markAllRead")} title={t("feed.markAllRead")}><i className="bi bi-check2-all" aria-hidden="true" /></button>
               <button type="button" className={hideRead ? "active" : ""} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead((current) => !current); }} aria-label={t("feed.hideRead")} title={t(hideRead ? "feed.showRead" : "feed.hideRead")} aria-pressed={hideRead}><i className="bi bi-filter-circle" aria-hidden="true" /></button>
             </div>
           </header>
@@ -1829,7 +1832,7 @@ export default function App() {
                 "--mark-all-arrow-left": `${markAllReadPosition.arrowLeft}px`,
               } as CSSProperties}
             >
-              <h2 id="mark-all-read-title">{t("feed.markAllReadConfirm", { count: visible.filter((story) => story.status === "unread").length })}</h2>
+              <h2 id="mark-all-read-title">{t("feed.markAllReadConfirm", { count: visibleUnreadCount })}</h2>
               <button ref={markAllReadConfirmRef} type="button" onClick={() => { setMarkAllReadOpen(false); void markVisibleRead(); }}>{t("common.confirm")}</button>
             </section>
           </>}

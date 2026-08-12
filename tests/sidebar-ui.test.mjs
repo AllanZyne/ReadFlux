@@ -46,6 +46,9 @@ test("mark all as read requires the selected anchored confirmation", () => {
   const confirmation = app.match(/<section\s+className="markAllReadConfirm"([\s\S]*?)<\/section>/)?.[0] ?? "";
 
   assert.match(app, /onClick=\{requestMarkVisibleRead\}/);
+  assert.match(app, /const visibleUnreadCount = useMemo\([\s\S]*?story\.status === "unread"[\s\S]*?\[visible\]/);
+  assert.match(app, /disabled=\{!visibleUnreadCount\}/);
+  assert.match(confirmation, /count: visibleUnreadCount/);
   assert.match(app, /className=\{markAllReadOpen \? "markAllReadSpotlight" : ""\}/);
   assert.match(app, /event\.shiftKey[\s\S]*?requestMarkVisibleRead\(\)/);
   assert.match(confirmation, /role="dialog"/);
