@@ -33,6 +33,8 @@ test("the app synchronizes article selection with browser history", () => {
   assert.match(app, /window\.addEventListener\("popstate", readRoute\)/);
   assert.match(app, /window\.addEventListener\("hashchange", readRoute\)/);
   assert.match(app, /navigateToArticle\(story\.id\)/);
+  assert.match(app, /if \(mobileView === "reader"\)[\s\S]*?setMobileView\("list"\)/);
+  assert.doesNotMatch(app, /choose\(routedStory, "feed"\)/);
   assert.match(app, /minifluxFetch<Entry>\(config, `\/v1\/entries\/\$\{id\}`\)/);
   assert.match(app, /clipboard\.writeText\(articlePermalink\(window\.location\.href, selected\.id\)\)/);
 });

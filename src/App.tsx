@@ -1580,7 +1580,7 @@ export default function App() {
       const routedStory = stories.find((story) => story.id === route.entryId);
       // eslint-disable-next-line react-hooks/set-state-in-effect -- route changes control the responsive pane
       setMobileView("reader");
-      if (routedStory && selectedId !== routedStory.id) choose(routedStory, "feed");
+      if (routedStory && selectedId !== routedStory.id) choose(routedStory);
       if (!routedStory && selectedId !== null) {
         commitActiveEvent();
         void persistActive();
@@ -1589,13 +1589,16 @@ export default function App() {
       }
       return;
     }
+    if (mobileView === "reader") {
+      setMobileView("list");
+    }
     if (selectedId !== null) {
       commitActiveEvent();
       void persistActive();
       activeEvent.current = null;
       setSelectedId(null);
     }
-  }, [route, stories, selectedId, choose, commitActiveEvent, persistActive]);
+  }, [route, stories, selectedId, mobileView, choose, commitActiveEvent, persistActive]);
 
   const move = useCallback((delta: number) => {
     if (!visible.length) return;
