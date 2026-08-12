@@ -13,7 +13,7 @@ import {
   updateFeedImageLoadingMode,
   type ImageLoadingMode,
 } from "./article-images";
-import { articleMediaURL, isWeiboLivePhotoURL, youtubeEmbedURL } from "./article-content";
+import { articleMediaURL, isExpiredWeiboMediaURL, isWeiboLivePhotoURL, youtubeEmbedURL } from "./article-content";
 import { runExclusive } from "./async-lock";
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { startOptionalMinifluxTimeZoneLoad } from "./miniflux-timezone.mjs";
@@ -182,13 +182,16 @@ function safeHtml(html: string, minifluxURL: string, imageMode: ImageLoadingMode
     if (!frame.getAttribute("title")) frame.setAttribute("title", "YouTube video player");
   });
   parsed.querySelectorAll("video").forEach((video) => {
-    const src = articleMediaURL(video.getAttribute("src") ?? "", minifluxURL);
+    const fallbackNodes = [...video.childNodes].filter((child) =>
+      child.nodeName !== "SOURCE" && child.nodeName !== "TRACK");
+    const candidateSrc = articleMediaURL(video.getAttribute("src") ?? "", minifluxURL);
+    const src = candidateSrc && !isExpiredWeiboMediaURL(candidateSrc) ? candidateSrc : null;
     if (src) video.setAttribute("src", src);
     else video.removeAttribute("src");
 
     video.querySelectorAll("source").forEach((source) => {
       const sourceSrc = articleMediaURL(source.getAttribute("src") ?? "", minifluxURL);
-      if (!sourceSrc) source.remove();
+      if (!sourceSrc || isExpiredWeiboMediaURL(sourceSrc)) source.remove();
       else source.setAttribute("src", sourceSrc);
     });
     video.querySelectorAll("track").forEach((track) => {
@@ -197,7 +200,7 @@ function safeHtml(html: string, minifluxURL: string, imageMode: ImageLoadingMode
       else track.setAttribute("src", trackSrc);
     });
     if (!src && !video.querySelector("source")) {
-      video.remove();
+      video.replaceWith(...fallbackNodes);
       return;
     }
 
