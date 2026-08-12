@@ -42,6 +42,30 @@ test("article list actions live in the title bar as NetNewsWire-style icons", ()
   assert.match(styles, /\.feedTitleActions\s*\{/);
 });
 
+test("mark all as read requires the selected anchored confirmation", () => {
+  const confirmation = app.match(/<section\s+className="markAllReadConfirm"([\s\S]*?)<\/section>/)?.[0] ?? "";
+
+  assert.match(app, /onClick=\{requestMarkVisibleRead\}/);
+  assert.match(app, /className=\{markAllReadOpen \? "markAllReadSpotlight" : ""\}/);
+  assert.match(app, /event\.shiftKey[\s\S]*?requestMarkVisibleRead\(\)/);
+  assert.match(confirmation, /role="dialog"/);
+  assert.match(confirmation, /aria-modal="true"/);
+  assert.match(confirmation, /feed\.markAllReadConfirm/);
+  assert.equal((confirmation.match(/<button/g) ?? []).length, 1);
+  assert.match(confirmation, /common\.confirm/);
+  assert.doesNotMatch(confirmation, /<p|common\.cancel/);
+  const backdropRule = styles.match(/\.markAllReadBackdrop\s*\{([^}]*)\}/)?.[1] ?? "";
+  assert.match(backdropRule, /background:transparent/);
+  assert.doesNotMatch(backdropRule, /backdrop-filter|filter:|animation:/);
+  assert.match(styles, /\.feedTitleActions button\.markAllReadSpotlight\s*\{[^}]*z-index:72;[^}]*border:1px solid var\(--mint\)/);
+  const spotlightRule = styles.match(/\.feedTitleActions button\.markAllReadSpotlight\s*\{([^}]*)\}/)?.[1] ?? "";
+  const confirmRule = styles.match(/\.markAllReadConfirm\s*\{([^}]*)\}/)?.[1] ?? "";
+  assert.doesNotMatch(spotlightRule, /box-shadow/);
+  assert.doesNotMatch(confirmRule, /box-shadow/);
+  assert.match(styles, /\.markAllReadConfirm\s*\{[^}]*position:fixed;[^}]*border:1px solid var\(--line\);[^}]*border-radius:14px;[^}]*background:var\(--panel2\)/);
+  assert.match(styles, /\.markAllReadConfirm:before\s*\{/);
+});
+
 test("the subscriptions heading toggles the whole persisted section", () => {
   assert.match(app, /readflux\.sidebar\.subscriptions-collapsed/);
   assert.match(app, /subscriptionsCollapsed\s*\?\s*"bi-chevron-right"\s*:\s*"bi-chevron-down"/);
