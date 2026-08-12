@@ -866,6 +866,8 @@ export default function App() {
   });
   const [reasonOpen, setReasonOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [markAllReadOpen, setMarkAllReadOpen] = useState(false);
+  const [markAllReadPosition, setMarkAllReadPosition] = useState({ top: 0, left: 0, arrowLeft: 0 });
   const [sidebarWidth, setSidebarWidth] = useState(250);
   const [listWidth, setListWidth] = useState(430);
   const [subscriptionsCollapsed, setSubscriptionsCollapsed] = useState(
@@ -899,6 +901,8 @@ export default function App() {
   const [imageProxySupport, setImageProxySupport] = useState({ url: "", available: false });
   const activeEvent = useRef<ReadingEvent | null>(null);
   const readerRef = useRef<HTMLDivElement | null>(null);
+  const markAllReadButtonRef = useRef<HTMLButtonElement | null>(null);
+  const markAllReadConfirmRef = useRef<HTMLButtonElement | null>(null);
   const refreshInFlight = useRef(false);
   const syncInFlight = useRef(false);
   const syncQueued = useRef(false);
@@ -1442,6 +1446,10 @@ export default function App() {
     }
     return filtered;
   }, [stories, mode, topic, query, hideRead, listReadSnapshot, visibleIds, todayKey, activeTimeZone, entryLabels]);
+  const visibleUnreadCount = useMemo(
+    () => visible.reduce((count, story) => count + (story.status === "unread" ? 1 : 0), 0),
+    [visible],
+  );
 
   useEffect(() => {
     if (visible.length && !visibleIds.length) {
@@ -1643,6 +1651,48 @@ export default function App() {
     }
   }, [config, entries, notify, t, visible]);
 
+  const positionMarkAllRead = useCallback(() => {
+    const trigger = markAllReadButtonRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const width = Math.min(273, window.innerWidth - 24);
+    const left = Math.max(12, Math.min(window.innerWidth - width - 12, rect.right - width));
+    const top = rect.bottom + 10;
+    setMarkAllReadPosition({
+      top,
+      left,
+      arrowLeft: Math.max(18, Math.min(width - 18, rect.left + rect.width / 2 - left)),
+    });
+  }, []);
+
+  const requestMarkVisibleRead = useCallback(() => {
+    if (!visibleUnreadCount) return notify(t("feed.noUnread"));
+    positionMarkAllRead();
+    setMarkAllReadOpen(true);
+  }, [notify, positionMarkAllRead, t, visibleUnreadCount]);
+
+  const dismissMarkAllRead = useCallback(() => {
+    setMarkAllReadOpen(false);
+    window.requestAnimationFrame(() => markAllReadButtonRef.current?.focus());
+  }, []);
+
+  useEffect(() => {
+    if (!markAllReadOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      dismissMarkAllRead();
+    };
+    const handleResize = () => positionMarkAllRead();
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", handleResize);
+    window.requestAnimationFrame(() => markAllReadConfirmRef.current?.focus());
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", handleResize);
+    };
+  }, [dismissMarkAllRead, markAllReadOpen, positionMarkAllRead]);
+
   const startResize = (kind: "sidebar" | "list", event: React.PointerEvent) => {
     event.preventDefault();
     const startX = event.clientX;
@@ -1662,7 +1712,7 @@ export default function App() {
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      if (settingsOpen) return;
+      if (settingsOpen || markAllReadOpen) return;
       if (["INPUT", "TEXTAREA"].includes((event.target as HTMLElement).tagName)) return;
       if (event.key.toLowerCase() === "j" || event.key === "ArrowDown") move(1);
       if (event.key.toLowerCase() === "k" || event.key === "ArrowUp") move(-1);
@@ -1681,12 +1731,12 @@ export default function App() {
         if (reader && reader.scrollTop + reader.clientHeight < reader.scrollHeight - 12) reader.scrollBy({ top: reader.clientHeight * .8, behavior: "smooth" });
         else move(1);
       }
-      if (event.shiftKey && event.key.toLowerCase() === "a") void markVisibleRead();
+      if (event.shiftKey && event.key.toLowerCase() === "a") requestMarkVisibleRead();
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, move, selected, entries, visible, selectedId, choose, toggleRead, markVisibleRead, settingsOpen]);
+  }, [config, move, selected, entries, visible, selectedId, choose, toggleRead, markAllReadOpen, requestMarkVisibleRead, settingsOpen]);
 
   const setFeedback = async (feedback: "helpful" | "not_interested") => {
     if (!selected) return;
@@ -1846,10 +1896,27 @@ export default function App() {
             <button className="mobileBack" onClick={() => setMobileView("sources")}>‹ {t("sidebar.feeds")}</button>
             <div className="feedTitleText"><h1>{topicTitle || t(mode === "today" ? "sidebar.today" : mode === "unread" ? "sidebar.allUnread" : "sidebar.saved")}</h1><small>{t("feed.articleCount", { count: visible.length })}{error && entries.length ? ` · ${t("feed.offline")}` : ""}</small></div>
             <div className="feedTitleActions" role="group" aria-label={t("feed.listActions")}>
-              <button type="button" onClick={() => void markVisibleRead()} disabled={!visible.some((story) => story.status === "unread")} aria-label={t("feed.markAllRead")} title={t("feed.markAllRead")}><i className="bi bi-check2-all" aria-hidden="true" /></button>
+              <button ref={markAllReadButtonRef} type="button" className={markAllReadOpen ? "markAllReadSpotlight" : ""} onClick={requestMarkVisibleRead} disabled={!visibleUnreadCount} aria-label={t("feed.markAllRead")} title={t("feed.markAllRead")}><i className="bi bi-check2-all" aria-hidden="true" /></button>
               <button type="button" className={hideRead ? "active" : ""} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead((current) => !current); }} aria-label={t("feed.hideRead")} title={t(hideRead ? "feed.showRead" : "feed.hideRead")} aria-pressed={hideRead}><i className="bi bi-filter-circle" aria-hidden="true" /></button>
             </div>
           </header>
+          {markAllReadOpen && <>
+            <div className="markAllReadBackdrop" role="presentation" onMouseDown={dismissMarkAllRead} />
+            <section
+              className="markAllReadConfirm"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="mark-all-read-title"
+              style={{
+                top: markAllReadPosition.top,
+                left: markAllReadPosition.left,
+                "--mark-all-arrow-left": `${markAllReadPosition.arrowLeft}px`,
+              } as CSSProperties}
+            >
+              <h2 id="mark-all-read-title">{t("feed.markAllReadConfirm", { count: visibleUnreadCount })}</h2>
+              <button ref={markAllReadConfirmRef} type="button" onClick={() => { setMarkAllReadOpen(false); void markVisibleRead(); }}>{t("common.confirm")}</button>
+            </section>
+          </>}
           <div className="storyList">
             {pendingNew > 0 && <button className="newArticlesPill" onClick={refreshList}>{t("feed.newArticles", { count: pendingNew })}</button>}
             {loading && !entries.length ? <div className="empty"><b className="loadingMark">↻</b><h2>{t("feed.syncing")}</h2><p>{t("feed.syncingHint")}</p></div>
