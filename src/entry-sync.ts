@@ -1,6 +1,6 @@
 type SyncEntry = {
   id: number;
-  status: string;
+  status: "read" | "unread" | "removed";
   content: string;
   changed_at?: string;
 };
@@ -8,7 +8,7 @@ type SyncEntry = {
 export function mergeSyncedEntries<T extends SyncEntry>(
   current: T[],
   batch: T[],
-): { entries: T[]; updatedIds: Set<number> } {
+): { entries: T[]; mergedBatch: T[]; updatedIds: Set<number> } {
   const merged = new Map(current.map((entry) => [entry.id, entry]));
   const updatedIds = new Set<number>();
 
@@ -25,5 +25,9 @@ export function mergeSyncedEntries<T extends SyncEntry>(
     });
   });
 
-  return { entries: [...merged.values()], updatedIds };
+  return {
+    entries: [...merged.values()],
+    mergedBatch: batch.map((entry) => merged.get(entry.id) ?? entry),
+    updatedIds,
+  };
 }

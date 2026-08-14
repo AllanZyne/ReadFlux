@@ -99,5 +99,11 @@ test("entry merging preserves cached content when a sync response omits it", () 
     { id: 3, status: "read", content: "", changed_at: "2026-08-14T01:00:00Z" },
   ];
 
-  assert.equal(mergeSyncedEntries(current, batch).entries[0].content, "<p>Cached</p>");
+  const result = mergeSyncedEntries(current, batch);
+
+  assert.equal(result.entries[0].content, "<p>Cached</p>");
+  assert.equal(result.mergedBatch[0].content, "<p>Cached</p>");
+  assert.match(app, /putCachedEntries\(config,\s*mergedBatch\)/);
+  assert.match(app, /putCachedEntries\(config,\s*cacheMerge\.mergedBatch\)/);
+  assert.doesNotMatch(app, /putCachedEntries\(config,\s*batch\)/);
 });

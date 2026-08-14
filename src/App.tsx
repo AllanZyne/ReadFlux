@@ -1056,7 +1056,7 @@ export default function App() {
 
   const mergeEntryBatch = useCallback(async (batch: Entry[]) => {
     if (!config || !batch.length) return;
-    const { entries: mergedEntries, updatedIds } = mergeSyncedEntries(entriesRef.current, batch);
+    const { entries: mergedEntries, mergedBatch, updatedIds } = mergeSyncedEntries(entriesRef.current, batch);
     replaceEntries(mergedEntries);
     if (updatedIds.size) {
       try {
@@ -1116,7 +1116,7 @@ export default function App() {
         }
       }
     }
-    await putCachedEntries(config, batch);
+    await putCachedEntries(config, mergedBatch);
   }, [config, replaceEntries]);
 
   const lookbackDays = settings.entryLookbackDays === undefined
@@ -1144,6 +1144,7 @@ export default function App() {
         getEntrySyncState(config),
         getEntryLabels(config),
       ]);
+      let cachedEntries = cached;
       setEntryLabels(labels);
       const cutoff = lookbackDays === null
         ? null
@@ -1214,6 +1215,8 @@ export default function App() {
         const changedAfter = Math.max(0, Math.floor(new Date(storedState.updatedAt).getTime() / 1000) - 1);
         await loadEntryPages(config, { changed_after: String(changedAfter) }, async (batch, loaded, total) => {
           setSyncProgress({ kind: "incremental", loaded, total });
+          const cacheMerge = mergeSyncedEntries(cachedEntries, batch);
+          cachedEntries = cacheMerge.entries;
           const activeRoute = routeRef.current;
           const visibleBatch = batch.filter((entry) =>
             entry.starred
@@ -1223,7 +1226,7 @@ export default function App() {
           const hiddenIds = new Set(batch.filter((entry) => !visibleBatch.includes(entry)).map((entry) => entry.id));
           if (hiddenIds.size) replaceEntries((current) => current.filter((entry) => !hiddenIds.has(entry.id)));
           await mergeEntryBatch(visibleBatch);
-          await putCachedEntries(config, batch);
+          await putCachedEntries(config, cacheMerge.mergedBatch);
         });
       }
 
