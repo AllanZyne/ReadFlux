@@ -16,7 +16,6 @@ export type ThemeName = "day" | "night";
 export type ProfileSettings = {
   theme: ThemeName;
   language?: SupportedLanguage;
-  entryLookbackDays?: number | null;
   imageLoadingPreferences: ImageLoadingPreferences;
   updatedAt: string;
 };
@@ -30,10 +29,15 @@ export type EntrySyncPhase = "unread" | "starred" | "read";
 
 export type EntrySyncState = {
   initialSyncComplete: boolean;
-  lookbackDays: number | null;
   phase?: EntrySyncPhase;
   offset?: number;
   updatedAt?: string;
+};
+
+export type CachedFeedIcon = {
+  feedId: number;
+  iconId: number;
+  src: string;
 };
 
 export type ReadingEvent = {
@@ -56,11 +60,12 @@ export type ReadingEvent = {
 const LOCAL_CONFIG = "readflux.miniflux.local";
 const SESSION_CONFIG = "readflux.miniflux.session";
 const DB_NAME = "readflux-profile";
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const EVENTS = "reading-events";
 const SETTINGS = "settings";
 const ENTRY_CACHE = "entry-cache";
 const ENTRY_LABELS = "entry-labels";
+const FEED_ICONS = "feed-icons";
 
 type CacheableEntry = {
   id: number;
@@ -77,6 +82,11 @@ type EntryLabelRecord = {
   scope: string;
   entryId: number;
   labels: string[];
+};
+
+type FeedIconRecord = CachedFeedIcon & {
+  key: string;
+  scope: string;
 };
 
 export function getConnection(): ConnectionConfig | null {
@@ -155,6 +165,10 @@ function openDb(): Promise<IDBDatabase> {
         const store = db.createObjectStore(ENTRY_LABELS, { keyPath: "key" });
         store.createIndex("scope", "scope");
       }
+      if (!db.objectStoreNames.contains(FEED_ICONS)) {
+        const store = db.createObjectStore(FEED_ICONS, { keyPath: "key" });
+        store.createIndex("scope", "scope");
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -197,6 +211,32 @@ export async function putCachedEntries<T extends CacheableEntry>(config: Connect
   db.close();
 }
 
+export async function getCachedFeedIcons(config: ConnectionConfig): Promise<CachedFeedIcon[]> {
+  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
+  const records = await requestResult(
+    db.transaction(FEED_ICONS).objectStore(FEED_ICONS).index("scope").getAll(scope),
+  ) as FeedIconRecord[];
+  db.close();
+  return records.map(({ feedId, iconId, src }) => ({ feedId, iconId, src }));
+}
+
+export async function putCachedFeedIcons(config: ConnectionConfig, icons: CachedFeedIcon[]) {
+  if (!icons.length) return;
+  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
+  const transaction = db.transaction(FEED_ICONS, "readwrite");
+  const store = transaction.objectStore(FEED_ICONS);
+  icons.forEach((icon) => {
+    const record: FeedIconRecord = {
+      key: `${scope}:${icon.feedId}`,
+      scope,
+      ...icon,
+    };
+    store.put(record);
+  });
+  await transactionComplete(transaction);
+  db.close();
+}
+
 export async function getEntrySyncState(config: ConnectionConfig): Promise<EntrySyncState | null> {
   const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
   const value = await requestResult(
@@ -216,8 +256,8 @@ export async function saveEntrySyncState(config: ConnectionConfig, state: EntryS
 
 export async function resetEntrySync(config: ConnectionConfig) {
   const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
-  const transaction = db.transaction([ENTRY_CACHE, ENTRY_LABELS, SETTINGS], "readwrite");
-  for (const storeName of [ENTRY_CACHE, ENTRY_LABELS]) {
+  const transaction = db.transaction([ENTRY_CACHE, ENTRY_LABELS, FEED_ICONS, SETTINGS], "readwrite");
+  for (const storeName of [ENTRY_CACHE, ENTRY_LABELS, FEED_ICONS]) {
     const cursorRequest = transaction.objectStore(storeName)
       .index("scope")
       .openCursor(IDBKeyRange.only(scope));
@@ -339,7 +379,6 @@ export function normalizeProfileSettings(value?: unknown): ProfileSettings {
   return {
     theme: stored?.theme === "night" ? "night" : "day",
     ...(isSupportedLanguage(language) ? { language } : {}),
-    entryLookbackDays: stored?.entryLookbackDays === undefined ? 30 : stored.entryLookbackDays,
     imageLoadingPreferences,
     updatedAt: stored?.updatedAt ?? new Date(0).toISOString(),
   };

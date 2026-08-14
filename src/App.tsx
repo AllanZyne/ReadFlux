@@ -21,11 +21,13 @@ import { articleHash, articlePermalink, parseAppRoute, type AppRoute } from "./r
 import { compareSmartFeedEntries, countSmartFeedEntries, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, localDayKey, nextDayBoundary, selectTimeZone, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
 import {
   addEntryLabel,
+  CachedFeedIcon,
   clearConnection,
   ConnectionConfig,
   deleteReadingEvent,
   EntrySyncPhase,
   getCachedEntries,
+  getCachedFeedIcons,
   getConnection,
   getEntryLabels,
   getEntrySyncState,
@@ -36,6 +38,7 @@ import {
   newReadingEvent,
   normalizeReadingEventOpenedAt,
   putCachedEntries,
+  putCachedFeedIcons,
   ProfileSettings,
   putReadingEvent,
   ReadingEvent,
@@ -84,21 +87,13 @@ type EntryPage = { total: number; entries: Entry[] };
 type ListMode = "today" | "unread" | "saved";
 type Topic = { kind: "category" | "feed"; id: number } | null;
 type SyncProgress = {
-  kind: "initial" | "incremental" | "search";
+  kind: "full" | "search";
   phase?: EntrySyncPhase;
   loaded: number;
   total: number;
 };
 
 const ENTRY_PAGE_SIZE = 100;
-const DEFAULT_LOOKBACK_DAYS = 30;
-const LOOKBACK_OPTIONS = [
-  { value: 7, key: "lookback.days7" },
-  { value: 30, key: "lookback.days30" },
-  { value: 90, key: "lookback.days90" },
-  { value: 365, key: "lookback.year1" },
-  { value: null, key: "lookback.all" },
-] as const;
 
 type LocalizedError = { key: string; status?: number };
 
@@ -515,17 +510,6 @@ function SettingsDialog({
     if (saved) onImageModeChange(feedId);
   };
 
-  const setEntryLookback = async (value: string) => {
-    const entryLookbackDays = value === "all" ? null : Number(value);
-    const saved = await saveProfileChange(
-      (current) => ({ ...current, entryLookbackDays, updatedAt: new Date().toISOString() }),
-      t("settings.lookbackSaveFailed"),
-    );
-    if (saved) notify(entryLookbackDays === null
-      ? t("settings.lookbackAllSaved")
-      : t("settings.lookbackDaysSaved", { count: entryLookbackDays }));
-  };
-
   const resetSync = async () => {
     if (!window.confirm(t("sync.resetConfirm"))) return;
     setResetting(true);
@@ -653,13 +637,6 @@ function SettingsDialog({
               <div className="settingsForm minifluxSettings">
                 <label><span>{t("sync.server")}</span><input value={config.url} readOnly /></label>
                 <label className="timeZoneSetting"><span>{t("sync.timeZone")}</span><input value={timeZone} readOnly /><small>{t(timeZoneSource === "miniflux" ? "sync.timeZoneMinifluxHint" : "sync.timeZoneBrowserHint")}</small></label>
-                <label className="syncSelectSetting">
-                  <span>{t("sync.range")}</span>
-                  <select disabled={profileSaving} value={settings.entryLookbackDays ?? "all"} onChange={(event) => void setEntryLookback(event.target.value)}>
-                    {LOOKBACK_OPTIONS.map((option) => <option key={option.value ?? "all"} value={option.value ?? "all"}>{t(option.key)}</option>)}
-                  </select>
-                  <small>{t("sync.rangeHint")}</small>
-                </label>
                 <label className="syncSelectSetting imageDefaultMode">
                   <span>{t("settings.imageDefault")}</span>
                   <select
@@ -796,7 +773,6 @@ function ConnectScreen({ onConnected }: { onConnected: (config: ConnectionConfig
   const [url, setUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [remember, setRemember] = useState(true);
-  const [entryLookbackDays, setEntryLookbackDays] = useState<number | null>(DEFAULT_LOOKBACK_DAYS);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState<LocalizedError | null>(null);
 
@@ -808,10 +784,8 @@ function ConnectScreen({ onConnected }: { onConnected: (config: ConnectionConfig
     try {
       await minifluxFetch(config, "/v1/me");
       saveConnection(config);
-      const currentSettings = await getProfileSettings();
-      const nextSettings = { ...currentSettings, entryLookbackDays, updatedAt: new Date().toISOString() };
-      await saveProfileSettings(nextSettings);
-      onConnected(config, nextSettings);
+      const settings = await getProfileSettings();
+      onConnected(config, settings);
     } catch (cause) {
       setError(cause instanceof TypeError
         ? { key: "connect.directFailed" }
@@ -832,7 +806,6 @@ function ConnectScreen({ onConnected }: { onConnected: (config: ConnectionConfig
         <form onSubmit={connect}>
           <label><span>{t("connect.url")}</span><input type="url" required value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://rss.example.com" autoComplete="url" /></label>
           <label><span>{t("connect.apiKey")}</span><input type="password" required value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={t("connect.apiKeyPlaceholder")} autoComplete="off" /></label>
-          <label className="connectLookback"><span>{t("connect.initialLoad")}</span><select value={entryLookbackDays ?? "all"} onChange={(event) => setEntryLookbackDays(event.target.value === "all" ? null : Number(event.target.value))}>{LOOKBACK_OPTIONS.map((option) => <option key={option.value ?? "all"} value={option.value ?? "all"}>{t(option.key)}</option>)}</select><small>{t("connect.savedAllHistory")}</small></label>
           <label className="remember"><input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /><span>{t("connect.remember")}</span><small>{remember ? t("connect.storedBrowser") : t("connect.clearedTab")}</small></label>
           {error && <p className="formError">{t(error.key, { status: error.status })}</p>}
           <button className="connectButton" disabled={testing}>{testing ? t("connect.testing") : t("connect.submit")}</button>
@@ -856,7 +829,7 @@ export default function App() {
   const [feeds, setFeeds] = useState<Feed[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [events, setEvents] = useState<ReadingEvent[]>([]);
-  const [settings, setSettings] = useState<ProfileSettings>({ theme: "day", entryLookbackDays: DEFAULT_LOOKBACK_DAYS, imageLoadingPreferences: {}, updatedAt: new Date(0).toISOString() });
+  const [settings, setSettings] = useState<ProfileSettings>({ theme: "day", imageLoadingPreferences: {}, updatedAt: new Date(0).toISOString() });
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [route, setRoute] = useState<AppRoute>(() => parseAppRoute(window.location.hash));
   const [mode, setMode] = useState<ListMode>("today");
@@ -1119,10 +1092,6 @@ export default function App() {
     await putCachedEntries(config, mergedBatch);
   }, [config, replaceEntries]);
 
-  const lookbackDays = settings.entryLookbackDays === undefined
-    ? DEFAULT_LOOKBACK_DAYS
-    : settings.entryLookbackDays;
-
   const load = useCallback(async (options?: { background?: boolean }) => {
     if (!config) return false;
     if (syncResetInProgress.current || syncInFlight.current) {
@@ -1144,23 +1113,10 @@ export default function App() {
         getEntrySyncState(config),
         getEntryLabels(config),
       ]);
-      let cachedEntries = cached;
       setEntryLabels(labels);
-      const cutoff = lookbackDays === null
-        ? null
-        : Date.now() - lookbackDays * 86_400_000;
-      const scopedCache = cached.filter((entry) =>
-        entry.starred || cutoff === null || new Date(entry.published_at).getTime() >= cutoff);
-      const routedEntryId = routeRef.current.kind === "article" ? routeRef.current.entryId : null;
-      const routedCachedEntry = routedEntryId === null
-        ? undefined
-        : cached.find((entry) => entry.id === routedEntryId);
-      const loadedCache = routedCachedEntry && !scopedCache.some((entry) => entry.id === routedCachedEntry.id)
-        ? [...scopedCache, routedCachedEntry]
-        : scopedCache;
-      replaceEntries(loadedCache);
-      if (!listSnapshotIds.current.size || !scopedCache.some((e) => listSnapshotIds.current.has(e.id))) {
-        setListReadSnapshot(new Map(scopedCache.map((entry) => [entry.id, entry.status])));
+      replaceEntries(cached);
+      if (!listSnapshotIds.current.size || !cached.some((entry) => listSnapshotIds.current.has(entry.id))) {
+        setListReadSnapshot(new Map(cached.map((entry) => [entry.id, entry.status])));
       }
       const [feedData, categoryData] = await Promise.all([
         minifluxFetch<Feed[]>(config, "/v1/feeds"),
@@ -1168,71 +1124,45 @@ export default function App() {
       ]);
       setFeeds(feedData ?? []);
       setCategories(categoryData ?? []);
-      setSelectedId((current) => current && loadedCache.some((entry) => entry.id === current) ? current : null);
+      setSelectedId((current) => current && cached.some((entry) => entry.id === current) ? current : null);
 
-      const needsInitialSync = !storedState?.initialSyncComplete
-        || storedState.lookbackDays !== lookbackDays;
-      if (needsInitialSync) {
-        const publishedAfter: Record<string, string> = lookbackDays === null
-          ? {}
-          : { published_after: String(Math.floor((Date.now() - lookbackDays * 86_400_000) / 1000)) };
-        const phases: { id: EntrySyncPhase; filters: Record<string, string> }[] = [
-          { id: "unread", filters: { status: "unread", ...publishedAfter } },
-          { id: "starred", filters: { starred: "true" } },
-          { id: "read", filters: { status: "read", starred: "false", ...publishedAfter } },
-        ];
-        const resumeIndex = storedState?.lookbackDays === lookbackDays && storedState.phase
-          ? Math.max(0, phases.findIndex((phase) => phase.id === storedState.phase))
+      const phases: { id: EntrySyncPhase; filters: Record<string, string> }[] = [
+        { id: "unread", filters: { status: "unread" } },
+        { id: "starred", filters: { status: "read", starred: "true" } },
+        { id: "read", filters: { status: "read", starred: "false" } },
+      ];
+      const canResume = storedState?.initialSyncComplete === false;
+      const resumeIndex = canResume && storedState.phase
+        ? Math.max(0, phases.findIndex((phase) => phase.id === storedState.phase))
+        : 0;
+      for (let index = resumeIndex; index < phases.length; index += 1) {
+        const phase = phases[index];
+        const startOffset = index === resumeIndex
+          && canResume
+          && storedState?.phase === phase.id
+          ? storedState.offset ?? 0
           : 0;
-        for (let index = resumeIndex; index < phases.length; index += 1) {
-          const phase = phases[index];
-          const startOffset = index === resumeIndex
-            && storedState?.lookbackDays === lookbackDays
-            && storedState.phase === phase.id
-            ? storedState.offset ?? 0
-            : 0;
-          await loadEntryPages(config, phase.filters, async (batch, loaded, total, nextOffset) => {
-            setSyncProgress({ kind: "initial", phase: phase.id, loaded, total });
-            await mergeEntryBatch(batch);
-            await saveEntrySyncState(config, {
-              initialSyncComplete: false,
-              lookbackDays,
-              phase: phase.id,
-              offset: nextOffset,
-            });
-          }, startOffset);
-          const nextPhase = phases[index + 1]?.id;
-          if (nextPhase) {
-            await saveEntrySyncState(config, {
-              initialSyncComplete: false,
-              lookbackDays,
-              phase: nextPhase,
-              offset: 0,
-            });
-          }
+        await loadEntryPages(config, phase.filters, async (batch, loaded, total, nextOffset) => {
+          setSyncProgress({ kind: "full", phase: phase.id, loaded, total });
+          await mergeEntryBatch(batch);
+          await saveEntrySyncState(config, {
+            initialSyncComplete: false,
+            phase: phase.id,
+            offset: nextOffset,
+          });
+        }, startOffset);
+        const nextPhase = phases[index + 1]?.id;
+        if (nextPhase) {
+          await saveEntrySyncState(config, {
+            initialSyncComplete: false,
+            phase: nextPhase,
+            offset: 0,
+          });
         }
-      } else if (storedState.updatedAt) {
-        const changedAfter = Math.max(0, Math.floor(new Date(storedState.updatedAt).getTime() / 1000) - 1);
-        await loadEntryPages(config, { changed_after: String(changedAfter) }, async (batch, loaded, total) => {
-          setSyncProgress({ kind: "incremental", loaded, total });
-          const cacheMerge = mergeSyncedEntries(cachedEntries, batch);
-          cachedEntries = cacheMerge.entries;
-          const activeRoute = routeRef.current;
-          const visibleBatch = batch.filter((entry) =>
-            entry.starred
-            || (activeRoute.kind === "article" && entry.id === activeRoute.entryId)
-            || cutoff === null
-            || new Date(entry.published_at).getTime() >= cutoff);
-          const hiddenIds = new Set(batch.filter((entry) => !visibleBatch.includes(entry)).map((entry) => entry.id));
-          if (hiddenIds.size) replaceEntries((current) => current.filter((entry) => !hiddenIds.has(entry.id)));
-          await mergeEntryBatch(visibleBatch);
-          await putCachedEntries(config, cacheMerge.mergedBatch);
-        });
       }
 
       await saveEntrySyncState(config, {
         initialSyncComplete: true,
-        lookbackDays,
         updatedAt: syncStartedAt,
       });
       setSyncedAt(new Date());
@@ -1255,7 +1185,7 @@ export default function App() {
         queueMicrotask(() => void loadRef.current());
       }
     }
-  }, [config, lookbackDays, mergeEntryBatch, replaceEntries]);
+  }, [config, mergeEntryBatch, replaceEntries]);
   useEffect(() => {
     loadRef.current = load;
   }, [load]);
@@ -1305,18 +1235,41 @@ export default function App() {
     if (!config || !feeds.length) return;
     let cancelled = false;
     const withIcons = feeds.filter((feed) => feed.icon);
-    void Promise.all(withIcons.map(async (feed) => {
+    void (async () => {
+      let cachedIcons: CachedFeedIcon[] = [];
       try {
-        const icon = await minifluxFetch<FeedIcon>(config, `/v1/feeds/${feed.id}/icon`);
-        const src = icon.data.startsWith("data:") ? icon.data : `data:${icon.data}`;
-        return [feed.id, src] as const;
-      } catch {
-        return null;
-      }
-    })).then((results) => {
+        cachedIcons = await getCachedFeedIcons(config);
+      } catch { /* icon cache is best-effort */ }
       if (cancelled) return;
-      setFeedIcons(new Map(results.filter((item): item is readonly [number, string] => item !== null)));
-    });
+
+      const currentIconIds = new Map(withIcons.map((feed) => [feed.id, feed.icon!.icon_id]));
+      const validCachedIcons = cachedIcons.filter((icon) =>
+        currentIconIds.get(icon.feedId) === icon.iconId);
+      const cachedSources = new Map(validCachedIcons.map((icon) => [icon.feedId, icon.src]));
+      setFeedIcons(cachedSources);
+
+      const cachedFeedIds = new Set(validCachedIcons.map((icon) => icon.feedId));
+      const uncachedFeeds = withIcons.filter((feed) => !cachedFeedIds.has(feed.id));
+      const loadedIcons = (await Promise.all(uncachedFeeds.map(async (feed) => {
+        try {
+          const icon = await minifluxFetch<FeedIcon>(config, `/v1/feeds/${feed.id}/icon`);
+          const src = icon.data.startsWith("data:") ? icon.data : `data:${icon.data}`;
+          return { feedId: feed.id, iconId: feed.icon!.icon_id, src };
+        } catch {
+          return null;
+        }
+      }))).filter((icon): icon is CachedFeedIcon => icon !== null);
+
+      try {
+        await putCachedFeedIcons(config, loadedIcons);
+      } catch { /* icon cache is best-effort */ }
+      if (!cancelled && loadedIcons.length) {
+        setFeedIcons(new Map([
+          ...cachedSources,
+          ...loadedIcons.map((icon) => [icon.feedId, icon.src] as const),
+        ]));
+      }
+    })();
     return () => { cancelled = true; };
   }, [config, feeds]);
 
@@ -1786,9 +1739,9 @@ export default function App() {
     [entries, todayKey, activeTimeZone],
   );
   const syncProgressLabel = syncProgress
-    ? `${syncProgress.kind === "initial"
-      ? t(syncProgress.phase === "unread" ? "sync.initialUnread" : syncProgress.phase === "starred" ? "sync.initialSaved" : "sync.initialRead")
-      : t(syncProgress.kind === "search" ? "sync.searching" : "sync.latest")}${syncProgress.total ? ` ${syncProgress.loaded} / ${syncProgress.total}` : ""}`
+    ? `${syncProgress.kind === "search"
+      ? t("sync.searching")
+      : t(syncProgress.phase === "unread" ? "sync.initialUnread" : syncProgress.phase === "starred" ? "sync.initialSaved" : "sync.initialRead")}${syncProgress.total ? ` ${syncProgress.loaded} / ${syncProgress.total}` : ""}`
     : "";
   if (!ready) return <main className="boot" data-theme="day"><span className="wave">▁▅█▃▇▂</span><p>{t("connect.booting")}</p></main>;
   if (!config) return <ConnectScreen onConnected={(nextConfig, nextSettings) => {
@@ -1802,7 +1755,7 @@ export default function App() {
     : syncProgress
       ? syncProgressLabel
       : refreshing
-        ? t("sync.latest")
+        ? t("sync.fullSyncing")
         : syncedAt
           ? t("feed.syncedAt", { time: formatZonedTime(syncedAt, activeTimeZone) })
           : t("sync.refresh");

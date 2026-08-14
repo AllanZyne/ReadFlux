@@ -10,7 +10,6 @@ test("corrupted profile values do not trigger the legacy WebDAV migration", () =
   assert.equal(settingsModule.hasLegacyWebDavSettings({ webdav: {} }), true);
   assert.deepEqual(settingsModule.normalizeProfileSettings("corrupted"), {
     theme: "day",
-    entryLookbackDays: 30,
     imageLoadingPreferences: {},
     updatedAt: new Date(0).toISOString(),
   });
@@ -30,7 +29,6 @@ test("legacy WebDAV credentials are removed when profile settings load", () => {
   });
   assert.deepEqual(normalized, {
     theme: "night",
-    entryLookbackDays: 30,
     imageLoadingPreferences: {},
     updatedAt: "2026-01-01T00:00:00.000Z",
   });
@@ -43,6 +41,7 @@ test("profile settings preserve only supported interface languages", () => {
   assert.equal(settingsModule.normalizeProfileSettings({ language: "zh-CN" }).language, "zh-CN");
   assert.equal(settingsModule.normalizeProfileSettings({ language: "en" }).language, "en");
   assert.equal(settingsModule.normalizeProfileSettings({ language: "de" }).language, undefined);
+  assert.equal("entryLookbackDays" in settingsModule.normalizeProfileSettings({ entryLookbackDays: 7 }), false);
 });
 
 test("legacy origin-referrer feeds migrate to direct-origin overrides", () => {

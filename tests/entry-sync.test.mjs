@@ -6,15 +6,16 @@ import { mergeSyncedEntries } from "../src/entry-sync.ts";
 const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
 const client = await readFile(new URL("../src/readflux-client.ts", import.meta.url), "utf8");
 
-test("entry sync defaults to 30 days and keeps starred entries outside the cutoff", () => {
-  assert.match(app, /DEFAULT_LOOKBACK_DAYS\s*=\s*30/);
-  assert.match(app, /\{\s*id:\s*"unread",\s*filters:\s*\{\s*status:\s*"unread",\s*\.\.\.publishedAfter\s*\}\s*\}/);
-  assert.match(app, /\{\s*id:\s*"starred",\s*filters:\s*\{\s*starred:\s*"true"\s*\}\s*\}/);
-  assert.match(app, /\{\s*id:\s*"read",\s*filters:\s*\{\s*status:\s*"read",\s*starred:\s*"false",\s*\.\.\.publishedAfter\s*\}\s*\}/);
+test("every entry sync loads the full Miniflux history in resumable phases", () => {
+  assert.doesNotMatch(app, /DEFAULT_LOOKBACK_DAYS|LOOKBACK_OPTIONS|published_after|changed_after/);
+  assert.match(app, /\{\s*id:\s*"unread",\s*filters:\s*\{\s*status:\s*"unread"\s*\}\s*\}/);
+  assert.match(app, /\{\s*id:\s*"starred",\s*filters:\s*\{\s*status:\s*"read",\s*starred:\s*"true"\s*\}\s*\}/);
+  assert.match(app, /\{\s*id:\s*"read",\s*filters:\s*\{\s*status:\s*"read",\s*starred:\s*"false"\s*\}\s*\}/);
+  assert.match(app, /const canResume = storedState\?\.initialSyncComplete === false/);
 });
 
 test("entry cache is connection-scoped and records resumable sync state", () => {
-  assert.match(client, /DB_VERSION\s*=\s*3/);
+  assert.match(client, /DB_VERSION\s*=\s*4/);
   assert.match(client, /createIndex\("scope",\s*"scope"\)/);
   assert.match(client, /ENTRY_LABELS\s*=\s*"entry-labels"/);
   assert.match(client, /initialSyncComplete:\s*boolean/);
@@ -22,14 +23,15 @@ test("entry cache is connection-scoped and records resumable sync state", () => 
   assert.match(client, /offset\?:\s*number/);
 });
 
-test("later refreshes use the Miniflux changed-after filter", () => {
-  assert.match(app, /changed_after:\s*String\(changedAfter\)/);
+test("visible background refreshes use the same full entry sync", () => {
+  assert.doesNotMatch(app, /changed_after|kind:\s*"incremental"/);
   assert.match(app, /5\s*\*\s*60_000/);
+  assert.match(app, /loadRef\.current\(\{\s*background:\s*true\s*\}\)/);
 });
 
 test("sync data can be reset without deleting profile data or credentials", () => {
   assert.match(client, /export async function resetEntrySync/);
-  assert.match(client, /db\.transaction\(\[ENTRY_CACHE,\s*ENTRY_LABELS,\s*SETTINGS\],\s*"readwrite"\)/);
+  assert.match(client, /db\.transaction\(\[ENTRY_CACHE,\s*ENTRY_LABELS,\s*FEED_ICONS,\s*SETTINGS\],\s*"readwrite"\)/);
   assert.match(client, /\.openCursor\(IDBKeyRange\.only\(scope\)\)/);
   assert.doesNotMatch(client, /getAllKeys\(scope\)/);
   assert.match(client, /delete\(`entry-sync-state:\$\{scope\}`\)/);
@@ -37,6 +39,15 @@ test("sync data can be reset without deleting profile data or credentials", () =
   assert.match(app, /syncResetInProgress\.current\s*=\s*true/);
   assert.match(app, /while\s*\(syncInFlight\.current\)/);
   assert.match(app, /await resetEntrySync\(config\)/);
+});
+
+test("feed icons use a connection-scoped cache keyed by Miniflux icon version", () => {
+  assert.match(client, /FEED_ICONS\s*=\s*"feed-icons"/);
+  assert.match(client, /export async function getCachedFeedIcons/);
+  assert.match(client, /export async function putCachedFeedIcons/);
+  assert.match(app, /currentIconIds\.get\(icon\.feedId\) === icon\.iconId/);
+  assert.match(app, /const uncachedFeeds = withIcons\.filter/);
+  assert.match(app, /putCachedFeedIcons\(config,\s*loadedIcons\)/);
 });
 
 test("on-demand content caches the same local status and starred state shown in the UI", () => {
@@ -85,7 +96,7 @@ test("unread and unchanged entries do not receive update labels", () => {
   ];
   const batch = [
     { id: 1, status: "unread", content: "new", changed_at: "2026-08-14T02:00:00Z" },
-    { id: 2, status: "read", content: "same", changed_at: "2026-08-14T02:00:00Z" },
+    { id: 2, status: "read", content: "old", changed_at: "2026-08-14T02:00:00Z" },
   ];
 
   assert.deepEqual([...mergeSyncedEntries(current, batch).updatedIds], []);
@@ -104,6 +115,5 @@ test("entry merging preserves cached content when a sync response omits it", () 
   assert.equal(result.entries[0].content, "<p>Cached</p>");
   assert.equal(result.mergedBatch[0].content, "<p>Cached</p>");
   assert.match(app, /putCachedEntries\(config,\s*mergedBatch\)/);
-  assert.match(app, /putCachedEntries\(config,\s*cacheMerge\.mergedBatch\)/);
   assert.doesNotMatch(app, /putCachedEntries\(config,\s*batch\)/);
 });
