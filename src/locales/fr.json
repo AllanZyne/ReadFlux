@@ -58,7 +58,7 @@
     "preparingFeeds": "Préparation des paramètres des flux…",
     "noFeeds": "Aucun flux à configurer pour le moment.",
     "localBoundary": "Limite des données locales",
-    "localBoundaryHint": "Tout marquer comme lu n’écrit que dans Miniflux et ne devient pas un signal d’intérêt. Seuls les articles ouverts, le temps au premier plan, la profondeur de défilement, les favoris et les avis explicites influencent les recommandations."
+    "localBoundaryHint": "Tout marquer comme lu n’écrit que dans Miniflux et ne devient pas un signal d’intérêt. Seuls les articles ouverts, le temps au premier plan, la profondeur, les favoris et les avis explicites influencent les recommandations ; les événements ne sont synchronisés que si WebDAV est activé."
   },
   "sync": {
     "title": "Synchronisation Miniflux",
@@ -85,9 +85,35 @@
     "refreshFailed": "Échec de la synchronisation avec Miniflux",
     "resetDone": "Données de synchronisation réinitialisées ; nouveau chargement initial"
   },
+  "webdav": {
+    "title": "Synchronisation des données WebDAV",
+    "description": "Téléversez chaque mois les événements de ce client et combinez ceux des autres clients ReadFlux.",
+    "connected": "Configuré",
+    "notConfigured": "Non configuré",
+    "url": "Dossier WebDAV dédié à ReadFlux",
+    "username": "Nom d’utilisateur",
+    "password": "Mot de passe",
+    "clientName": "Nom du client",
+    "interval": "Fréquence de récupération",
+    "intervalOff": "Désactiver la synchronisation automatique",
+    "intervalMinutes": "Toutes les {{count}} minutes",
+    "intervalHour": "Toutes les heures",
+    "syncing": "Synchronisation des recommandations…",
+    "lastSynced": "Dernière synchronisation : {{time}}",
+    "neverSynced": "Aucune synchronisation. Les identifiants sont stockés en clair dans ce navigateur et les événements en JSON clair sur WebDAV.",
+    "failed": "Échec de la synchronisation WebDAV",
+    "testing": "Test…",
+    "save": "Tester et enregistrer",
+    "saved": "WebDAV connecté et synchronisé",
+    "syncNow": "Synchroniser",
+    "disconnect": "Déconnecter WebDAV sur cet appareil",
+    "disconnected": "WebDAV déconnecté ; les données du serveur sont conservées",
+    "missingFields": "Saisissez l’URL WebDAV et le nom du client",
+    "remoteReadOnly": "Autre client · Lecture seule"
+  },
   "recommendation": {
     "title": "Profil local de recommandation",
-    "description": "Cette page présente les événements de lecture bruts enregistrés par ce navigateur et les poids dérivés de ceux-ci et des favoris Miniflux. Les scores servent toujours uniquement à classer Aujourd’hui.",
+    "description": "Cette page présente les événements de ce navigateur et des miroirs WebDAV, ainsi que les poids dérivés de ceux-ci et des favoris Miniflux. Les scores servent toujours uniquement à classer Aujourd’hui.",
     "addRecord": "+ Ajouter",
     "readingEvents": "Événements de lecture",
     "validEvents": "Événements d’intérêt valides",
@@ -158,7 +184,7 @@
     "eyebrow": "LECTEUR D’INFORMATIONS PRIVÉ",
     "tagline": "RSS LOCAL D’ABORD",
     "headline": "Transformez Miniflux en\nvotre lecteur d’informations personnel.",
-    "lead": "Les articles viennent de Miniflux ; le comportement de lecture, les préférences de recommandation et le thème restent dans ce navigateur.",
+    "lead": "Les articles viennent de Miniflux. Le comportement reste local par défaut et peut être synchronisé entre clients ReadFlux via votre WebDAV.",
     "url": "URL Miniflux",
     "apiKey": "Clé API",
     "apiKeyPlaceholder": "Collez une clé API dédiée",
@@ -174,7 +200,7 @@
     "realReading": "Lecture réelle",
     "localProfile": "Profil local",
     "dataBoundary": "Limite des données",
-    "thisDevice": "Cet appareil uniquement",
+    "thisDevice": "Local, WebDAV facultatif",
     "directFailed": "Le navigateur ne peut pas se connecter directement. Vérifiez HTTPS, l’URL et si le proxy inverse autorise CORS et X-Auth-Token.",
     "failed": "Échec de la connexion"
   },

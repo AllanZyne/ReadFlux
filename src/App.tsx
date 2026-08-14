@@ -23,6 +23,8 @@ import {
   addEntryLabel,
   CachedFeedIcon,
   clearConnection,
+  clearRemoteReadingEvents,
+  clearWebDavConfig,
   ConnectionConfig,
   deleteReadingEvent,
   EntrySyncPhase,
@@ -33,9 +35,12 @@ import {
   getEntrySyncState,
   getProfileSettings,
   getReadingEvents,
+  getRemoteReadingEvents,
+  getWebDavConfig,
   MinifluxRequestError,
   minifluxFetch,
   newReadingEvent,
+  markAllReadingEventMonthsDirty,
   normalizeReadingEventOpenedAt,
   putCachedEntries,
   putCachedFeedIcons,
@@ -47,8 +52,18 @@ import {
   saveConnection,
   saveEntrySyncState,
   saveProfileSettings,
+  saveWebDavConfig,
   ThemeName,
+  WebDavConfig,
+  WebDavSyncInterval,
 } from "./readflux-client";
+import {
+  clearWebDavEtagCache,
+  synchronizeWebDav,
+  testWebDavConnection,
+  webDavConnectionIdentity,
+  type WebDavSyncResult,
+} from "./webdav-sync";
 
 type Feed = {
   id: number;
@@ -366,6 +381,17 @@ const ArticleBody = memo(function ArticleBody({
 });
 
 type EventDraft = Omit<ReadingEvent, "id" | "updatedAt"> & { id?: string };
+type WebDavSyncStatus = {
+  state: "idle" | "syncing" | "success" | "error";
+  syncedAt?: string;
+  message?: string;
+};
+
+function defaultWebDavClientName() {
+  const browser = navigator.userAgent.includes("Safari") && !navigator.userAgent.includes("Chrome") ? "Safari" : "Browser";
+  const platform = navigator.userAgent.includes("Mac") ? "macOS" : navigator.platform || "Device";
+  return `${browser} · ${platform}`;
+}
 
 function emptyEventDraft(): EventDraft {
   return {
@@ -398,6 +424,11 @@ function SettingsDialog({
   onSettingsChange,
   onImageModeChange,
   onEventsChange,
+  webDavConfig,
+  webDavStatus,
+  onSaveWebDav,
+  onSyncWebDav,
+  onDisconnectWebDav,
   onDisconnect,
   onResetSync,
   syncBusy,
@@ -419,6 +450,11 @@ function SettingsDialog({
   onSettingsChange: (settings: ProfileSettings) => void;
   onImageModeChange: (feedId?: number) => void;
   onEventsChange: (events: ReadingEvent[]) => void;
+  webDavConfig: WebDavConfig | null;
+  webDavStatus: WebDavSyncStatus;
+  onSaveWebDav: (config: WebDavConfig) => Promise<boolean>;
+  onSyncWebDav: () => Promise<boolean>;
+  onDisconnectWebDav: () => Promise<void>;
   onDisconnect: () => void;
   onResetSync: () => Promise<void>;
   syncBusy: boolean;
@@ -431,11 +467,18 @@ function SettingsDialog({
   const [profileSaving, setProfileSaving] = useState(false);
   const [eventQuery, setEventQuery] = useState("");
   const [draft, setDraft] = useState<EventDraft | null>(null);
+  const [webDavDraft, setWebDavDraft] = useState<WebDavConfig>(() => webDavConfig ?? {
+    url: "",
+    username: "",
+    password: "",
+    clientName: defaultWebDavClientName(),
+    intervalMinutes: 15,
+  });
+  const [webDavSaving, setWebDavSaving] = useState(false);
   const profileWriteInFlight = useRef(false);
   const currentSettings = useRef(settings);
 
   useEffect(() => { currentSettings.current = settings; }, [settings]);
-
   useEffect(() => {
     const close = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -518,6 +561,34 @@ function SettingsDialog({
     } finally {
       setResetting(false);
     }
+  };
+
+  const saveWebDav = async () => {
+    if (!webDavDraft.url.trim() || !webDavDraft.clientName.trim()) {
+      notify(t("webdav.missingFields"));
+      return;
+    }
+    setWebDavSaving(true);
+    try {
+      await onSaveWebDav({
+        ...webDavDraft,
+        url: webDavDraft.url.trim(),
+        clientName: webDavDraft.clientName.trim(),
+      });
+    } finally {
+      setWebDavSaving(false);
+    }
+  };
+
+  const disconnectWebDav = async () => {
+    await onDisconnectWebDav();
+    setWebDavDraft({
+      url: "",
+      username: "",
+      password: "",
+      clientName: defaultWebDavClientName(),
+      intervalMinutes: 15,
+    });
   };
 
   const saveEvent = async () => {
@@ -659,6 +730,40 @@ function SettingsDialog({
                 <button className="disconnect" disabled={profileSaving} onClick={onDisconnect}>{t("sync.disconnect")}</button>
               </div>
             </section>
+            <section className="webDavSettings">
+              <div className="settingTitle">
+                <div><h3>{t("webdav.title")}</h3><p>{t("webdav.description")}</p></div>
+                <span>{webDavConfig ? t("webdav.connected") : t("webdav.notConfigured")}</span>
+              </div>
+              <div className="settingsForm">
+                <label><span>{t("webdav.url")}</span><input type="url" value={webDavDraft.url} placeholder="https://dav.example.com/readflux/" onChange={(event) => setWebDavDraft({ ...webDavDraft, url: event.target.value })} /></label>
+                <div>
+                  <label><span>{t("webdav.username")}</span><input autoComplete="username" value={webDavDraft.username} onChange={(event) => setWebDavDraft({ ...webDavDraft, username: event.target.value })} /></label>
+                  <label><span>{t("webdav.password")}</span><input type="password" autoComplete="current-password" value={webDavDraft.password} onChange={(event) => setWebDavDraft({ ...webDavDraft, password: event.target.value })} /></label>
+                </div>
+                <div>
+                  <label><span>{t("webdav.clientName")}</span><input value={webDavDraft.clientName} onChange={(event) => setWebDavDraft({ ...webDavDraft, clientName: event.target.value })} /></label>
+                  <label><span>{t("webdav.interval")}</span><select value={webDavDraft.intervalMinutes} onChange={(event) => setWebDavDraft({ ...webDavDraft, intervalMinutes: Number(event.target.value) as WebDavSyncInterval })}>
+                    <option value={0}>{t("webdav.intervalOff")}</option>
+                    <option value={5}>{t("webdav.intervalMinutes", { count: 5 })}</option>
+                    <option value={15}>{t("webdav.intervalMinutes", { count: 15 })}</option>
+                    <option value={30}>{t("webdav.intervalMinutes", { count: 30 })}</option>
+                    <option value={60}>{t("webdav.intervalHour")}</option>
+                  </select></label>
+                </div>
+                <p className={`webDavStatus ${webDavStatus.state}`}>
+                  {webDavStatus.state === "syncing" ? t("webdav.syncing")
+                    : webDavStatus.state === "error" ? webDavStatus.message ?? t("webdav.failed")
+                      : webDavStatus.syncedAt ? t("webdav.lastSynced", { time: formatZonedDateTime(webDavStatus.syncedAt, timeZone) })
+                        : t("webdav.neverSynced")}
+                </p>
+                <div className="settingsActions webDavActions">
+                  {webDavConfig && <button disabled={webDavStatus.state === "syncing" || webDavSaving} onClick={() => void onSyncWebDav()}>{t("webdav.syncNow")}</button>}
+                  <button className="primary" disabled={webDavStatus.state === "syncing" || webDavSaving} onClick={() => void saveWebDav()}>{webDavSaving ? t("webdav.testing") : t("webdav.save")}</button>
+                </div>
+                {webDavConfig && <button className="disconnect" disabled={webDavStatus.state === "syncing" || webDavSaving} onClick={() => void disconnectWebDav()}>{t("webdav.disconnect")}</button>}
+              </div>
+            </section>
           </>}
 
           {tab === "feeds" && <section className="feedSettingsSection">
@@ -753,11 +858,13 @@ function SettingsDialog({
               <header><div><h3>{t("recommendation.rawEvents")}</h3><small>{t("recommendation.rawEventsSummary", { shown: shownEvents.length, total: events.length })}</small></div><input value={eventQuery} onChange={(event) => setEventQuery(event.target.value)} placeholder={t("recommendation.searchPlaceholder")} /></header>
               <div className="eventTable">
                 <div className="eventTableHead"><span>{t("recommendation.articleSource")}</span><span>{t("recommendation.behavior")}</span><span>{t("recommendation.signal")}</span><span /></div>
-                {shownEvents.length ? shownEvents.map((event) => <div className="eventRow" key={event.id}>
-                  <span><strong>{event.title}</strong><small>{event.source} · {formatZonedDateTime(event.openedAt, timeZone)}</small></span>
+                {shownEvents.length ? shownEvents.map((event) => <div className="eventRow" key={`${event.remoteClientId ?? "local"}:${event.id}`}>
+                  <span><strong>{event.title}</strong><small>{event.source} · {formatZonedDateTime(event.openedAt, timeZone)}{event.remoteClientName ? ` · ${event.remoteClientName}` : ""}</small></span>
                   <span><b>{t("common.secondsShort", { count: Math.round(event.activeSeconds) })}</b><small>{t("recommendation.scrollSummary", { depth: Math.round(event.scrollDepth * 100), origin: t(`recommendation.origin${event.origin[0].toUpperCase()}${event.origin.slice(1)}`) })}</small></span>
                   <span><b>{event.feedback === "helpful" ? t("recommendation.helpful") : event.feedback === "not_interested" ? t("recommendation.notInterested") : t("recommendation.implicit")}</b><small>{event.terms.slice(0, 4).join(" · ") || t("recommendation.noTerms")}</small></span>
-                  <span><button onClick={() => setDraft({ ...event })}>{t("common.edit")}</button><button className="danger" onClick={() => void removeEvent(event)}>{t("common.delete")}</button></span>
+                  <span>{event.remoteClientId
+                    ? <small>{t("webdav.remoteReadOnly")}</small>
+                    : <><button onClick={() => setDraft({ ...event })}>{t("common.edit")}</button><button className="danger" onClick={() => void removeEvent(event)}>{t("common.delete")}</button></>}</span>
                 </div>) : <p className="noEvents">{t("recommendation.noMatchingEvents")}</p>}
               </div>
             </section>
@@ -829,6 +936,9 @@ export default function App() {
   const [feeds, setFeeds] = useState<Feed[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [events, setEvents] = useState<ReadingEvent[]>([]);
+  const [remoteEvents, setRemoteEvents] = useState<ReadingEvent[]>([]);
+  const [webDavConfig, setWebDavConfig] = useState<WebDavConfig | null>(null);
+  const [webDavStatus, setWebDavStatus] = useState<WebDavSyncStatus>({ state: "idle" });
   const [settings, setSettings] = useState<ProfileSettings>({ theme: "day", imageLoadingPreferences: {}, updatedAt: new Date(0).toISOString() });
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [route, setRoute] = useState<AppRoute>(() => parseAppRoute(window.location.hash));
@@ -909,11 +1019,73 @@ export default function App() {
   const loadRef = useRef<(options?: { background?: boolean }) => Promise<boolean>>(async () => false);
   const proxyRefreshKey = useRef("");
   const routeRef = useRef(route);
+  const webDavUploadTimer = useRef<number | undefined>(undefined);
+  const recommendationEvents = useMemo(() => [...events, ...remoteEvents], [events, remoteEvents]);
 
   const notify = useCallback((message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(""), 2200);
   }, []);
+
+  const runWebDavSync = useCallback(async (override?: WebDavConfig, pull = true) => {
+    const activeConfig = override ?? webDavConfig;
+    if (!activeConfig) return false;
+    setWebDavStatus((current) => ({ ...current, state: "syncing", message: undefined }));
+    try {
+      const result: WebDavSyncResult = await synchronizeWebDav(activeConfig, { pull });
+      setRemoteEvents(result.events);
+      setWebDavStatus({ state: "success", syncedAt: result.syncedAt });
+      return true;
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : t("webdav.failed");
+      setWebDavStatus((current) => ({ ...current, state: "error", message }));
+      return false;
+    }
+  }, [t, webDavConfig]);
+
+  const handleSaveWebDav = useCallback(async (next: WebDavConfig) => {
+    setWebDavStatus((current) => ({ ...current, state: "syncing", message: undefined }));
+    try {
+      await testWebDavConnection(next);
+      const connectionChanged = webDavConfig !== null
+        && webDavConnectionIdentity(webDavConfig) !== webDavConnectionIdentity(next);
+      if (webDavConfig && connectionChanged) {
+        clearWebDavEtagCache();
+        await clearRemoteReadingEvents();
+        setRemoteEvents([]);
+      }
+      saveWebDavConfig(next);
+      setWebDavConfig(next);
+      if (!webDavConfig || connectionChanged || webDavConfig.clientName !== next.clientName) {
+        await markAllReadingEventMonthsDirty();
+      }
+      const synced = await runWebDavSync(next);
+      if (synced) notify(t("webdav.saved"));
+      return synced;
+    } catch (cause) {
+      setWebDavStatus({ state: "error", message: cause instanceof Error ? cause.message : t("webdav.failed") });
+      return false;
+    }
+  }, [notify, runWebDavSync, t, webDavConfig]);
+
+  const handleDisconnectWebDav = useCallback(async () => {
+    clearWebDavConfig();
+    clearWebDavEtagCache();
+    await clearRemoteReadingEvents();
+    setRemoteEvents([]);
+    setWebDavConfig(null);
+    setWebDavStatus({ state: "idle" });
+    notify(t("webdav.disconnected"));
+  }, [notify, t]);
+
+  const scheduleWebDavUpload = useCallback(() => {
+    if (!webDavConfig) return;
+    if (webDavUploadTimer.current !== undefined) window.clearTimeout(webDavUploadTimer.current);
+    webDavUploadTimer.current = window.setTimeout(() => {
+      webDavUploadTimer.current = undefined;
+      void runWebDavSync(undefined, false);
+    }, 30_000);
+  }, [runWebDavSync, webDavConfig]);
 
   const replaceEntries = useCallback((update: Entry[] | ((current: Entry[]) => Entry[])) => {
     const next = typeof update === "function" ? update(entriesRef.current) : update;
@@ -985,14 +1157,42 @@ export default function App() {
   const imageProxyAvailable = true;
 
   useEffect(() => {
-    Promise.all([getReadingEvents(), getProfileSettings()]).then(async ([history, profile]) => {
+    Promise.all([getReadingEvents(), getRemoteReadingEvents(), getProfileSettings()]).then(async ([history, remoteHistory, profile]) => {
       if (profile.language) await i18n.changeLanguage(profile.language);
       setEvents(history);
+      setRemoteEvents(remoteHistory);
+      setWebDavConfig(getWebDavConfig());
       setSettings(profile);
       setConfig(getConnection());
       setReady(true);
     });
   }, [i18n]);
+
+  useEffect(() => {
+    if (!ready || !webDavConfig) return;
+    queueMicrotask(() => void runWebDavSync());
+    if (!webDavConfig.intervalMinutes) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void runWebDavSync();
+    }, webDavConfig.intervalMinutes * 60_000);
+    return () => window.clearInterval(timer);
+  }, [ready, runWebDavSync, webDavConfig]);
+
+  useEffect(() => {
+    const syncWhenVisible = () => {
+      if (document.visibilityState === "visible" && webDavConfig) void runWebDavSync();
+    };
+    document.addEventListener("visibilitychange", syncWhenVisible);
+    return () => document.removeEventListener("visibilitychange", syncWhenVisible);
+  }, [runWebDavSync, webDavConfig]);
+
+  useEffect(() => () => {
+    if (webDavUploadTimer.current !== undefined) window.clearTimeout(webDavUploadTimer.current);
+  }, []);
+
+  useEffect(() => {
+    if (ready && webDavConfig) scheduleWebDavUpload();
+  }, [events, ready, scheduleWebDavUpload, webDavConfig]);
 
   useEffect(() => {
     localStorage.setItem("readflux.sidebar.subscriptions-collapsed", String(subscriptionsCollapsed));
@@ -1279,7 +1479,7 @@ export default function App() {
     const words = new Map<string, number>();
     const negatives = new Map<string, number>();
     const now = syncedAt?.getTime() ?? 0;
-    events.forEach((event) => {
+    recommendationEvents.forEach((event) => {
       const ageDays = Math.max(0, (now - new Date(event.openedAt).getTime()) / 86_400_000);
       const recency = Math.exp(-ageDays / 28);
       const engaged = Math.min(4, event.activeSeconds / 30) + event.scrollDepth * 2;
@@ -1298,7 +1498,7 @@ export default function App() {
       termsOf(`${entry.title} ${toText(entry.content).slice(0, 500)}`).forEach((term) => words.set(term, (words.get(term) ?? 0) + 3));
     });
     return { sources, words, negatives };
-  }, [events, entries, syncedAt]);
+  }, [recommendationEvents, entries, syncedAt]);
 
   const stories = useMemo<Story[]>(() => entries.map((entry) => {
     const feed = entry.feed ?? feedMap.get(entry.feed_id);
@@ -1318,7 +1518,7 @@ export default function App() {
         ? t("recommendation.reasonTerms", { terms })
         : entry.starred
           ? t("recommendation.reasonSaved")
-          : events.length
+          : recommendationEvents.length
             ? t("recommendation.reasonCategory", { category })
             : t("recommendation.reasonNew");
     const summary = toText(entry.content).slice(0, 160);
@@ -1332,13 +1532,14 @@ export default function App() {
       score,
       reason,
     };
-  }), [entries, events.length, feedMap, interest, syncedAt, t]);
+  }), [entries, recommendationEvents.length, feedMap, interest, syncedAt, t]);
 
   const persistActive = useCallback(async () => {
     if (!activeEvent.current) return;
     activeEvent.current.updatedAt = new Date().toISOString();
     await putReadingEvent(activeEvent.current);
-  }, []);
+    scheduleWebDavUpload();
+  }, [scheduleWebDavUpload]);
 
   const commitActiveEvent = useCallback(() => {
     if (!activeEvent.current) return;
@@ -1405,7 +1606,7 @@ export default function App() {
 
   const selected = stories.find((story) => story.id === selectedId) ?? null;
   const selectedReadingSeconds = selected
-    ? events.reduce((sum, event) => event.entryId === selected.id ? sum + event.activeSeconds : sum, 0)
+    ? recommendationEvents.reduce((sum, event) => event.entryId === selected.id ? sum + event.activeSeconds : sum, 0)
     : 0;
   const selectedImageMode = selected
     ? resolveImageLoadingMode(
@@ -1917,7 +2118,7 @@ export default function App() {
         feeds={feeds}
         referrerScope={referrerScope}
         imageProxyAvailable={imageProxyAvailable}
-        events={events}
+        events={recommendationEvents}
         settings={settings}
         timeZone={activeTimeZone}
         timeZoneSource={timeZoneSelection.source}
@@ -1937,8 +2138,13 @@ export default function App() {
             const updatedActiveEvent = next.find((event) => event.id === activeEvent.current?.id);
             activeEvent.current = updatedActiveEvent ? { ...updatedActiveEvent } : null;
           }
-          setEvents(next);
+          setEvents(next.filter((event) => !event.remoteClientId));
         }}
+        webDavConfig={webDavConfig}
+        webDavStatus={webDavStatus}
+        onSaveWebDav={handleSaveWebDav}
+        onSyncWebDav={runWebDavSync}
+        onDisconnectWebDav={handleDisconnectWebDav}
         onDisconnect={() => {
           clearConnection();
           setSettingsOpen(false);

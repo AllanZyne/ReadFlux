@@ -58,7 +58,7 @@
     "preparingFeeds": "正在准备订阅源设置…",
     "noFeeds": "还没有可配置的订阅源。",
     "localBoundary": "本地数据边界",
-    "localBoundaryHint": "“批量已读”只写回 Miniflux，不会成为兴趣信号。只有实际打开、前台停留、滚动深度、收藏和明确反馈会影响推荐。"
+    "localBoundaryHint": "“批量已读”只写回 Miniflux，不会成为兴趣信号。只有实际打开、前台停留、滚动深度、收藏和明确反馈会影响推荐；阅读事件仅在启用 WebDAV 后同步。"
   },
   "sync": {
     "title": "Miniflux 同步",
@@ -85,9 +85,35 @@
     "refreshFailed": "与 Miniflux 同步失败",
     "resetDone": "同步数据已重置，正在重新执行首次加载"
   },
+  "webdav": {
+    "title": "WebDAV 数据同步",
+    "description": "将此客户端的阅读事件按月上传，并读取其他 ReadFlux 客户端的事件来综合推荐画像。",
+    "connected": "已配置",
+    "notConfigured": "未配置",
+    "url": "ReadFlux 专用 WebDAV 目录",
+    "username": "用户名",
+    "password": "密码",
+    "clientName": "客户端名称",
+    "interval": "自动拉取频率",
+    "intervalOff": "关闭自动同步",
+    "intervalMinutes": "每 {{count}} 分钟",
+    "intervalHour": "每小时",
+    "syncing": "正在同步推荐数据…",
+    "lastSynced": "上次同步：{{time}}",
+    "neverSynced": "尚未同步。凭据以明文保存在此浏览器，事件以明文 JSON 存放在 WebDAV。",
+    "failed": "WebDAV 同步失败",
+    "testing": "正在测试…",
+    "save": "测试并保存",
+    "saved": "WebDAV 已连接并完成同步",
+    "syncNow": "立即同步",
+    "disconnect": "断开此设备上的 WebDAV",
+    "disconnected": "已断开 WebDAV；服务器数据已保留",
+    "missingFields": "请填写 WebDAV 地址和客户端名称",
+    "remoteReadOnly": "其他客户端 · 只读"
+  },
   "recommendation": {
     "title": "本地推荐画像",
-    "description": "这里展示浏览器真实保存的原始阅读事件，以及算法由它们和 Miniflux 收藏派生出的权重。推荐分数仍只用于“今天”的排序。",
+    "description": "这里展示当前浏览器及 WebDAV 同步的原始阅读事件，以及算法由它们和 Miniflux 收藏派生出的权重。推荐分数仍只用于“今天”的排序。",
     "addRecord": "＋ 添加记录",
     "readingEvents": "阅读事件",
     "validEvents": "有效兴趣事件",
@@ -158,7 +184,7 @@
     "eyebrow": "PRIVATE INTELLIGENCE READER",
     "tagline": "本地优先 RSS",
     "headline": "把 Miniflux 变成\n你的个人情报终端。",
-    "lead": "文章由 Miniflux 提供；真实阅读行为、推荐偏好和主题只保存在这个浏览器。",
+    "lead": "文章由 Miniflux 提供；阅读行为默认只保存在浏览器，也可选择通过自己的 WebDAV 在 ReadFlux 客户端间同步。",
     "url": "Miniflux 地址",
     "apiKey": "API 密钥",
     "apiKeyPlaceholder": "粘贴专用 API Key",
@@ -174,7 +200,7 @@
     "realReading": "真实阅读",
     "localProfile": "本地画像",
     "dataBoundary": "数据边界",
-    "thisDevice": "仅此设备",
+    "thisDevice": "本地，可选 WebDAV",
     "directFailed": "浏览器无法直连该地址。请检查 HTTPS、地址是否正确，以及反向代理是否允许 CORS 和 X-Auth-Token。",
     "failed": "连接失败"
   },

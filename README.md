@@ -118,6 +118,22 @@ Recommendation scores only order **Today** and are not displayed in the article
 list. The **Recommendation data** tab in Settings exposes derived weights and
 raw events and allows records to be added, edited, or deleted.
 
+### Optional WebDAV sync
+
+ReadFlux can synchronize recommendation events between ReadFlux installations
+through a user-provided WebDAV directory. Each installation owns a client
+folder under `v1/clients/` and stores authoritative monthly event files under
+`events/YYYY-MM.json`. Clients read other folders as read-only mirrors and
+combine those events locally; there is no shared manifest or profile file.
+
+Configure the dedicated WebDAV directory, Basic Auth credentials, client name,
+and pull interval in **Settings → Sync**. Existing local events are uploaded on
+first connection. Later local changes upload after a short delay, while remote
+pulls run at startup, on foreground resume, at the selected interval, or from
+the **Sync now** button. WebDAV sync requires browser CORS support for `MKCOL`,
+`PROPFIND`, `GET`, and `PUT`. Credentials and remote JSON are not encrypted by
+ReadFlux.
+
 ## Technology
 
 - React
@@ -125,6 +141,7 @@ raw events and allows records to be added, edited, or deleted.
 - Vite
 - i18next and react-i18next
 - Miniflux REST API
+- WebDAV for optional recommendation-event sync
 - IndexedDB and Web Crypto API
 
 ## License
