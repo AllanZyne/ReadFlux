@@ -107,6 +107,7 @@ test("linked text icons stay inline without changing linked article images", asy
 
 test("proxy image failures fall back to the original image URL", async () => {
   const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /const originalSrc = imageMode === "proxy"\s*\?\s*originalImageURL\(currentSrc, minifluxURL\)\s*:\s*null/);
   assert.match(app, /data-readflux-original-src/);
   assert.match(app, /handleArticleImageError/);
   assert.match(app, /image\.src = originalSrc/);

@@ -261,12 +261,14 @@ function safeHtml(html: string, minifluxURL: string, imageMode: ImageLoadingMode
       image.classList.add("articleInlineIcon");
     }
     const currentSrc = image.getAttribute("src") ?? "";
-    const originalSrc = originalImageURL(currentSrc, minifluxURL);
+    const originalSrc = imageMode === "proxy"
+      ? originalImageURL(currentSrc, minifluxURL)
+      : null;
     const src = imageURLForMode(currentSrc, minifluxURL, imageMode);
     if (!/^https?:\/\//i.test(src)) image.remove();
     else {
       image.setAttribute("src", src);
-      if (imageMode === "proxy" && originalSrc) {
+      if (originalSrc) {
         image.setAttribute("data-readflux-original-src", originalSrc);
       }
       const srcset = image.getAttribute("srcset");
