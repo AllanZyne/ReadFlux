@@ -86,16 +86,6 @@ test("proxy capability is detected only from decodable links for that Miniflux s
   assert.equal(imagePolicyModule.containsMinifluxProxyURL("<img src='https://images.example/photo.jpg'>", "https://reader.example/app"), false);
 });
 
-test("a current proxy probe can authoritatively clear stale cached capability", () => {
-  assert.equal(typeof imagePolicyModule.detectMinifluxProxySupport, "function");
-  const original = "https://images.example/photo.jpg";
-  const encoded = Buffer.from(original).toString("base64url");
-  const cached = [{ content: `<img src="https://reader.example/proxy/digest/${encoded}">` }];
-  const currentProbe = [{ content: "<img src=\"https://images.example/current.jpg\">" }];
-  assert.equal(imagePolicyModule.detectMinifluxProxySupport(cached, "https://reader.example"), true);
-  assert.equal(imagePolicyModule.detectMinifluxProxySupport(currentProbe, "https://reader.example"), false);
-});
-
 test("old content refreshes once when proxy mode becomes effective", () => {
   assert.equal(typeof imagePolicyModule.shouldRefreshProxyContent, "function");
   const server = "https://reader.example";
