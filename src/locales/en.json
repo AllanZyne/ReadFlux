@@ -58,7 +58,7 @@
     "preparingFeeds": "Preparing feed settings…",
     "noFeeds": "There are no feeds to configure yet.",
     "localBoundary": "Local data boundary",
-    "localBoundaryHint": "Mark all as read only writes to Miniflux and does not become an interest signal. Only opened articles, foreground time, scroll depth, saved articles, and explicit feedback affect recommendations."
+    "localBoundaryHint": "Mark all as read only writes to Miniflux and does not become an interest signal. Only opened articles, foreground time, scroll depth, saved articles, and explicit feedback affect recommendations; reading events sync only when WebDAV is enabled."
   },
   "sync": {
     "title": "Miniflux sync",
@@ -85,9 +85,35 @@
     "refreshFailed": "Miniflux sync failed",
     "resetDone": "Sync data reset; repeating the initial load"
   },
+  "webdav": {
+    "title": "Recommendation data WebDAV",
+    "description": "Upload this client's reading events in monthly files and combine events read from other ReadFlux clients.",
+    "connected": "Configured",
+    "notConfigured": "Not configured",
+    "url": "Dedicated ReadFlux WebDAV directory",
+    "username": "Username",
+    "password": "Password",
+    "clientName": "Client name",
+    "interval": "Automatic pull interval",
+    "intervalOff": "Turn off automatic sync",
+    "intervalMinutes": "Every {{count}} minutes",
+    "intervalHour": "Every hour",
+    "syncing": "Syncing recommendation data…",
+    "lastSynced": "Last synced: {{time}}",
+    "neverSynced": "Not synced yet. Credentials are stored in plain text in this browser; events are plain JSON on WebDAV.",
+    "failed": "WebDAV sync failed",
+    "testing": "Testing…",
+    "save": "Test and save",
+    "saved": "WebDAV connected and synced",
+    "syncNow": "Sync now",
+    "disconnect": "Disconnect",
+    "disconnected": "WebDAV disconnected; server data was kept",
+    "missingFields": "Enter the WebDAV URL and client name",
+    "remoteReadOnly": "Other client · Read only"
+  },
   "recommendation": {
     "title": "Local recommendation profile",
-    "description": "This shows the raw reading events stored by this browser and the weights derived from them and Miniflux saved articles. Scores are still used only to order Today.",
+    "description": "This shows raw reading events from this browser and WebDAV mirrors, plus weights derived from them and Miniflux saved articles. Scores are still used only to order Today.",
     "addRecord": "+ Add record",
     "readingEvents": "Reading events",
     "validEvents": "Valid interest events",
@@ -158,7 +184,7 @@
     "eyebrow": "PRIVATE INTELLIGENCE READER",
     "tagline": "LOCAL-FIRST RSS",
     "headline": "Turn Miniflux into\nyour personal intelligence reader.",
-    "lead": "Articles come from Miniflux; reading behavior, recommendation preferences, and theme stay in this browser.",
+    "lead": "Articles come from Miniflux. Reading behavior stays in this browser by default and can optionally sync between ReadFlux clients through your WebDAV.",
     "url": "Miniflux URL",
     "apiKey": "API Key",
     "apiKeyPlaceholder": "Paste a dedicated API key",
@@ -174,7 +200,7 @@
     "realReading": "Real reading",
     "localProfile": "Local profile",
     "dataBoundary": "Data boundary",
-    "thisDevice": "This device only",
+    "thisDevice": "Local, optional WebDAV",
     "directFailed": "The browser cannot connect directly. Check HTTPS, the URL, and whether the reverse proxy allows CORS and X-Auth-Token.",
     "failed": "Connection failed"
   },

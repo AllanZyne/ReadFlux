@@ -55,17 +55,34 @@ export type ReadingEvent = {
   readingTime?: number;
   listPosition?: number;
   updatedAt: string;
+  remoteClientId?: string;
+  remoteClientName?: string;
+};
+
+export type WebDavSyncInterval = 0 | 5 | 15 | 30 | 60;
+
+export type WebDavConfig = {
+  url: string;
+  username: string;
+  password: string;
+  clientName: string;
+  intervalMinutes: WebDavSyncInterval;
 };
 
 const LOCAL_CONFIG = "readflux.miniflux.local";
 const SESSION_CONFIG = "readflux.miniflux.session";
 const DB_NAME = "readflux-profile";
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 const EVENTS = "reading-events";
 const SETTINGS = "settings";
 const ENTRY_CACHE = "entry-cache";
 const ENTRY_LABELS = "entry-labels";
 const FEED_ICONS = "feed-icons";
+const REMOTE_EVENTS = "remote-reading-events";
+const WEBDAV_CONFIG = "readflux.webdav";
+const WEBDAV_CLIENT_ID = "readflux.webdav.client-id";
+const WEBDAV_CLIENT_CREATED_AT = "readflux.webdav.client-created-at";
+const WEBDAV_DIRTY_MONTHS = "webdav-dirty-months";
 
 type CacheableEntry = {
   id: number;
@@ -87,6 +104,14 @@ type EntryLabelRecord = {
 type FeedIconRecord = CachedFeedIcon & {
   key: string;
   scope: string;
+};
+
+type RemoteEventRecord = {
+  key: string;
+  sourceMonth: string;
+  clientId: string;
+  month: string;
+  event: ReadingEvent;
 };
 
 export function getConnection(): ConnectionConfig | null {
@@ -168,6 +193,11 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(FEED_ICONS)) {
         const store = db.createObjectStore(FEED_ICONS, { keyPath: "key" });
         store.createIndex("scope", "scope");
+      }
+      if (!db.objectStoreNames.contains(REMOTE_EVENTS)) {
+        const store = db.createObjectStore(REMOTE_EVENTS, { keyPath: "key" });
+        store.createIndex("sourceMonth", "sourceMonth");
+        store.createIndex("clientId", "clientId");
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -288,6 +318,41 @@ export async function getReadingEvents(): Promise<ReadingEvent[]> {
   return events as ReadingEvent[];
 }
 
+export function readingEventMonth(event: Pick<ReadingEvent, "openedAt">) {
+  return event.openedAt.slice(0, 7);
+}
+
+async function addDirtyMonths(store: IDBObjectStore, months: string[]) {
+  const current = await requestResult(store.get(WEBDAV_DIRTY_MONTHS)) as string[] | undefined;
+  store.put([...new Set([...(current ?? []), ...months.filter(Boolean)])].sort(), WEBDAV_DIRTY_MONTHS);
+}
+
+export async function getDirtyReadingEventMonths(): Promise<string[]> {
+  const db = await openDb();
+  const value = await requestResult(db.transaction(SETTINGS).objectStore(SETTINGS).get(WEBDAV_DIRTY_MONTHS));
+  db.close();
+  return Array.isArray(value) ? value.filter((month): month is string => typeof month === "string") : [];
+}
+
+export async function clearDirtyReadingEventMonth(month: string) {
+  const db = await openDb();
+  const transaction = db.transaction(SETTINGS, "readwrite");
+  const store = transaction.objectStore(SETTINGS);
+  const current = await requestResult(store.get(WEBDAV_DIRTY_MONTHS)) as string[] | undefined;
+  store.put((current ?? []).filter((item) => item !== month), WEBDAV_DIRTY_MONTHS);
+  await transactionComplete(transaction);
+  db.close();
+}
+
+export async function markAllReadingEventMonthsDirty() {
+  const events = await getReadingEvents();
+  const db = await openDb();
+  const transaction = db.transaction(SETTINGS, "readwrite");
+  await addDirtyMonths(transaction.objectStore(SETTINGS), events.map(readingEventMonth));
+  await transactionComplete(transaction);
+  db.close();
+}
+
 export function normalizeReadingEventOpenedAt(value: string): string | null {
   const timestamp = new Date(value);
   return Number.isNaN(timestamp.getTime()) ? null : timestamp.toISOString();
@@ -295,23 +360,134 @@ export function normalizeReadingEventOpenedAt(value: string): string | null {
 
 export async function putReadingEvent(event: ReadingEvent) {
   const db = await openDb();
-  const tx = db.transaction(EVENTS, "readwrite");
-  tx.objectStore(EVENTS).put(event);
-  await new Promise<void>((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  const tx = db.transaction([EVENTS, SETTINGS], "readwrite");
+  const store = tx.objectStore(EVENTS);
+  const previous = await requestResult(store.get(event.id)) as ReadingEvent | undefined;
+  const localEvent = { ...event };
+  delete localEvent.remoteClientId;
+  delete localEvent.remoteClientName;
+  store.put(localEvent);
+  await addDirtyMonths(tx.objectStore(SETTINGS), [readingEventMonth(event), ...(previous ? [readingEventMonth(previous)] : [])]);
+  await transactionComplete(tx);
   db.close();
 }
 
 export async function deleteReadingEvent(id: string) {
   const db = await openDb();
-  const tx = db.transaction(EVENTS, "readwrite");
-  tx.objectStore(EVENTS).delete(id);
-  await new Promise<void>((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  const tx = db.transaction([EVENTS, SETTINGS], "readwrite");
+  const store = tx.objectStore(EVENTS);
+  const previous = await requestResult(store.get(id)) as ReadingEvent | undefined;
+  store.delete(id);
+  if (previous) await addDirtyMonths(tx.objectStore(SETTINGS), [readingEventMonth(previous)]);
+  await transactionComplete(tx);
+  db.close();
+}
+
+export function getWebDavConfig(): WebDavConfig | null {
+  if (typeof window === "undefined") return null;
+  const value = localStorage.getItem(WEBDAV_CONFIG);
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as Partial<WebDavConfig>;
+    if (!parsed.url || typeof parsed.username !== "string" || typeof parsed.password !== "string") return null;
+    const interval = Number(parsed.intervalMinutes);
+    return {
+      url: parsed.url,
+      username: parsed.username,
+      password: parsed.password,
+      clientName: parsed.clientName?.trim() || "ReadFlux",
+      intervalMinutes: ([0, 5, 15, 30, 60].includes(interval) ? interval : 15) as WebDavSyncInterval,
+    };
+  } catch {
+    localStorage.removeItem(WEBDAV_CONFIG);
+    return null;
+  }
+}
+
+export function saveWebDavConfig(config: WebDavConfig) {
+  localStorage.setItem(WEBDAV_CONFIG, JSON.stringify(config));
+}
+
+export function clearWebDavConfig() {
+  localStorage.removeItem(WEBDAV_CONFIG);
+}
+
+export function getWebDavClientId() {
+  let id = localStorage.getItem(WEBDAV_CLIENT_ID);
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem(WEBDAV_CLIENT_ID, id);
+  }
+  return id;
+}
+
+export function getWebDavClientCreatedAt() {
+  let createdAt = localStorage.getItem(WEBDAV_CLIENT_CREATED_AT);
+  if (!createdAt) {
+    createdAt = new Date().toISOString();
+    localStorage.setItem(WEBDAV_CLIENT_CREATED_AT, createdAt);
+  }
+  return createdAt;
+}
+
+export async function getRemoteReadingEvents(): Promise<ReadingEvent[]> {
+  const db = await openDb();
+  const records = await requestResult(db.transaction(REMOTE_EVENTS).objectStore(REMOTE_EVENTS).getAll()) as RemoteEventRecord[];
+  db.close();
+  return records.map((record) => record.event);
+}
+
+export async function getRemoteReadingEventSourceMonths(): Promise<string[]> {
+  const db = await openDb();
+  const keys = await requestResult(db.transaction(REMOTE_EVENTS).objectStore(REMOTE_EVENTS).index("sourceMonth").getAllKeys());
+  db.close();
+  return [...new Set(keys.map(String))];
+}
+
+export async function replaceRemoteReadingEventMonth(clientId: string, clientName: string, month: string, events: ReadingEvent[]) {
+  const sourceMonth = `${clientId}:${month}`;
+  const db = await openDb();
+  const transaction = db.transaction(REMOTE_EVENTS, "readwrite");
+  const store = transaction.objectStore(REMOTE_EVENTS);
+  const cursorRequest = store.index("sourceMonth").openCursor(IDBKeyRange.only(sourceMonth));
+  cursorRequest.onsuccess = () => {
+    const cursor = cursorRequest.result;
+    if (!cursor) return;
+    cursor.delete();
+    cursor.continue();
+  };
+  cursorRequest.onerror = () => transaction.abort();
+  events.forEach((event) => store.put({
+    key: `${sourceMonth}:${event.id}`,
+    sourceMonth,
+    clientId,
+    month,
+    event: { ...event, remoteClientId: clientId, remoteClientName: clientName },
+  } satisfies RemoteEventRecord));
+  await transactionComplete(transaction);
+  db.close();
+}
+
+export async function removeRemoteReadingEventMonth(sourceMonth: string) {
+  const db = await openDb();
+  const transaction = db.transaction(REMOTE_EVENTS, "readwrite");
+  const cursorRequest = transaction.objectStore(REMOTE_EVENTS).index("sourceMonth").openCursor(IDBKeyRange.only(sourceMonth));
+  cursorRequest.onsuccess = () => {
+    const cursor = cursorRequest.result;
+    if (!cursor) return;
+    cursor.delete();
+    cursor.continue();
+  };
+  cursorRequest.onerror = () => transaction.abort();
+  await transactionComplete(transaction);
+  db.close();
+}
+
+export async function clearRemoteReadingEvents() {
+  const db = await openDb();
+  const transaction = db.transaction(REMOTE_EVENTS, "readwrite");
+  transaction.objectStore(REMOTE_EVENTS).clear();
+  await transactionComplete(transaction);
   db.close();
 }
 

@@ -50,11 +50,32 @@ build variable unless the user explicitly changes the architecture.
 ## Browser data
 
 - Miniflux connection: localStorage or sessionStorage.
-- Reading events, settings, cached entries, and sync progress: IndexedDB.
+- Local reading events, read-only remote event mirrors, settings, cached
+  entries, and sync progress: IndexedDB.
+- Optional WebDAV connection and stable client identity: localStorage.
 - Category and subscriptions-section collapse state: localStorage.
 
 Never log, commit, upload, or add analytics around API keys, article contents,
 or reading events.
+
+## WebDAV recommendation sync
+
+- WebDAV is optional and browser-to-server; no application backend or proxy is
+  part of the architecture.
+- The configured URL is a dedicated ReadFlux directory. Data lives under
+  `v1/clients/<client-id>/`, with one authoritative `events/YYYY-MM.json` file
+  per UTC month.
+- A client writes only its own folder. Events from other folders are read-only
+  local mirrors and must not become editable through the Recommendation Data
+  tab.
+- Do not add a shared manifest or profile file. Discover clients and monthly
+  files with `PROPFIND`, and use ETags to avoid unchanged downloads.
+- Local changes upload after a short debounce. Remote pulls happen only while
+  the page is open and must not reorder the currently captured Today list.
+- Disconnecting clears credentials and remote mirrors locally but leaves the
+  server folder intact.
+- WebDAV credentials and event JSON are intentionally unencrypted. Keep that
+  boundary explicit in the UI and documentation.
 
 ## Timezone
 
