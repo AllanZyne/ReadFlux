@@ -449,14 +449,8 @@ export async function replaceRemoteReadingEventMonth(clientId: string, clientNam
   const db = await openDb();
   const transaction = db.transaction(REMOTE_EVENTS, "readwrite");
   const store = transaction.objectStore(REMOTE_EVENTS);
-  const cursorRequest = store.index("sourceMonth").openCursor(IDBKeyRange.only(sourceMonth));
-  cursorRequest.onsuccess = () => {
-    const cursor = cursorRequest.result;
-    if (!cursor) return;
-    cursor.delete();
-    cursor.continue();
-  };
-  cursorRequest.onerror = () => transaction.abort();
+  const existingKeys = await requestResult(store.index("sourceMonth").getAllKeys(IDBKeyRange.only(sourceMonth)));
+  existingKeys.forEach((key) => store.delete(key));
   events.forEach((event) => store.put({
     key: `${sourceMonth}:${event.id}`,
     sourceMonth,

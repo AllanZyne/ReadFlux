@@ -19,6 +19,15 @@ test("WebDAV PROPFIND responses expose collection names and ETags", () => {
   ]);
 });
 
+test("WebDAV PROPFIND excludes the requested collection's self response", () => {
+  const entries = syncModule.parseWebDavPropfind(`<?xml version="1.0"?>
+    <d:multistatus xmlns:d="DAV:">
+      <d:response><d:href>/readflux/v1/clients/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat></d:response>
+      <d:response><d:href>/readflux/v1/clients/client-a/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat></d:response>
+    </d:multistatus>`, "https://dav.example/readflux/v1/clients/");
+  assert.deepEqual(entries.map(({ name }) => name), ["client-a"]);
+});
+
 test("recommendation sync uses client-owned monthly files and read-only remote mirrors", () => {
   assert.match(clientSource, /REMOTE_EVENTS\s*=\s*"remote-reading-events"/);
   assert.match(clientSource, /sourceMonth:\s*string/);
@@ -30,4 +39,9 @@ test("WebDAV settings support the agreed automatic intervals and manual sync", (
   assert.match(clientSource, /WebDavSyncInterval\s*=\s*0\s*\|\s*5\s*\|\s*15\s*\|\s*30\s*\|\s*60/);
   assert.match(appSource, /onSyncWebDav/);
   assert.match(appSource, /30_000/);
+});
+
+test("WebDAV connection checks and syncs share serialization without UI lock resets", () => {
+  assert.match(syncModule.testWebDavConnection.toString(), /serialize/);
+  assert.doesNotMatch(appSource, /webDavSyncInFlight/);
 });

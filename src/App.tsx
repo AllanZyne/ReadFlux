@@ -1013,7 +1013,6 @@ export default function App() {
   const loadRef = useRef<(options?: { background?: boolean }) => Promise<boolean>>(async () => false);
   const proxyRefreshKey = useRef("");
   const routeRef = useRef(route);
-  const webDavSyncInFlight = useRef(false);
   const webDavUploadTimer = useRef<number | undefined>(undefined);
   const recommendationEvents = useMemo(() => [...events, ...remoteEvents], [events, remoteEvents]);
 
@@ -1024,8 +1023,7 @@ export default function App() {
 
   const runWebDavSync = useCallback(async (override?: WebDavConfig, pull = true) => {
     const activeConfig = override ?? webDavConfig;
-    if (!activeConfig || webDavSyncInFlight.current) return false;
-    webDavSyncInFlight.current = true;
+    if (!activeConfig) return false;
     setWebDavStatus((current) => ({ ...current, state: "syncing", message: undefined }));
     try {
       const result: WebDavSyncResult = await synchronizeWebDav(activeConfig, { pull });
@@ -1036,8 +1034,6 @@ export default function App() {
       const message = cause instanceof Error ? cause.message : t("webdav.failed");
       setWebDavStatus((current) => ({ ...current, state: "error", message }));
       return false;
-    } finally {
-      webDavSyncInFlight.current = false;
     }
   }, [t, webDavConfig]);
 
@@ -1056,12 +1052,10 @@ export default function App() {
       if (!webDavConfig || connectionChanged || webDavConfig.clientName !== next.clientName) {
         await markAllReadingEventMonthsDirty();
       }
-      webDavSyncInFlight.current = false;
       const synced = await runWebDavSync(next);
       if (synced) notify(t("webdav.saved"));
       return synced;
     } catch (cause) {
-      webDavSyncInFlight.current = false;
       setWebDavStatus({ state: "error", message: cause instanceof Error ? cause.message : t("webdav.failed") });
       return false;
     }

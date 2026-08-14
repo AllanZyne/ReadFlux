@@ -86,18 +86,23 @@ function decodeXml(value: string) {
     .replace(/&amp;/g, "&");
 }
 
-export function parseWebDavPropfind(xml: string): WebDavEntry[] {
+function normalizedWebDavPath(value: string) {
+  try {
+    return decodeURIComponent(new URL(value, "https://readflux.invalid").pathname).replace(/\/+$/, "");
+  } catch {
+    return decodeURIComponent(value).replace(/\/+$/, "");
+  }
+}
+
+export function parseWebDavPropfind(xml: string, requestedCollection?: string): WebDavEntry[] {
+  const requestedPath = requestedCollection ? normalizedWebDavPath(requestedCollection) : undefined;
   const responses = xml.match(/<(?:[\w-]+:)?response\b[\s\S]*?<\/(?:[\w-]+:)?response>/gi) ?? [];
   return responses.flatMap((block) => {
     const hrefMatch = block.match(/<(?:[\w-]+:)?href\b[^>]*>([\s\S]*?)<\/(?:[\w-]+:)?href>/i);
     if (!hrefMatch) return [];
     const href = decodeXml(hrefMatch[1].trim());
-    let pathname: string;
-    try {
-      pathname = decodeURIComponent(new URL(href, "https://readflux.invalid").pathname).replace(/\/+$/, "");
-    } catch {
-      pathname = decodeURIComponent(href).replace(/\/+$/, "");
-    }
+    const pathname = normalizedWebDavPath(href);
+    if (requestedPath && pathname === requestedPath) return [];
     const etagMatch = block.match(/<(?:[\w-]+:)?getetag\b[^>]*>([\s\S]*?)<\/(?:[\w-]+:)?getetag>/i);
     return [{
       href,
@@ -114,7 +119,7 @@ async function propfind(config: WebDavConfig, path: string) {
     headers: { Depth: "1", "Content-Type": "application/xml; charset=utf-8" },
     body: "<?xml version=\"1.0\"?><propfind xmlns=\"DAV:\"><prop><resourcetype/><getetag/></prop></propfind>",
   });
-  return parseWebDavPropfind(await response.text());
+  return parseWebDavPropfind(await response.text(), childURL(config, path));
 }
 
 async function ensureCollection(config: WebDavConfig, path: string) {
@@ -258,9 +263,13 @@ function withBrowserLock<T>(clientId: string, work: () => Promise<T>) {
 }
 
 export async function testWebDavConnection(config: WebDavConfig) {
-  const clientId = getWebDavClientId();
-  await ensureClientCollections(config, clientId);
-  await propfind(config, "v1/clients/");
+  return serialize(async () => {
+    const clientId = getWebDavClientId();
+    return withBrowserLock(clientId, async () => {
+      await ensureClientCollections(config, clientId);
+      await propfind(config, "v1/clients/");
+    });
+  });
 }
 
 export function synchronizeWebDav(config: WebDavConfig, options: { pull?: boolean } = {}): Promise<WebDavSyncResult> {
