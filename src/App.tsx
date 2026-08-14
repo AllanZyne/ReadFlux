@@ -57,7 +57,13 @@ import {
   WebDavConfig,
   WebDavSyncInterval,
 } from "./readflux-client";
-import { clearWebDavEtagCache, synchronizeWebDav, testWebDavConnection, type WebDavSyncResult } from "./webdav-sync";
+import {
+  clearWebDavEtagCache,
+  synchronizeWebDav,
+  testWebDavConnection,
+  webDavConnectionIdentity,
+  type WebDavSyncResult,
+} from "./webdav-sync";
 
 type Feed = {
   id: number;
@@ -1041,7 +1047,8 @@ export default function App() {
     setWebDavStatus((current) => ({ ...current, state: "syncing", message: undefined }));
     try {
       await testWebDavConnection(next);
-      const connectionChanged = webDavConfig?.url.replace(/\/+$/, "") !== next.url.replace(/\/+$/, "");
+      const connectionChanged = webDavConfig !== null
+        && webDavConnectionIdentity(webDavConfig) !== webDavConnectionIdentity(next);
       if (webDavConfig && connectionChanged) {
         clearWebDavEtagCache();
         await clearRemoteReadingEvents();

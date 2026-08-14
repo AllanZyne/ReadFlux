@@ -1,11 +1,11 @@
 import {
-  clearDirtyReadingEventMonth,
-  getDirtyReadingEventMonths,
+  claimDirtyReadingEventMonths,
   getReadingEvents,
   getRemoteReadingEvents,
   getRemoteReadingEventSourceMonths,
   getWebDavClientCreatedAt,
   getWebDavClientId,
+  markReadingEventMonthsDirty,
   readingEventMonth,
   removeRemoteReadingEventMonth,
   replaceRemoteReadingEventMonth,
@@ -52,6 +52,10 @@ export class WebDavError extends Error {
 
 function baseURL(config: WebDavConfig) {
   return `${config.url.replace(/\/+$/, "")}/`;
+}
+
+export function webDavConnectionIdentity(config: Pick<WebDavConfig, "url" | "username">) {
+  return `${config.url.replace(/\/+$/, "")}/\n${config.username}`;
 }
 
 function childURL(config: WebDavConfig, path: string) {
@@ -147,15 +151,15 @@ function cleanEvent(event: ReadingEvent): ReadingEvent {
 
 function readEtagCache(config: WebDavConfig) {
   try {
-    const cached = JSON.parse(localStorage.getItem(ETAG_CACHE) ?? "null") as { url?: string; values?: Record<string, string> } | null;
-    return cached?.url === baseURL(config) ? cached.values ?? {} : {};
+    const cached = JSON.parse(localStorage.getItem(ETAG_CACHE) ?? "null") as { identity?: string; values?: Record<string, string> } | null;
+    return cached?.identity === webDavConnectionIdentity(config) ? cached.values ?? {} : {};
   } catch {
     return {};
   }
 }
 
 function writeEtagCache(config: WebDavConfig, values: Record<string, string>) {
-  localStorage.setItem(ETAG_CACHE, JSON.stringify({ url: baseURL(config), values }));
+  localStorage.setItem(ETAG_CACHE, JSON.stringify({ identity: webDavConnectionIdentity(config), values }));
 }
 
 export function clearWebDavEtagCache() {
@@ -163,26 +167,30 @@ export function clearWebDavEtagCache() {
 }
 
 async function uploadLocalMonths(config: WebDavConfig, clientId: string) {
-  const dirtyMonths = await getDirtyReadingEventMonths();
+  const dirtyMonths = await claimDirtyReadingEventMonths();
   if (!dirtyMonths.length) return 0;
-  const events = await getReadingEvents();
   let uploaded = 0;
-  for (const month of dirtyMonths) {
-    const payload: EventMonthFile = {
-      schemaVersion: SCHEMA_VERSION,
-      clientId,
-      clientName: config.clientName,
-      month,
-      updatedAt: new Date().toISOString(),
-      events: events.filter((event) => readingEventMonth(event) === month).map(cleanEvent),
-    };
-    await request(config, `v1/clients/${clientId}/events/${month}.json`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    await clearDirtyReadingEventMonth(month);
-    uploaded += 1;
+  try {
+    const events = await getReadingEvents();
+    for (const month of dirtyMonths) {
+      const payload: EventMonthFile = {
+        schemaVersion: SCHEMA_VERSION,
+        clientId,
+        clientName: config.clientName,
+        month,
+        updatedAt: new Date().toISOString(),
+        events: events.filter((event) => readingEventMonth(event) === month).map(cleanEvent),
+      };
+      await request(config, `v1/clients/${clientId}/events/${month}.json`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      uploaded += 1;
+    }
+  } catch (cause) {
+    await markReadingEventMonthsDirty(dirtyMonths.slice(uploaded));
+    throw cause;
   }
   return uploaded;
 }

@@ -327,19 +327,23 @@ async function addDirtyMonths(store: IDBObjectStore, months: string[]) {
   store.put([...new Set([...(current ?? []), ...months.filter(Boolean)])].sort(), WEBDAV_DIRTY_MONTHS);
 }
 
-export async function getDirtyReadingEventMonths(): Promise<string[]> {
-  const db = await openDb();
-  const value = await requestResult(db.transaction(SETTINGS).objectStore(SETTINGS).get(WEBDAV_DIRTY_MONTHS));
-  db.close();
-  return Array.isArray(value) ? value.filter((month): month is string => typeof month === "string") : [];
-}
-
-export async function clearDirtyReadingEventMonth(month: string) {
+export async function claimDirtyReadingEventMonths(): Promise<string[]> {
   const db = await openDb();
   const transaction = db.transaction(SETTINGS, "readwrite");
   const store = transaction.objectStore(SETTINGS);
-  const current = await requestResult(store.get(WEBDAV_DIRTY_MONTHS)) as string[] | undefined;
-  store.put((current ?? []).filter((item) => item !== month), WEBDAV_DIRTY_MONTHS);
+  const value = await requestResult(store.get(WEBDAV_DIRTY_MONTHS));
+  const months = Array.isArray(value) ? value.filter((month): month is string => typeof month === "string") : [];
+  store.put([], WEBDAV_DIRTY_MONTHS);
+  await transactionComplete(transaction);
+  db.close();
+  return months;
+}
+
+export async function markReadingEventMonthsDirty(months: string[]) {
+  if (!months.length) return;
+  const db = await openDb();
+  const transaction = db.transaction(SETTINGS, "readwrite");
+  await addDirtyMonths(transaction.objectStore(SETTINGS), months);
   await transactionComplete(transaction);
   db.close();
 }
