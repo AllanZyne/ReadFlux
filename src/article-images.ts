@@ -100,13 +100,6 @@ export function containsMinifluxProxyURL(html: string, minifluxURL: string): boo
   return candidates.some((candidate) => originalImageURL(candidate, minifluxURL) !== null);
 }
 
-export function detectMinifluxProxySupport(
-  entries: Array<{ content: string }>,
-  minifluxURL: string,
-): boolean {
-  return entries.some((entry) => containsMinifluxProxyURL(entry.content, minifluxURL));
-}
-
 export function shouldRefreshProxyContent(
   html: string,
   minifluxURL: string,

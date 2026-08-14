@@ -92,9 +92,9 @@
     "searching": "Recherche dans Miniflux",
     "latest": "Récupération des derniers articles",
     "failed": "Échec de la synchronisation",
-    "refresh": "Actualiser les flux",
-    "refreshDone": "Miniflux actualisé",
-    "refreshFailed": "Échec de l’actualisation",
+    "refresh": "Synchroniser avec Miniflux",
+    "refreshDone": "Synchronisation avec Miniflux terminée",
+    "refreshFailed": "Échec de la synchronisation avec Miniflux",
     "resetDone": "Données de synchronisation réinitialisées ; nouveau chargement initial"
   },
   "recommendation": {

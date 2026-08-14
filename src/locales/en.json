@@ -92,9 +92,9 @@
     "searching": "Searching Miniflux",
     "latest": "Getting latest articles",
     "failed": "Sync failed",
-    "refresh": "Refresh feeds",
-    "refreshDone": "Miniflux refreshed",
-    "refreshFailed": "Refresh failed",
+    "refresh": "Sync with Miniflux",
+    "refreshDone": "Synced with Miniflux",
+    "refreshFailed": "Miniflux sync failed",
     "resetDone": "Sync data reset; repeating the initial load"
   },
   "recommendation": {

@@ -92,9 +92,9 @@
     "searching": "搜索 Miniflux",
     "latest": "获取最新文章",
     "failed": "同步失败",
-    "refresh": "刷新订阅",
-    "refreshDone": "Miniflux 已刷新",
-    "refreshFailed": "刷新失败",
+    "refresh": "与 Miniflux 同步",
+    "refreshDone": "已与 Miniflux 同步",
+    "refreshFailed": "与 Miniflux 同步失败",
     "resetDone": "同步数据已重置，正在重新执行首次加载"
   },
   "recommendation": {

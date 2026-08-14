@@ -2,11 +2,10 @@ import { CSSProperties, FormEvent, memo, useCallback, useEffect, useMemo, useRef
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import {
-  containsMinifluxProxyURL,
-  detectMinifluxProxySupport,
   imageReferrerPolicy,
   imageURLForMode,
   minifluxReferrerScope,
+  originalImageURL,
   resolveImageLoadingMode,
   shouldRefreshProxyContent,
   updateDefaultImageLoadingMode,
@@ -262,10 +261,16 @@ function safeHtml(html: string, minifluxURL: string, imageMode: ImageLoadingMode
       image.classList.add("articleInlineIcon");
     }
     const currentSrc = image.getAttribute("src") ?? "";
+    const originalSrc = imageMode === "proxy"
+      ? originalImageURL(currentSrc, minifluxURL)
+      : null;
     const src = imageURLForMode(currentSrc, minifluxURL, imageMode);
     if (!/^https?:\/\//i.test(src)) image.remove();
     else {
       image.setAttribute("src", src);
+      if (originalSrc) {
+        image.setAttribute("data-readflux-original-src", originalSrc);
+      }
       const srcset = image.getAttribute("srcset");
       if (srcset) {
         image.setAttribute("srcset", srcset.replace(
@@ -278,6 +283,17 @@ function safeHtml(html: string, minifluxURL: string, imageMode: ImageLoadingMode
     }
   });
   return parsed.body.innerHTML;
+}
+
+function handleArticleImageError(event: React.SyntheticEvent<HTMLDivElement>) {
+  const image = event.target;
+  if (!(image instanceof HTMLImageElement)) return;
+  const originalSrc = image.dataset.readfluxOriginalSrc;
+  if (!originalSrc || image.dataset.readfluxFallback === "true") return;
+  image.dataset.readfluxFallback = "true";
+  image.removeAttribute("srcset");
+  image.src = originalSrc;
+  image.referrerPolicy = "no-referrer";
 }
 
 function toggleLivePhoto(target: EventTarget | null) {
@@ -348,7 +364,7 @@ const ArticleBody = memo(function ArticleBody({
     __html: safeHtml(content, minifluxURL, imageMode),
   }), [content, minifluxURL, imageMode]);
 
-  return <div className="body articleContent" onClick={(event) => toggleLivePhoto(event.target)} onKeyDown={(event) => {
+  return <div className="body articleContent" onError={handleArticleImageError} onClick={(event) => toggleLivePhoto(event.target)} onKeyDown={(event) => {
     if ((event.key === "Enter" || event.key === " ") && toggleLivePhoto(event.target)) event.preventDefault();
   }} dangerouslySetInnerHTML={markup} />;
 });
@@ -898,7 +914,6 @@ export default function App() {
   const [entryLabels, setEntryLabels] = useState<Map<number, string[]>>(new Map());
   const [visibleIds, setVisibleIds] = useState<number[]>([]);
   const [referrerScopeState, setReferrerScopeState] = useState({ url: "", scope: "" });
-  const [imageProxySupport, setImageProxySupport] = useState({ url: "", available: false });
   const activeEvent = useRef<ReadingEvent | null>(null);
   const readerRef = useRef<HTMLDivElement | null>(null);
   const markAllReadButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -988,9 +1003,7 @@ export default function App() {
   const referrerScope = config && referrerScopeState.url === config.url
     ? referrerScopeState.scope
     : "";
-  const imageProxyAvailable = Boolean(config
-    && imageProxySupport.url === config.url
-    && imageProxySupport.available);
+  const imageProxyAvailable = true;
 
   useEffect(() => {
     Promise.all([getReadingEvents(), getProfileSettings()]).then(async ([history, profile]) => {
@@ -1037,9 +1050,6 @@ export default function App() {
 
   const mergeEntryBatch = useCallback(async (batch: Entry[]) => {
     if (!config || !batch.length) return;
-    if (batch.some((entry) => containsMinifluxProxyURL(entry.content, config.url))) {
-      setImageProxySupport({ url: config.url, available: true });
-    }
     const updatedIds = new Set<number>();
     setEntries((current) => {
       const merged = new Map(current.map((entry) => [entry.id, entry]));
@@ -1157,23 +1167,15 @@ export default function App() {
         ? [...scopedCache, routedCachedEntry]
         : scopedCache;
       setEntries(loadedCache);
-      setImageProxySupport({ url: config.url, available: false });
       if (!listSnapshotIds.current.size || !scopedCache.some((e) => listSnapshotIds.current.has(e.id))) {
         setListReadSnapshot(new Map(scopedCache.map((entry) => [entry.id, entry.status])));
       }
-      const [feedData, categoryData, proxyProbe] = await Promise.all([
+      const [feedData, categoryData] = await Promise.all([
         minifluxFetch<Feed[]>(config, "/v1/feeds"),
         minifluxFetch<Category[]>(config, "/v1/categories"),
-        minifluxFetch<EntryPage>(config, "/v1/entries?limit=20&order=published_at&direction=desc")
-          .catch(() => null),
       ]);
       setFeeds(feedData ?? []);
       setCategories(categoryData ?? []);
-      const proxyAvailable = detectMinifluxProxySupport(proxyProbe?.entries ?? [], config.url);
-      setImageProxySupport({ url: config.url, available: proxyAvailable });
-      if (proxyAvailable && proxyProbe) {
-        await mergeEntryBatch(proxyProbe.entries);
-      }
       setSelectedId((current) => current && loadedCache.some((entry) => entry.id === current) ? current : null);
 
       const needsInitialSync = !storedState?.initialSyncComplete
@@ -1822,7 +1824,6 @@ export default function App() {
     setRefreshing(true);
     setRefreshFailed(false);
     try {
-      await minifluxFetch(config, "/v1/feeds/refresh", { method: "PUT" });
       const syncSucceeded = await load();
       if (!syncSucceeded) {
         setRefreshFailed(true);

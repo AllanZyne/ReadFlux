@@ -243,10 +243,10 @@ test("media loading settings offer scoped defaults and per-feed overrides", () =
   assert.match(styles, /\.feedSettingRow>select\s*\{/);
 });
 
-test("proxy mode is exposed only after probing decodable links from the current server", () => {
-  assert.match(app, /\/v1\/entries\?limit=20&order=published_at&direction=desc/);
-  assert.match(app, /containsMinifluxProxyURL\(entry\.content, config\.url\)/);
-  assert.match(app, /imageProxySupport\.url === config\.url/);
+test("proxy mode is always available and falls back at media load time", () => {
+  assert.match(app, /const imageProxyAvailable = true/);
+  assert.doesNotMatch(app, /detectMinifluxProxySupport/);
+  assert.match(app, /handleArticleImageError/);
   assert.match(app, /shouldRefreshProxyContent\(selected\.content, config\.url, selectedImageMode, alreadyAttempted\)/);
 });
 

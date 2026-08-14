@@ -66,6 +66,18 @@ test("catalog interpolation preserves dynamic article counts", async () => {
   assert.equal(instance.t("feed.markedRead", { count: 2 }), "2 articles marqués comme lus");
 });
 
+test("manual refresh copy describes Miniflux synchronization", async () => {
+  const catalogs = await Promise.all(["en", "zh-CN", "fr"].map(async (locale) =>
+    JSON.parse(await readFile(new URL(`../src/locales/${locale}.json`, import.meta.url), "utf8"))));
+  assert.deepEqual(catalogs.map((catalog) => catalog.sync.refresh), [
+    "Sync with Miniflux",
+    "与 Miniflux 同步",
+    "Synchroniser avec Miniflux",
+  ]);
+  assert.equal(catalogs[0].sync.refreshDone, "Synced with Miniflux");
+  assert.equal(catalogs[0].sync.refreshFailed, "Miniflux sync failed");
+});
+
 test("media loading labels describe the shared image and video policy", async () => {
   const chinese = JSON.parse(await readFile(new URL("../src/locales/zh-CN.json", import.meta.url), "utf8"));
   assert.equal(chinese.settings.imageDefault, "默认媒体加载方式");

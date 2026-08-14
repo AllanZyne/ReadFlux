@@ -43,3 +43,14 @@ test("on-demand content caches the same local status and starred state shown in 
   assert.match(app, /putCachedEntries\(config,\s*\[merged\]\)/);
   assert.doesNotMatch(app, /putCachedEntries\(config,\s*\[remote\]\)/);
 });
+
+test("article details are fetched only when cached content is empty", () => {
+  assert.match(app, /if \(!story\.content\.trim\(\)\) void loadEntryContent\(story\.id\)/);
+  assert.match(app, /minifluxFetch<Entry>\(config, `\/v1\/entries\/\$\{id\}`\)/);
+  assert.doesNotMatch(app, /loadEntryContent\(selectedId,\s*\{ background: true \}\)/);
+});
+
+test("manual refresh stays passive and uses the same entry sync as background refresh", () => {
+  assert.match(app, /const syncSucceeded = await load\(\)/);
+  assert.doesNotMatch(app, /\/v1\/feeds\/refresh/);
+});

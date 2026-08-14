@@ -105,6 +105,14 @@ test("linked text icons stay inline without changing linked article images", asy
   assert.match(css, /\.articleContent img\.articleInlineIcon\{display:inline-block;/);
 });
 
+test("proxy image failures fall back to the original image URL", async () => {
+  const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /const originalSrc = imageMode === "proxy"\s*\?\s*originalImageURL\(currentSrc, minifluxURL\)\s*:\s*null/);
+  assert.match(app, /data-readflux-original-src/);
+  assert.match(app, /handleArticleImageError/);
+  assert.match(app, /image\.src = originalSrc/);
+});
+
 test("Weibo Live Photo wrappers are distinguished from ordinary videos", () => {
   const livePhoto = "https://video.weibo.com/media/play?livephoto=https%3A%2F%2Flivephoto.us.sinaimg.cn%2Fexample.mov";
   assert.equal(articleContent.isWeiboLivePhotoURL(livePhoto), true);
