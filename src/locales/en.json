@@ -86,7 +86,7 @@
     "resetDone": "Sync data reset; repeating the initial load"
   },
   "webdav": {
-    "title": "Recommendation data WebDAV",
+    "title": "WebDAV data sync",
     "description": "Upload this client's reading events in monthly files and combine events read from other ReadFlux clients.",
     "connected": "Configured",
     "notConfigured": "Not configured",
@@ -106,7 +106,7 @@
     "save": "Test and save",
     "saved": "WebDAV connected and synced",
     "syncNow": "Sync now",
-    "disconnect": "Disconnect",
+    "disconnect": "Disconnect WebDAV on this device",
     "disconnected": "WebDAV disconnected; server data was kept",
     "missingFields": "Enter the WebDAV URL and client name",
     "remoteReadOnly": "Other client · Read only"

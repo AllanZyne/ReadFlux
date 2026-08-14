@@ -86,7 +86,7 @@
     "resetDone": "同步数据已重置，正在重新执行首次加载"
   },
   "webdav": {
-    "title": "推荐数据 WebDAV",
+    "title": "WebDAV 数据同步",
     "description": "将此客户端的阅读事件按月上传，并读取其他 ReadFlux 客户端的事件来综合推荐画像。",
     "connected": "已配置",
     "notConfigured": "未配置",
@@ -106,7 +106,7 @@
     "save": "测试并保存",
     "saved": "WebDAV 已连接并完成同步",
     "syncNow": "立即同步",
-    "disconnect": "普通断开",
+    "disconnect": "断开此设备上的 WebDAV",
     "disconnected": "已断开 WebDAV；服务器数据已保留",
     "missingFields": "请填写 WebDAV 地址和客户端名称",
     "remoteReadOnly": "其他客户端 · 只读"

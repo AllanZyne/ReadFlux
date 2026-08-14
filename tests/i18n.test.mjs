@@ -78,6 +78,17 @@ test("manual refresh copy describes Miniflux synchronization", async () => {
   assert.equal(catalogs[0].sync.refreshFailed, "Miniflux sync failed");
 });
 
+test("WebDAV settings describe device-scoped data synchronization", async () => {
+  const catalogs = await Promise.all(["en", "zh-CN", "fr"].map(async (locale) =>
+    JSON.parse(await readFile(new URL(`../src/locales/${locale}.json`, import.meta.url), "utf8"))));
+  assert.deepEqual(catalogs.map((catalog) => catalog.webdav.title), [
+    "WebDAV data sync",
+    "WebDAV 数据同步",
+    "Synchronisation des données WebDAV",
+  ]);
+  assert.equal(catalogs[1].webdav.disconnect, "断开此设备上的 WebDAV");
+});
+
 test("media loading labels describe the shared image and video policy", async () => {
   const chinese = JSON.parse(await readFile(new URL("../src/locales/zh-CN.json", import.meta.url), "utf8"));
   assert.equal(chinese.settings.imageDefault, "默认媒体加载方式");
