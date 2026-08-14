@@ -177,7 +177,7 @@ test("the source sidebar owns the app title and global actions", () => {
 });
 
 test("the refresh button exposes sync state on hover and changes icon after failure", () => {
-  assert.match(app, /const refreshStatus = [\s\S]*?syncProgressLabel[\s\S]*?refreshing[\s\S]*?sync\.latest[\s\S]*?syncedAt[\s\S]*?feed\.syncedAt/);
+  assert.match(app, /const refreshStatus = [\s\S]*?syncProgressLabel[\s\S]*?refreshing[\s\S]*?sync\.fullSyncing[\s\S]*?syncedAt[\s\S]*?feed\.syncedAt/);
   assert.match(app, /title=\{refreshStatus\}/);
   assert.match(app, /aria-label=\{refreshStatus\}/);
   assert.match(app, /const refreshBusy = refreshing \|\| loading/);
@@ -290,12 +290,13 @@ test("all settings and onboarding selects share the lightweight outlined treatme
   assert.doesNotMatch(styles, /:where\(\.settingsDialog,\.connectCard\) select/);
 });
 
-test("Miniflux range and image defaults use the same compact sync row", () => {
+test("the media default is the only compact select row in sync settings", () => {
   const syncStart = app.indexOf('{tab === "sync" && <>');
   const feedsStart = app.indexOf('{tab === "feeds" &&');
   const syncPanel = app.slice(syncStart, feedsStart);
 
-  assert.equal([...syncPanel.matchAll(/className="syncSelectSetting[^"]*"/g)].length, 2);
+  assert.equal([...syncPanel.matchAll(/className="syncSelectSetting[^"]*"/g)].length, 1);
+  assert.doesNotMatch(syncPanel, /sync\.range|entryLookbackDays|LOOKBACK_OPTIONS/);
   assert.match(
     styles,
     /\.syncSelectSetting\s*\{[^}]*grid-template-columns:minmax\(150px,180px\) minmax\(220px,1fr\);[^}]*align-items:center;/,

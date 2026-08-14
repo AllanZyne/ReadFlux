@@ -1,9 +1,19 @@
 type SyncEntry = {
   id: number;
   status: "read" | "unread" | "removed";
+  title?: string;
+  url?: string;
   content: string;
+  author?: string;
   changed_at?: string;
 };
+
+function articleContentChanged<T extends SyncEntry>(cached: T, entry: T) {
+  return cached.title !== entry.title
+    || cached.url !== entry.url
+    || cached.content !== entry.content
+    || cached.author !== entry.author;
+}
 
 export function mergeSyncedEntries<T extends SyncEntry>(
   current: T[],
@@ -14,15 +24,15 @@ export function mergeSyncedEntries<T extends SyncEntry>(
 
   batch.forEach((entry) => {
     const cached = merged.get(entry.id);
-    if (cached && cached.status === "read" && entry.changed_at && cached.changed_at
-      && entry.changed_at > cached.changed_at) {
-      updatedIds.add(entry.id);
-    }
-    merged.set(entry.id, {
+    const mergedEntry = {
       ...cached,
       ...entry,
       content: entry.content || cached?.content || "",
-    });
+    };
+    if (cached && cached.status === "read" && articleContentChanged(cached, mergedEntry)) {
+      updatedIds.add(entry.id);
+    }
+    merged.set(entry.id, mergedEntry);
   });
 
   return {
