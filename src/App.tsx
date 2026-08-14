@@ -758,10 +758,10 @@ function SettingsDialog({
                         : t("webdav.neverSynced")}
                 </p>
                 <div className="settingsActions webDavActions">
-                  {webDavConfig && <button disabled={webDavStatus.state === "syncing" || webDavSaving} onClick={() => void disconnectWebDav()}>{t("webdav.disconnect")}</button>}
                   {webDavConfig && <button disabled={webDavStatus.state === "syncing" || webDavSaving} onClick={() => void onSyncWebDav()}>{t("webdav.syncNow")}</button>}
                   <button className="primary" disabled={webDavStatus.state === "syncing" || webDavSaving} onClick={() => void saveWebDav()}>{webDavSaving ? t("webdav.testing") : t("webdav.save")}</button>
                 </div>
+                {webDavConfig && <button className="disconnect" disabled={webDavStatus.state === "syncing" || webDavSaving} onClick={() => void disconnectWebDav()}>{t("webdav.disconnect")}</button>}
               </div>
             </section>
           </>}
