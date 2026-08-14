@@ -14,6 +14,7 @@ import {
 } from "./article-images";
 import { articleMediaURL, isExpiredWeiboMediaURL, isWeiboLivePhotoURL, youtubeEmbedURL } from "./article-content";
 import { runExclusive } from "./async-lock";
+import { mergeSyncedEntries } from "./entry-sync";
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { startOptionalMinifluxTimeZoneLoad } from "./miniflux-timezone.mjs";
 import { articleHash, articlePermalink, parseAppRoute, type AppRoute } from "./routes";
@@ -914,6 +915,7 @@ export default function App() {
   const [entryLabels, setEntryLabels] = useState<Map<number, string[]>>(new Map());
   const [visibleIds, setVisibleIds] = useState<number[]>([]);
   const [referrerScopeState, setReferrerScopeState] = useState({ url: "", scope: "" });
+  const entriesRef = useRef<Entry[]>([]);
   const activeEvent = useRef<ReadingEvent | null>(null);
   const readerRef = useRef<HTMLDivElement | null>(null);
   const markAllReadButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -938,6 +940,13 @@ export default function App() {
   const notify = useCallback((message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(""), 2200);
+  }, []);
+
+  const replaceEntries = useCallback((update: Entry[] | ((current: Entry[]) => Entry[])) => {
+    const next = typeof update === "function" ? update(entriesRef.current) : update;
+    entriesRef.current = next;
+    setEntries(next);
+    return next;
   }, []);
 
   const navigateToArticle = useCallback((entryId: number) => {
@@ -980,10 +989,7 @@ export default function App() {
       setTodayClock(Date.now());
       if (modeRef.current === "today" && !topicRef.current) {
         setVisibleIds([]);
-        setEntries((current) => {
-          setListReadSnapshot(new Map(current.map((entry) => [entry.id, entry.status])));
-          return current;
-        });
+        setListReadSnapshot(new Map(entriesRef.current.map((entry) => [entry.id, entry.status])));
       }
     }, Math.max(1_000, nextMidnight.getTime() - now.getTime() + 100));
     return () => window.clearTimeout(timer);
@@ -1050,23 +1056,8 @@ export default function App() {
 
   const mergeEntryBatch = useCallback(async (batch: Entry[]) => {
     if (!config || !batch.length) return;
-    const updatedIds = new Set<number>();
-    setEntries((current) => {
-      const merged = new Map(current.map((entry) => [entry.id, entry]));
-      batch.forEach((entry) => {
-        const cached = merged.get(entry.id);
-        if (cached && cached.status === "read" && entry.changed_at && cached.changed_at
-          && entry.changed_at > cached.changed_at) {
-          updatedIds.add(entry.id);
-        }
-        merged.set(entry.id, {
-          ...cached,
-          ...entry,
-          content: entry.content || cached?.content || "",
-        });
-      });
-      return [...merged.values()];
-    });
+    const { entries: mergedEntries, updatedIds } = mergeSyncedEntries(entriesRef.current, batch);
+    replaceEntries(mergedEntries);
     if (updatedIds.size) {
       try {
         await Promise.all([...updatedIds].map((id) => addEntryLabel(config, id, "updated")));
@@ -1126,7 +1117,7 @@ export default function App() {
       }
     }
     await putCachedEntries(config, batch);
-  }, [config]);
+  }, [config, replaceEntries]);
 
   const lookbackDays = settings.entryLookbackDays === undefined
     ? DEFAULT_LOOKBACK_DAYS
@@ -1166,7 +1157,7 @@ export default function App() {
       const loadedCache = routedCachedEntry && !scopedCache.some((entry) => entry.id === routedCachedEntry.id)
         ? [...scopedCache, routedCachedEntry]
         : scopedCache;
-      setEntries(loadedCache);
+      replaceEntries(loadedCache);
       if (!listSnapshotIds.current.size || !scopedCache.some((e) => listSnapshotIds.current.has(e.id))) {
         setListReadSnapshot(new Map(scopedCache.map((entry) => [entry.id, entry.status])));
       }
@@ -1230,7 +1221,7 @@ export default function App() {
             || cutoff === null
             || new Date(entry.published_at).getTime() >= cutoff);
           const hiddenIds = new Set(batch.filter((entry) => !visibleBatch.includes(entry)).map((entry) => entry.id));
-          if (hiddenIds.size) setEntries((current) => current.filter((entry) => !hiddenIds.has(entry.id)));
+          if (hiddenIds.size) replaceEntries((current) => current.filter((entry) => !hiddenIds.has(entry.id)));
           await mergeEntryBatch(visibleBatch);
           await putCachedEntries(config, batch);
         });
@@ -1243,10 +1234,7 @@ export default function App() {
       });
       setSyncedAt(new Date());
       if (!background && !listSnapshotIds.current.size) {
-        setEntries((current) => {
-          setListReadSnapshot(new Map(current.map((entry) => [entry.id, entry.status])));
-          return current;
-        });
+        setListReadSnapshot(new Map(entriesRef.current.map((entry) => [entry.id, entry.status])));
         setPendingNew(0);
       }
       return true;
@@ -1264,7 +1252,7 @@ export default function App() {
         queueMicrotask(() => void loadRef.current());
       }
     }
-  }, [config, lookbackDays, mergeEntryBatch]);
+  }, [config, lookbackDays, mergeEntryBatch, replaceEntries]);
   useEffect(() => {
     loadRef.current = load;
   }, [load]);
@@ -1408,10 +1396,7 @@ export default function App() {
   const refreshList = useCallback(() => {
     commitActiveEvent();
     setVisibleIds([]);
-    setEntries((current) => {
-      setListReadSnapshot(new Map(current.map((entry) => [entry.id, entry.status])));
-      return current;
-    });
+    setListReadSnapshot(new Map(entriesRef.current.map((entry) => [entry.id, entry.status])));
     setPendingNew(0);
   }, [commitActiveEvent]);
 
@@ -1491,14 +1476,14 @@ export default function App() {
 
   const updateEntry = async (id: number, patch: Partial<Entry>, request: () => Promise<unknown>, success: string) => {
     const before = entries;
-    setEntries((all) => all.map((entry) => entry.id === id ? { ...entry, ...patch } : entry));
+    replaceEntries((all) => all.map((entry) => entry.id === id ? { ...entry, ...patch } : entry));
     try {
       await request();
       const cached = before.find((entry) => entry.id === id);
       if (config && cached) await putCachedEntries(config, [{ ...cached, ...patch }]);
       notify(success);
     } catch (cause) {
-      setEntries(before);
+      replaceEntries(before);
       notify(errorMessage(cause, t, "errors.sync"));
     }
   };
@@ -1513,7 +1498,7 @@ export default function App() {
       const merged = local
         ? { ...local, ...remote, status: local.status, starred: local.starred }
         : remote;
-      setEntries((all) => all.some((entry) => entry.id === id)
+      replaceEntries((all) => all.some((entry) => entry.id === id)
         ? all.map((entry) => entry.id === id ? merged : entry)
         : [...all, merged]);
       await putCachedEntries(config, [merged]);
@@ -1525,7 +1510,7 @@ export default function App() {
     } finally {
       setContentLoadingId((current) => current === id ? null : current);
     }
-  }, [config, entries]);
+  }, [config, entries, replaceEntries]);
 
   useEffect(() => {
     if (route.kind !== "article" || !config || loading) return;
@@ -1635,7 +1620,7 @@ export default function App() {
     if (!ids.length) return notify(t("feed.noUnread"));
     const before = entries;
     const after = entries.map((entry) => ids.includes(entry.id) ? { ...entry, status: "read" as const } : entry);
-    setEntries(after);
+    replaceEntries(after);
     setVisibleIds([]);
     setListReadSnapshot(new Map(after.map((entry) => [entry.id, entry.status])));
     try {
@@ -1646,12 +1631,12 @@ export default function App() {
       await putCachedEntries(config, after.filter((entry) => ids.includes(entry.id)));
       notify(t("feed.markedRead", { count: ids.length }));
     } catch (cause) {
-      setEntries(before);
+      replaceEntries(before);
       setVisibleIds([]);
       setListReadSnapshot(new Map(before.map((entry) => [entry.id, entry.status])));
       notify(errorMessage(cause, t, "errors.sync"));
     }
-  }, [config, entries, notify, t, visible]);
+  }, [config, entries, notify, replaceEntries, t, visible]);
 
   const positionMarkAllRead = useCallback(() => {
     const trigger = markAllReadButtonRef.current;
@@ -2010,7 +1995,7 @@ export default function App() {
               await new Promise((resolve) => window.setTimeout(resolve, 50));
             }
             await resetEntrySync(config);
-            setEntries([]);
+            replaceEntries([]);
             setListReadSnapshot(new Map());
             setSelectedId(null);
             setSyncedAt(null);
