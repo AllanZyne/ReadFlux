@@ -18,7 +18,7 @@ import { mergeSyncedEntries } from "./entry-sync";
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { startOptionalMinifluxTimeZoneLoad } from "./miniflux-timezone.mjs";
 import { articleHash, articlePermalink, parseAppRoute, type AppRoute } from "./routes";
-import { compareSmartFeedEntries, countSmartFeedEntries, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, localDayKey, nextDayBoundary, selectTimeZone, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
+import { compareSmartFeedEntries, countSmartFeedEntries, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, localDayKey, nextDayBoundary, selectTimeZone, smartFeedStatusPriority, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
 import {
   addEntryLabel,
   CachedFeedIcon,
@@ -34,6 +34,7 @@ import {
   getEntryLabels,
   getEntrySyncState,
   getProfileSettings,
+  getRankingExposures,
   getReadingEvents,
   getRemoteReadingEvents,
   getWebDavConfig,
@@ -45,7 +46,9 @@ import {
   putCachedEntries,
   putCachedFeedIcons,
   ProfileSettings,
+  putRankingExposure,
   putReadingEvent,
+  RankingExposure,
   ReadingEvent,
   removeEntryLabel,
   resetEntrySync,
@@ -57,6 +60,7 @@ import {
   WebDavConfig,
   WebDavSyncInterval,
 } from "./readflux-client";
+import { createRankingExposure, deriveInterestProfile, extractLegacyRecommendationTerms, rankingAttribution, recommendationDiagnostics, scoreRecommendation, type RecommendationScoreBreakdown } from "./recommendation";
 import {
   clearWebDavEtagCache,
   synchronizeWebDav,
@@ -97,6 +101,7 @@ type Story = Entry & {
   summary: string;
   score: number;
   reason: string;
+  scoreBreakdown: RecommendationScoreBreakdown;
 };
 type EntryPage = { total: number; entries: Entry[] };
 type ListMode = "today" | "unread" | "saved";
@@ -139,12 +144,6 @@ const toText = (html: string) => html
   .replace(/&quot;/g, "\"")
   .replace(/\s+/g, " ")
   .trim();
-
-const termsOf = (value: string) => value
-  .toLowerCase()
-  .split(/[^\p{L}\p{N}+#-]+/u)
-  .filter((word) => word.length > 2)
-  .slice(0, 80);
 
 async function loadEntryPages(
   config: ConnectionConfig,
@@ -419,6 +418,7 @@ function SettingsDialog({
   sourceWeights,
   wordWeights,
   negativeWeights,
+  exposures,
   starredCount,
   onClose,
   onSettingsChange,
@@ -445,6 +445,7 @@ function SettingsDialog({
   sourceWeights: Map<number, number>;
   wordWeights: Map<string, number>;
   negativeWeights: Map<string, number>;
+  exposures: RankingExposure[];
   starredCount: number;
   onClose: () => void;
   onSettingsChange: (settings: ProfileSettings) => void;
@@ -645,6 +646,7 @@ function SettingsDialog({
   const topSources = [...sourceWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
   const topWords = [...wordWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
   const topNegatives = [...negativeWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
+  const diagnostics = recommendationDiagnostics(exposures, events);
   const shownEvents = [...events]
     .filter((event) => !eventQuery.trim() || `${event.title} ${event.source} ${event.terms.join(" ")}`.toLowerCase().includes(eventQuery.trim().toLowerCase()))
     .sort((a, b) => b.openedAt.localeCompare(a.openedAt));
@@ -821,6 +823,26 @@ function SettingsDialog({
               <div><strong>{helpfulCount}</strong><span>{t("recommendation.helpfulQuoted")}</span></div>
               <div><strong>{negativeCount}</strong><span>{t("recommendation.notInterestedQuoted")}</span></div>
               <div><strong>{starredCount}</strong><span>{t("recommendation.saved")}</span></div>
+              <div><strong>{diagnostics.exposureCount}</strong><span>{t("recommendation.exposures")}</span></div>
+              <div><strong>{diagnostics.displayedCount}</strong><span>{t("recommendation.impressions")}</span></div>
+              <div><strong>{diagnostics.attributedOpenCount}</strong><span>{t("recommendation.attributedOpens")}</span></div>
+              <div><strong>{diagnostics.engagedOpenCount}</strong><span>{t("recommendation.engagedOpens")}</span></div>
+              <div><strong>{diagnostics.clampedPercent.toFixed(1)}%</strong><span>{t("recommendation.saturation")}</span></div>
+              <div><strong>{diagnostics.tiePercent.toFixed(1)}%</strong><span>{t("recommendation.tieRate")}</span></div>
+            </section>
+            <section className="diagnosticGrid">
+              <div>
+                <header><h3>{t("recommendation.scoreDistribution")}</h3><small>{t("recommendation.exposureDenominator")}</small></header>
+                <div className="weightList">{diagnostics.scoreDistribution.map((bucket) => <span key={bucket.label}><b>{bucket.label}</b><em>{bucket.count}</em></span>)}</div>
+              </div>
+              <div>
+                <header><h3>{t("recommendation.componentDistribution")}</h3><small>{t("recommendation.minAverageMax")}</small></header>
+                <div className="weightList">{(["source", "term", "freshness"] as const).map((component) => <span key={component}><b>{t(`recommendation.component.${component}`)}</b><em>{diagnostics.contributions[component].min.toFixed(1)} · {diagnostics.contributions[component].average.toFixed(1)} · {diagnostics.contributions[component].max.toFixed(1)}</em></span>)}</div>
+              </div>
+              <div>
+                <header><h3>{t("recommendation.engagementByRank")}</h3><small>{t("recommendation.engagementByRankHint")}</small></header>
+                <div className="weightList">{diagnostics.rankEngagement.filter((row) => row.impressions > 0).map((row) => <span key={row.rank}><b>#{row.rank} · {row.engagedOpens}/{row.impressions}</b><em>{row.engagedOpenPercent.toFixed(1)}%</em></span>)}</div>
+              </div>
             </section>
             <section className="derivedData">
               <div>
@@ -937,6 +959,7 @@ export default function App() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [events, setEvents] = useState<ReadingEvent[]>([]);
   const [remoteEvents, setRemoteEvents] = useState<ReadingEvent[]>([]);
+  const [exposures, setExposures] = useState<RankingExposure[]>([]);
   const [webDavConfig, setWebDavConfig] = useState<WebDavConfig | null>(null);
   const [webDavStatus, setWebDavStatus] = useState<WebDavSyncStatus>({ state: "idle" });
   const [settings, setSettings] = useState<ProfileSettings>({ theme: "day", imageLoadingPreferences: {}, updatedAt: new Date(0).toISOString() });
@@ -1000,6 +1023,7 @@ export default function App() {
   const [referrerScopeState, setReferrerScopeState] = useState({ url: "", scope: "" });
   const entriesRef = useRef<Entry[]>([]);
   const activeEvent = useRef<ReadingEvent | null>(null);
+  const latestExposure = useRef<RankingExposure | null>(null);
   const readerRef = useRef<HTMLDivElement | null>(null);
   const markAllReadButtonRef = useRef<HTMLButtonElement | null>(null);
   const markAllReadConfirmRef = useRef<HTMLButtonElement | null>(null);
@@ -1157,10 +1181,11 @@ export default function App() {
   const imageProxyAvailable = true;
 
   useEffect(() => {
-    Promise.all([getReadingEvents(), getRemoteReadingEvents(), getProfileSettings()]).then(async ([history, remoteHistory, profile]) => {
+    Promise.all([getReadingEvents(), getRemoteReadingEvents(), getProfileSettings(), getRankingExposures()]).then(async ([history, remoteHistory, profile, storedExposures]) => {
       if (profile.language) await i18n.changeLanguage(profile.language);
       setEvents(history);
       setRemoteEvents(remoteHistory);
+      setExposures(storedExposures);
       setWebDavConfig(getWebDavConfig());
       setSettings(profile);
       setConfig(getConnection());
@@ -1474,47 +1499,32 @@ export default function App() {
   }, [config, feeds]);
 
   const feedMap = useMemo(() => new Map(feeds.map((feed) => [feed.id, feed])), [feeds]);
-  const interest = useMemo(() => {
-    const sources = new Map<number, number>();
-    const words = new Map<string, number>();
-    const negatives = new Map<string, number>();
-    const now = syncedAt?.getTime() ?? 0;
-    recommendationEvents.forEach((event) => {
-      const ageDays = Math.max(0, (now - new Date(event.openedAt).getTime()) / 86_400_000);
-      const recency = Math.exp(-ageDays / 28);
-      const engaged = Math.min(4, event.activeSeconds / 30) + event.scrollDepth * 2;
-      const positive = event.feedback === "helpful" ? 5 : engaged;
-      if (event.feedback === "not_interested") {
-        event.terms.forEach((term) => negatives.set(term, (negatives.get(term) ?? 0) + 4 * recency));
-        return;
-      }
-      if (event.activeSeconds < 6 && event.scrollDepth < 0.15 && event.feedback !== "helpful") return;
-      const weight = Math.max(0.2, positive) * recency;
-      sources.set(event.feedId, (sources.get(event.feedId) ?? 0) + weight);
-      event.terms.forEach((term) => words.set(term, (words.get(term) ?? 0) + weight));
-    });
-    entries.filter((entry) => entry.starred).forEach((entry) => {
-      sources.set(entry.feed_id, (sources.get(entry.feed_id) ?? 0) + 5);
-      termsOf(`${entry.title} ${toText(entry.content).slice(0, 500)}`).forEach((term) => words.set(term, (words.get(term) ?? 0) + 3));
-    });
-    return { sources, words, negatives };
-  }, [recommendationEvents, entries, syncedAt]);
+  const interest = useMemo(() => deriveInterestProfile(
+    recommendationEvents,
+    entries.filter((entry) => entry.starred).map((entry) => ({
+      feedId: entry.feed_id,
+      text: `${entry.title} ${toText(entry.content).slice(0, 500)}`,
+    })),
+    syncedAt?.getTime() ?? todayClock,
+  ), [recommendationEvents, entries, syncedAt, todayClock]);
 
   const stories = useMemo<Story[]>(() => entries.map((entry) => {
     const feed = entry.feed ?? feedMap.get(entry.feed_id);
     const source = feed?.title ?? t("feed.unknownSource");
     const category = feed?.category?.title ?? t("settings.uncategorized");
-    const titleTerms = termsOf(`${entry.title} ${toText(entry.content).slice(0, 240)}`);
-    const hits = titleTerms.map((word) => [word, interest.words.get(word) ?? 0] as const).filter(([, value]) => value > 0).sort((a, b) => b[1] - a[1]);
-    const negative = titleTerms.reduce((sum, word) => sum + (interest.negatives.get(word) ?? 0), 0);
     const sourceAffinity = interest.sources.get(entry.feed_id) ?? 0;
-    const ageDays = Math.max(0, ((syncedAt?.getTime() ?? 0) - new Date(entry.published_at).getTime()) / 86_400_000);
-    const freshness = Math.max(0, 12 - Math.floor(ageDays));
-    const score = Math.max(1, Math.min(99, Math.round(44 + Math.min(25, sourceAffinity * 3) + Math.min(20, hits.reduce((sum, [, value]) => sum + value, 0)) + freshness + (entry.starred ? 8 : 0) - negative * 2)));
-    const terms = hits.slice(0, 2).map(([word]) => word).join(", ");
+    const scoreBreakdown = scoreRecommendation({
+      feedId: entry.feed_id,
+      text: `${entry.title} ${toText(entry.content).slice(0, 240)}`,
+      publishedAt: entry.published_at,
+      starred: entry.starred,
+      now: syncedAt?.getTime() ?? todayClock,
+      profile: interest,
+    });
+    const terms = scoreBreakdown.matchedTerms.slice(0, 2).join(", ");
     const reason = sourceAffinity >= 2
-      ? t("recommendation.reasonSource", { source, interest: hits[0] ? t("recommendation.reasonSourceInterest", { terms }) : "" })
-      : hits[0]
+      ? t("recommendation.reasonSource", { source, interest: scoreBreakdown.matchedTerms[0] ? t("recommendation.reasonSourceInterest", { terms }) : "" })
+      : scoreBreakdown.matchedTerms[0]
         ? t("recommendation.reasonTerms", { terms })
         : entry.starred
           ? t("recommendation.reasonSaved")
@@ -1529,10 +1539,11 @@ export default function App() {
       categoryId: feed?.category?.id,
       mark: source.trim().slice(0, 1).toUpperCase() || "·",
       summary: summary ? `${summary}${summary.length >= 160 ? "…" : ""}` : t("feed.noSummary"),
-      score,
+      score: scoreBreakdown.score,
+      scoreBreakdown,
       reason,
     };
-  }), [entries, recommendationEvents.length, feedMap, interest, syncedAt, t]);
+  }), [entries, recommendationEvents.length, feedMap, interest, syncedAt, todayClock, t]);
 
   const persistActive = useCallback(async () => {
     if (!activeEvent.current) return;
@@ -1597,10 +1608,26 @@ export default function App() {
 
   useEffect(() => {
     if (visible.length && !visibleIds.length) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- captures sort order after fresh sort
+      if (mode === "today" && !topic && !query.trim()) {
+        const exposure = createRankingExposure({
+          id: crypto.randomUUID(),
+          createdAt: new Date().toISOString(),
+          candidateCount: visible.length,
+          candidates: visible.map((story) => ({
+            entryId: story.id,
+            breakdown: story.scoreBreakdown,
+            statusPriority: smartFeedStatusPriority(story, entryLabels),
+          })),
+        });
+        latestExposure.current = exposure;
+        void putRankingExposure(exposure).then(() => setExposures((current) => [...current, exposure])).catch(() => undefined);
+      } else {
+        latestExposure.current = null;
+      }
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- captures and freezes a fresh sorted order
       setVisibleIds(visible.map((s) => s.id));
     }
-  }, [visible, visibleIds]);
+  }, [visible, visibleIds, mode, topic, query, entryLabels]);
 
   useEffect(() => { visibleEmptyRef.current = !visible.length; }, [visible]);
 
@@ -1700,15 +1727,18 @@ export default function App() {
     setContentError(null);
     if (!story.content.trim()) void loadEntryContent(story.id);
     readerRef.current?.scrollTo({ top: 0 });
+    const eventOrigin = origin ?? (query ? "search" : mode === "today" ? "recommendation" : mode === "saved" ? "saved" : "feed");
+    const attribution = eventOrigin === "recommendation" ? rankingAttribution(latestExposure.current, story.id) : {};
     activeEvent.current = newReadingEvent({
       entryId: story.id,
       feedId: story.feed_id,
       title: story.title,
       source: story.source,
-      terms: termsOf(`${story.title} ${story.summary}`),
-      origin: origin ?? (query ? "search" : mode === "today" ? "recommendation" : mode === "saved" ? "saved" : "feed"),
+      terms: extractLegacyRecommendationTerms(`${story.title} ${story.summary}`),
+      origin: eventOrigin,
       readingTime: story.reading_time,
       listPosition: (() => { const i = visible.findIndex((s) => s.id === story.id); return i >= 0 ? i : undefined; })(),
+      ...attribution,
     });
     void putReadingEvent(activeEvent.current);
     if (config && entryLabels.get(story.id)?.includes("updated")) {
@@ -2125,6 +2155,7 @@ export default function App() {
         sourceWeights={interest.sources}
         wordWeights={interest.words}
         negativeWeights={interest.negatives}
+        exposures={exposures}
         starredCount={savedCount}
         onClose={() => setSettingsOpen(false)}
         onSettingsChange={setSettings}

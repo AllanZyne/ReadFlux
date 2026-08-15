@@ -54,9 +54,36 @@ export type ReadingEvent = {
   feedback?: "helpful" | "not_interested";
   readingTime?: number;
   listPosition?: number;
+  rankingId?: string;
+  exposedRank?: number;
+  algorithmVersion?: string;
   updatedAt: string;
   remoteClientId?: string;
   remoteClientName?: string;
+};
+
+export type RankingExposureItem = {
+  entryId: number;
+  rank: number;
+  score: number;
+  sourceScore: number;
+  termScore: number;
+  freshnessScore: number;
+  savedBonus: number;
+  negativePenalty: number;
+  statusPriority: number;
+  matchedTerms: string[];
+};
+
+export type RankingExposure = {
+  id: string;
+  createdAt: string;
+  algorithmVersion: string;
+  schemaVersion: 1;
+  surface: "today";
+  candidateCount: number;
+  displayedCount: number;
+  items: RankingExposureItem[];
 };
 
 export type WebDavSyncInterval = 0 | 5 | 15 | 30 | 60;
@@ -72,13 +99,14 @@ export type WebDavConfig = {
 const LOCAL_CONFIG = "readflux.miniflux.local";
 const SESSION_CONFIG = "readflux.miniflux.session";
 const DB_NAME = "readflux-profile";
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 const EVENTS = "reading-events";
 const SETTINGS = "settings";
 const ENTRY_CACHE = "entry-cache";
 const ENTRY_LABELS = "entry-labels";
 const FEED_ICONS = "feed-icons";
 const REMOTE_EVENTS = "remote-reading-events";
+const RANKING_EXPOSURES = "ranking-exposures";
 const WEBDAV_CONFIG = "readflux.webdav";
 const WEBDAV_CLIENT_ID = "readflux.webdav.client-id";
 const WEBDAV_CLIENT_CREATED_AT = "readflux.webdav.client-created-at";
@@ -198,6 +226,10 @@ function openDb(): Promise<IDBDatabase> {
         const store = db.createObjectStore(REMOTE_EVENTS, { keyPath: "key" });
         store.createIndex("sourceMonth", "sourceMonth");
         store.createIndex("clientId", "clientId");
+      }
+      if (!db.objectStoreNames.contains(RANKING_EXPOSURES)) {
+        const store = db.createObjectStore(RANKING_EXPOSURES, { keyPath: "id" });
+        store.createIndex("createdAt", "createdAt");
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -485,6 +517,21 @@ export async function clearRemoteReadingEvents() {
   const db = await openDb();
   const transaction = db.transaction(REMOTE_EVENTS, "readwrite");
   transaction.objectStore(REMOTE_EVENTS).clear();
+  await transactionComplete(transaction);
+  db.close();
+}
+
+export async function getRankingExposures(): Promise<RankingExposure[]> {
+  const db = await openDb();
+  const exposures = await requestResult(db.transaction(RANKING_EXPOSURES).objectStore(RANKING_EXPOSURES).getAll()) as RankingExposure[];
+  db.close();
+  return exposures.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export async function putRankingExposure(exposure: RankingExposure) {
+  const db = await openDb();
+  const transaction = db.transaction(RANKING_EXPOSURES, "readwrite");
+  transaction.objectStore(RANKING_EXPOSURES).put(exposure);
   await transactionComplete(transaction);
   db.close();
 }

@@ -219,7 +219,10 @@ function validReadingEvent(value: unknown): value is ReadingEvent {
     && Number.isFinite(event.activeSeconds)
     && Number.isFinite(event.scrollDepth)
     && ["recommendation", "feed", "search", "saved"].includes(event.origin ?? "")
-    && typeof event.updatedAt === "string";
+    && typeof event.updatedAt === "string"
+    && (event.rankingId === undefined || typeof event.rankingId === "string")
+    && (event.exposedRank === undefined || Number.isSafeInteger(event.exposedRank))
+    && (event.algorithmVersion === undefined || typeof event.algorithmVersion === "string");
 }
 
 async function downloadRemoteMonths(config: WebDavConfig, ownClientId: string) {

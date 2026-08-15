@@ -42,6 +42,10 @@ export function compareSmartFeedEntries(
   mode: SmartFeedMode,
   labels?: Map<number, string[]>,
 ): number;
+export function smartFeedStatusPriority(
+  entry: { id: number; status: "read" | "unread" | "removed" },
+  labels?: Map<number, string[]>,
+): number;
 export function countSmartFeedEntries(
   entries: SmartFeedEntry[],
   todayKey: string,

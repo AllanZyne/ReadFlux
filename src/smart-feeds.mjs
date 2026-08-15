@@ -165,7 +165,7 @@ export function isEntryInSmartFeed(entry, mode, todayKey, timeZone) {
   return entry.starred;
 }
 
-function statusPriority(entry, labels) {
+export function smartFeedStatusPriority(entry, labels) {
   if (labels?.get(entry.id)?.includes("updated")) return 2;
   if (entry.status === "unread") return 1;
   return 0;
@@ -173,7 +173,7 @@ function statusPriority(entry, labels) {
 
 export function compareSmartFeedEntries(a, b, mode, labels) {
   if (mode === "today") {
-    const sp = statusPriority(b, labels) - statusPriority(a, labels);
+    const sp = smartFeedStatusPriority(b, labels) - smartFeedStatusPriority(a, labels);
     if (sp !== 0) return sp;
     return b.score - a.score;
   }
