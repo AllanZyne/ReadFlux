@@ -12,6 +12,7 @@ import {
   RECOMMENDATION_ALGORITHM_VERSION,
   scoreRecommendation,
 } from "../src/recommendation.ts";
+import { extractRecommendationCandidateTerms } from "../src/recommendation-terms.ts";
 
 const event = (overrides = {}) => ({
   id: "event-1",
@@ -33,6 +34,19 @@ test("candidate extraction removes obvious noise and preserves technical terms",
     extractRecommendationTerms("The the LLVM https://llvm.org/slides/2025.pdf C++ C# GPT-4 2025 LLVM"),
     ["llvm", "c++", "c#", "gpt-4"],
   );
+});
+
+test("Chinese candidates exclude single characters and keep mixed technical tokens", () => {
+  const terms = extractRecommendationCandidateTerms(
+    "人工智能和LLVM编译器优化技术",
+    "这是一个关于中文关键词提取的技术文章",
+  );
+  assert.ok(terms.includes("llvm"));
+  assert.ok(terms.every((term) => !/^\p{Script=Han}$/u.test(term)));
+});
+
+test("candidate extraction gives title terms more weight than summary terms", () => {
+  assert.equal(extractRecommendationCandidateTerms("LLVM", "compiler internals")[0], "llvm");
 });
 
 test("reading and saving never imply topic interest", () => {

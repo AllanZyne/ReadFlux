@@ -63,8 +63,8 @@ import {
   WebDavConfig,
   WebDavSyncInterval,
 } from "./readflux-client";
-import { createRankingExposure, deriveInterestProfile, extractRecommendationTerms, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, selectedTopicTermsForEntry, type RecommendationScoreBreakdown } from "./recommendation";
-import { TERM_EXTRACTION_VERSION } from "./recommendation-terms";
+import { createRankingExposure, deriveInterestProfile, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, selectedTopicTermsForEntry, type RecommendationScoreBreakdown } from "./recommendation";
+import { extractRecommendationCandidateTerms, initializeChineseRecommendationTerms, recommendationTermExtractionVersion } from "./recommendation-terms";
 import {
   clearWebDavEtagCache,
   synchronizeWebDav,
@@ -1020,6 +1020,7 @@ export default function App() {
   const [contentError, setContentError] = useState<{ id: number; error: LocalizedError } | null>(null);
   const [error, setError] = useState<LocalizedError | null>(null);
   const [pendingNew, setPendingNew] = useState(0);
+  const [termExtractorRevision, setTermExtractorRevision] = useState(0);
   const [entryLabels, setEntryLabels] = useState<Map<number, string[]>>(new Map());
   const [visibleIds, setVisibleIds] = useState<number[]>([]);
   const [referrerScopeState, setReferrerScopeState] = useState({ url: "", scope: "" });
@@ -1046,6 +1047,7 @@ export default function App() {
   const proxyRefreshKey = useRef("");
   const routeRef = useRef(route);
   const webDavUploadTimer = useRef<number | undefined>(undefined);
+  const termExtractorRequested = useRef(false);
   const recommendationEvents = useMemo(() => [...events, ...remoteEvents], [events, remoteEvents]);
   const recommendationExposures = useMemo(() => [...exposures, ...remoteExposures], [exposures, remoteExposures]);
 
@@ -1199,6 +1201,14 @@ export default function App() {
       setReady(true);
     });
   }, [i18n]);
+
+  useEffect(() => {
+    if (termExtractorRequested.current || !entries.some((entry) => /\p{Script=Han}/u.test(entry.title))) return;
+    termExtractorRequested.current = true;
+    void initializeChineseRecommendationTerms().then((initialized) => {
+      if (initialized) setTermExtractorRevision(1);
+    });
+  }, [entries]);
 
   useEffect(() => {
     if (!ready || !webDavConfig) return;
@@ -1515,42 +1525,44 @@ export default function App() {
     syncedAt?.getTime() ?? todayClock,
   ), [recommendationEvents, entries, syncedAt, todayClock]);
 
-  const stories = useMemo<Story[]>(() => entries.map((entry) => {
-    const feed = entry.feed ?? feedMap.get(entry.feed_id);
-    const source = feed?.title ?? t("feed.unknownSource");
-    const category = feed?.category?.title ?? t("settings.uncategorized");
-    const sourceAffinity = interest.sources.get(entry.feed_id) ?? 0;
-    const scoreBreakdown = scoreRecommendation({
-      feedId: entry.feed_id,
-      text: `${entry.title} ${toText(entry.content).slice(0, 240)}`,
-      publishedAt: entry.published_at,
-      starred: entry.starred,
-      now: syncedAt?.getTime() ?? todayClock,
-      profile: interest,
+  const stories = useMemo<Story[]>(() => {
+    return entries.map((entry) => {
+      const feed = entry.feed ?? feedMap.get(entry.feed_id);
+      const source = feed?.title ?? t("feed.unknownSource");
+      const category = feed?.category?.title ?? t("settings.uncategorized");
+      const sourceAffinity = interest.sources.get(entry.feed_id) ?? 0;
+      const scoreBreakdown = scoreRecommendation({
+        feedId: entry.feed_id,
+        text: `${entry.title} ${toText(entry.content).slice(0, 240)}`,
+        publishedAt: entry.published_at,
+        starred: entry.starred,
+        now: syncedAt?.getTime() ?? todayClock,
+        profile: interest,
+      });
+      const terms = scoreBreakdown.matchedTerms.slice(0, 2).join(", ");
+      const reason = sourceAffinity >= 2
+        ? t("recommendation.reasonSource", { source, interest: scoreBreakdown.matchedTerms[0] ? t("recommendation.reasonSourceInterest", { terms }) : "" })
+        : scoreBreakdown.matchedTerms[0]
+          ? t("recommendation.reasonTerms", { terms })
+          : entry.starred
+            ? t("recommendation.reasonSaved")
+            : recommendationEvents.length
+              ? t("recommendation.reasonCategory", { category })
+              : t("recommendation.reasonNew");
+      const summary = toText(entry.content).slice(0, 160);
+      return {
+        ...entry,
+        source,
+        category,
+        categoryId: feed?.category?.id,
+        mark: source.trim().slice(0, 1).toUpperCase() || "·",
+        summary: summary ? `${summary}${summary.length >= 160 ? "…" : ""}` : t("feed.noSummary"),
+        score: scoreBreakdown.score,
+        scoreBreakdown,
+        reason,
+      };
     });
-    const terms = scoreBreakdown.matchedTerms.slice(0, 2).join(", ");
-    const reason = sourceAffinity >= 2
-      ? t("recommendation.reasonSource", { source, interest: scoreBreakdown.matchedTerms[0] ? t("recommendation.reasonSourceInterest", { terms }) : "" })
-      : scoreBreakdown.matchedTerms[0]
-        ? t("recommendation.reasonTerms", { terms })
-        : entry.starred
-          ? t("recommendation.reasonSaved")
-          : recommendationEvents.length
-            ? t("recommendation.reasonCategory", { category })
-            : t("recommendation.reasonNew");
-    const summary = toText(entry.content).slice(0, 160);
-    return {
-      ...entry,
-      source,
-      category,
-      categoryId: feed?.category?.id,
-      mark: source.trim().slice(0, 1).toUpperCase() || "·",
-      summary: summary ? `${summary}${summary.length >= 160 ? "…" : ""}` : t("feed.noSummary"),
-      score: scoreBreakdown.score,
-      scoreBreakdown,
-      reason,
-    };
-  }), [entries, recommendationEvents.length, feedMap, interest, syncedAt, todayClock, t]);
+  }, [entries, recommendationEvents.length, feedMap, interest, syncedAt, todayClock, t]);
 
   const persistActive = useCallback(async () => {
     if (!activeEvent.current) return;
@@ -1645,11 +1657,12 @@ export default function App() {
   const selectedReadingEvent = selected
     ? events.filter((event) => event.entryId === selected.id).sort((a, b) => b.openedAt.localeCompare(a.openedAt))[0]
     : undefined;
+  void termExtractorRevision;
   const selectedCandidateTerms = selectedReadingEvent?.terms
-    ?? (selected ? extractRecommendationTerms(`${selected.title} ${selected.summary}`, 5) : []);
+    ?? (selected ? extractRecommendationCandidateTerms(selected.title, selected.summary) : []);
   const selectedTopicTerms = useMemo(
-    () => selected ? selectedTopicTermsForEntry(recommendationEvents, selected.id) : new Set<string>(),
-    [recommendationEvents, selected],
+    () => selectedId !== null ? selectedTopicTermsForEntry(recommendationEvents, selectedId) : new Set<string>(),
+    [recommendationEvents, selectedId],
   );
   const selectedReadingSeconds = selected
     ? recommendationEvents.reduce((sum, event) => event.entryId === selected.id ? sum + event.activeSeconds : sum, 0)
@@ -1774,8 +1787,8 @@ export default function App() {
       feedId: story.feed_id,
       title: story.title,
       source: story.source,
-      terms: extractRecommendationTerms(`${story.title} ${story.summary}`, 5),
-      termExtractionVersion: TERM_EXTRACTION_VERSION,
+      terms: extractRecommendationCandidateTerms(story.title, story.summary),
+      termExtractionVersion: recommendationTermExtractionVersion(),
       origin: eventOrigin,
       readingTime: story.reading_time,
       listPosition: (() => { const i = visible.findIndex((s) => s.id === story.id); return i >= 0 ? i : undefined; })(),

@@ -1,4 +1,11 @@
-export const TERM_EXTRACTION_VERSION = "candidate-v1";
+export const FALLBACK_TERM_EXTRACTION_VERSION = "candidate-v2-intl";
+export const JIEBA_TERM_EXTRACTION_VERSION = "candidate-v2-jieba";
+
+type JiebaTag = { word: string; tag: string };
+type JiebaTagger = (value: string, hmm: boolean) => JiebaTag[];
+
+let jiebaTagger: JiebaTagger | null = null;
+let jiebaInitialization: Promise<boolean> | null = null;
 
 const UNIVERSAL_IGNORED = new Set([
   "http", "https", "www", "com", "org", "net", "html", "htm", "php",
@@ -24,37 +31,103 @@ const HTML_REMNANT = /<[^>]*>|&(?:[a-z]+|#\d+);/giu;
 const PURE_YEAR = /^(?:19|20)\d{2}$/;
 const HAS_SIGNAL = /[\p{L}\p{N}]/u;
 const HAN = /\p{Script=Han}/u;
+const ONLY_HAN = /^\p{Script=Han}+$/u;
+
+export function recommendationTermExtractionVersion() {
+  return jiebaTagger ? JIEBA_TERM_EXTRACTION_VERSION : FALLBACK_TERM_EXTRACTION_VERSION;
+}
+
+export function initializeChineseRecommendationTerms() {
+  if (jiebaTagger) return Promise.resolve(true);
+  if (jiebaInitialization) return jiebaInitialization;
+  jiebaInitialization = import("wasmjieba-web")
+    .then(async (jieba) => {
+      await jieba.default();
+      jiebaTagger = jieba.tag;
+      return true;
+    })
+    .catch(() => false);
+  return jiebaInitialization;
+}
 
 export function normalizeRecommendationTerm(value: string) {
   return value.normalize("NFKC").trim().toLocaleLowerCase();
 }
 
-function tokenize(value: string) {
-  const cleaned = value.normalize("NFKC").replace(URL_OR_EMAIL, " ").replace(HTML_REMNANT, " ");
-  const rough = cleaned.toLocaleLowerCase().match(/[\p{L}\p{N}]+(?:[+#-][\p{L}\p{N}+#-]*)?/gu) ?? [];
-  if (!HAN.test(cleaned)) return rough;
+type CandidateToken = { term: string; tag?: string; index: number };
+
+function fallbackHanTokens(cleaned: string): CandidateToken[] {
   if (typeof Intl.Segmenter !== "function") {
-    const hanFallback = (cleaned.match(/\p{Script=Han}+/gu) ?? []).flatMap((run) => {
-      if (run.length <= 2) return [run];
-      return Array.from({ length: run.length - 1 }, (_, index) => run.slice(index, index + 2));
+    return (cleaned.match(/\p{Script=Han}+/gu) ?? []).flatMap((run) => {
+      if (run.length <= 2) return [{ term: run, index: cleaned.indexOf(run) }];
+      return Array.from({ length: run.length - 1 }, (_, index) => ({
+        term: run.slice(index, index + 2),
+        index: cleaned.indexOf(run) + index,
+      }));
     });
-    return [...rough.filter((term) => !HAN.test(term)), ...hanFallback];
   }
   const segmenter = new Intl.Segmenter("zh", { granularity: "word" });
-  const segmented = [...segmenter.segment(cleaned)]
-    .filter((part) => part.isWordLike)
-    .map((part) => normalizeRecommendationTerm(part.segment));
-  return [...rough.filter((term) => !HAN.test(term)), ...segmented];
+  return [...segmenter.segment(cleaned)]
+    .filter((part) => part.isWordLike && HAN.test(part.segment))
+    .map((part) => ({ term: part.segment, index: part.index }));
 }
 
-export function extractRecommendationTerms(value: string, limit = 80) {
-  const terms = tokenize(value)
-    .map(normalizeRecommendationTerm)
-    .filter((term) => HAS_SIGNAL.test(term)
+function tokenize(value: string): CandidateToken[] {
+  const cleaned = value.normalize("NFKC").replace(URL_OR_EMAIL, " ").replace(HTML_REMNANT, " ");
+  const rough = cleaned.toLocaleLowerCase().match(/[\p{Script=Latin}\p{N}]+(?:[+#-][\p{Script=Latin}\p{N}+#-]*)?/gu) ?? [];
+  const nonHan = rough
+    .map((term) => ({ term, index: cleaned.toLocaleLowerCase().indexOf(term) }));
+  if (!HAN.test(cleaned)) return nonHan;
+  const han = jiebaTagger
+    ? jiebaTagger(cleaned, true)
+      .filter((token) => HAN.test(token.word))
+      .map((token) => ({ term: token.word, tag: token.tag, index: cleaned.indexOf(token.word) }))
+    : fallbackHanTokens(cleaned);
+  return [...nonHan, ...han];
+}
+
+function accepted(term: string, tag?: string) {
+  return HAS_SIGNAL.test(term)
       && !UNIVERSAL_IGNORED.has(term)
       && !ENGLISH_IGNORED.has(term)
       && !CHINESE_IGNORED.has(term)
       && !PURE_YEAR.test(term)
-      && (HAN.test(term) || term.length >= 2));
-  return [...new Set(terms)].slice(0, limit);
+      && term.length >= 2
+      && (!tag || /^(?:n|v|a|eng|l|i|j|z)/.test(tag));
+}
+
+function posBoost(tag?: string) {
+  if (!tag) return 0;
+  if (tag.startsWith("n")) return 1.5;
+  if (tag === "eng") return 1.2;
+  if (tag.startsWith("v")) return 0.35;
+  return 0;
+}
+
+function rankRecommendationTerms(fields: Array<{ value: string; weight: number }>, limit: number) {
+  const ranked = new Map<string, { score: number; firstIndex: number }>();
+  fields.forEach((field) => tokenize(field.value).forEach((token) => {
+    const term = normalizeRecommendationTerm(token.term);
+    if (!accepted(term, token.tag)) return;
+    const current = ranked.get(term) ?? { score: 0, firstIndex: token.index };
+    const hanLengthBoost = ONLY_HAN.test(term) ? Math.min(0.8, (Array.from(term).length - 2) * 0.2) : 0;
+    current.score += field.weight * (1 + posBoost(token.tag) + hanLengthBoost);
+    current.firstIndex = Math.min(current.firstIndex, token.index);
+    ranked.set(term, current);
+  }));
+  return [...ranked.entries()]
+    .sort((a, b) => b[1].score - a[1].score || a[1].firstIndex - b[1].firstIndex || a[0].localeCompare(b[0]))
+    .slice(0, limit)
+    .map(([term]) => term);
+}
+
+export function extractRecommendationTerms(value: string, limit = 80) {
+  return rankRecommendationTerms([{ value, weight: 1 }], limit);
+}
+
+export function extractRecommendationCandidateTerms(title: string, summary: string, limit = 5) {
+  return rankRecommendationTerms([
+    { value: title, weight: 3 },
+    { value: summary, weight: 1 },
+  ], limit);
 }

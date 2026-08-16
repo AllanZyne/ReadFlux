@@ -1,5 +1,5 @@
 import type { ReadingEvent, RankingExposure } from "./readflux-client.ts";
-import { extractRecommendationTerms, normalizeRecommendationTerm } from "./recommendation-terms.ts";
+import { normalizeRecommendationTerm } from "./recommendation-terms.ts";
 
 export const RECOMMENDATION_ALGORITHM_VERSION = "heuristic-v2-explicit-topics";
 
@@ -102,10 +102,9 @@ export function scoreRecommendation(input: {
   now: number;
   profile: InterestProfile;
 }): RecommendationScoreBreakdown {
-  const terms = extractRecommendationTerms(input.text);
-  const hits = terms
-    .map((term) => [term, input.profile.words.get(term) ?? 0] as const)
-    .filter(([, weight]) => weight > 0)
+  const normalizedText = normalizeRecommendationTerm(input.text);
+  const hits = [...input.profile.words.entries()]
+    .filter(([term, weight]) => weight > 0 && recommendationTextContainsTerm(normalizedText, term))
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   const sourceAffinity = input.profile.sources.get(input.feedId) ?? 0;
   const sourceScore = round(Math.min(20, 20 * Math.log1p(sourceAffinity) / Math.log(201)));
@@ -127,6 +126,14 @@ export function scoreRecommendation(input: {
     negativePenalty,
     matchedTerms: hits.slice(0, 3).map(([term]) => term),
   };
+}
+
+function recommendationTextContainsTerm(text: string, termValue: string) {
+  const term = normalizeRecommendationTerm(termValue);
+  if (!term) return false;
+  if (/\p{Script=Han}/u.test(term)) return text.includes(term);
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, "u").test(text);
 }
 
 export function createRankingExposure(input: {
