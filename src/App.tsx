@@ -1,4 +1,4 @@
-import { CSSProperties, FormEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CSSProperties, FormEvent, memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import {
@@ -46,6 +46,7 @@ import {
   markAllRankingExposureMonthsDirty,
   markAllReadingEventMonthsDirty,
   normalizeReadingEventOpenedAt,
+  patchReadingEvent,
   putCachedEntries,
   putCachedFeedIcons,
   ProfileSettings,
@@ -63,7 +64,8 @@ import {
   WebDavConfig,
   WebDavSyncInterval,
 } from "./readflux-client";
-import { createRankingExposure, deriveInterestProfile, extractLegacyRecommendationTerms, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, type RecommendationScoreBreakdown } from "./recommendation";
+import { createRankingExposure, deriveInterestProfile, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, selectedTopicTermsByEntry, selectedTopicTermsForEntry, type RecommendationScoreBreakdown } from "./recommendation";
+import { extractRecommendationCandidateTermsAsync, initializeChineseRecommendationTerms, normalizeRecommendationTerm } from "./recommendation-terms";
 import {
   clearWebDavEtagCache,
   synchronizeWebDav,
@@ -420,7 +422,6 @@ function SettingsDialog({
   timeZoneSource,
   sourceWeights,
   wordWeights,
-  negativeWeights,
   exposures,
   starredCount,
   onClose,
@@ -447,7 +448,6 @@ function SettingsDialog({
   timeZoneSource: "miniflux" | "browser";
   sourceWeights: Map<number, number>;
   wordWeights: Map<string, number>;
-  negativeWeights: Map<string, number>;
   exposures: RankingExposure[];
   starredCount: number;
   onClose: () => void;
@@ -648,8 +648,8 @@ function SettingsDialog({
   feeds.forEach((feed) => sourceName.set(feed.id, feed.title));
   const topSources = [...sourceWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
   const topWords = [...wordWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
-  const topNegatives = [...negativeWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
   const diagnostics = recommendationDiagnostics(exposures, events);
+  const selectedTermsByEntry = useMemo(() => selectedTopicTermsByEntry(events), [events]);
   const shownEvents = [...events]
     .filter((event) => !eventQuery.trim() || `${event.title} ${event.source} ${event.terms.join(" ")}`.toLowerCase().includes(eventQuery.trim().toLowerCase()))
     .sort((a, b) => b.openedAt.localeCompare(a.openedAt));
@@ -851,7 +851,7 @@ function SettingsDialog({
                 <div className="weightList">{diagnostics.evaluationAtK.filter((row) => row.impressions > 0).map((row) => <span key={row.k}><b>@{row.k} · {t("recommendation.openRate")} {row.openPercent.toFixed(1)}% · {t("recommendation.engagedRate")} {row.engagedOpenPercent.toFixed(1)}%</b><em>{t("recommendation.starRate")} {row.starredPercent.toFixed(1)}% · {t("recommendation.bulkDismissRate")} {row.bulkDismissedPercent.toFixed(1)}%</em></span>)}</div>
               </div>
             </section>
-            <section className="derivedData">
+            <section className="derivedData twoColumns">
               <div>
                 <header><h3>{t("recommendation.sourceWeights")}</h3><small>{t("recommendation.sourceWeightsHint")}</small></header>
                 <div className="weightList">{topSources.length ? topSources.map(([feedId, weight]) => <span key={feedId}><b>{sourceName.get(feedId) ?? `${t("common.feed")} ${feedId}`}</b><em>{weight.toFixed(2)}</em></span>) : <p>{t("recommendation.noWeights")}</p>}</div>
@@ -859,10 +859,6 @@ function SettingsDialog({
               <div>
                 <header><h3>{t("recommendation.positiveTerms")}</h3><small>{t("recommendation.positiveTermsHint")}</small></header>
                 <div className="weightTags">{topWords.length ? topWords.map(([word, weight]) => <span key={word}>{word}<em>{weight.toFixed(1)}</em></span>) : <p>{t("recommendation.noKeywords")}</p>}</div>
-              </div>
-              <div>
-                <header><h3>{t("recommendation.negativeTerms")}</h3><small>{t("recommendation.negativeTermsHint")}</small></header>
-                <div className="weightTags negative">{topNegatives.length ? topNegatives.map(([word, weight]) => <span key={word}>{word}<em>{weight.toFixed(1)}</em></span>) : <p>{t("recommendation.noNegativeTerms")}</p>}</div>
               </div>
             </section>
 
@@ -890,7 +886,7 @@ function SettingsDialog({
                 {shownEvents.length ? shownEvents.map((event) => <div className="eventRow" key={`${event.remoteClientId ?? "local"}:${event.id}`}>
                   <span><strong>{event.title}</strong><small>{event.source} · {formatZonedDateTime(event.openedAt, timeZone)}{event.remoteClientName ? ` · ${event.remoteClientName}` : ""}</small></span>
                   <span><b>{t("common.secondsShort", { count: Math.round(event.activeSeconds) })}</b><small>{t("recommendation.scrollSummary", { depth: Math.round(event.scrollDepth * 100), origin: t(`recommendation.origin${event.origin[0].toUpperCase()}${event.origin.slice(1)}`) })}</small></span>
-                  <span><b>{event.feedback === "helpful" ? t("recommendation.helpful") : event.feedback === "not_interested" ? t("recommendation.notInterested") : t("recommendation.implicit")}</b><small>{event.terms.slice(0, 4).join(" · ") || t("recommendation.noTerms")}</small></span>
+                  <span><b>{event.feedback === "helpful" ? t("recommendation.helpful") : event.feedback === "not_interested" ? t("recommendation.notInterested") : t("recommendation.implicit")}</b><small>{[...(selectedTermsByEntry.get(event.entryId) ?? [])].join(" · ") || t("recommendation.noSelectedTopics")}</small><small>{t("recommendation.candidateSummary", { terms: event.terms.slice(0, 5).join(" · ") || t("recommendation.noTerms") })}</small></span>
                   <span>{event.remoteClientId
                     ? <small>{t("webdav.remoteReadOnly")}</small>
                     : <><button onClick={() => setDraft({ ...event })}>{t("common.edit")}</button><button className="danger" onClick={() => void removeEvent(event)}>{t("common.delete")}</button></>}</span>
@@ -1026,6 +1022,7 @@ export default function App() {
   const [contentError, setContentError] = useState<{ id: number; error: LocalizedError } | null>(null);
   const [error, setError] = useState<LocalizedError | null>(null);
   const [pendingNew, setPendingNew] = useState(0);
+  const [activeCandidates, setActiveCandidates] = useState<{ entryId: number; terms: string[]; loading: boolean } | null>(null);
   const [entryLabels, setEntryLabels] = useState<Map<number, string[]>>(new Map());
   const [visibleIds, setVisibleIds] = useState<number[]>([]);
   const [referrerScopeState, setReferrerScopeState] = useState({ url: "", scope: "" });
@@ -1052,6 +1049,7 @@ export default function App() {
   const proxyRefreshKey = useRef("");
   const routeRef = useRef(route);
   const webDavUploadTimer = useRef<number | undefined>(undefined);
+  const termExtractorRequested = useRef(false);
   const recommendationEvents = useMemo(() => [...events, ...remoteEvents], [events, remoteEvents]);
   const recommendationExposures = useMemo(() => [...exposures, ...remoteExposures], [exposures, remoteExposures]);
 
@@ -1205,6 +1203,12 @@ export default function App() {
       setReady(true);
     });
   }, [i18n]);
+
+  useEffect(() => {
+    if (termExtractorRequested.current || !entries.some((entry) => /\p{Script=Han}/u.test(entry.title))) return;
+    termExtractorRequested.current = true;
+    void initializeChineseRecommendationTerms();
+  }, [entries]);
 
   useEffect(() => {
     if (!ready || !webDavConfig) return;
@@ -1514,49 +1518,48 @@ export default function App() {
   const feedMap = useMemo(() => new Map(feeds.map((feed) => [feed.id, feed])), [feeds]);
   const interest = useMemo(() => deriveInterestProfile(
     recommendationEvents,
-    entries.filter((entry) => entry.starred).map((entry) => ({
-      feedId: entry.feed_id,
-      text: `${entry.title} ${toText(entry.content).slice(0, 500)}`,
-    })),
+    entries.filter((entry) => entry.starred).map((entry) => ({ feedId: entry.feed_id })),
     syncedAt?.getTime() ?? todayClock,
   ), [recommendationEvents, entries, syncedAt, todayClock]);
 
-  const stories = useMemo<Story[]>(() => entries.map((entry) => {
-    const feed = entry.feed ?? feedMap.get(entry.feed_id);
-    const source = feed?.title ?? t("feed.unknownSource");
-    const category = feed?.category?.title ?? t("settings.uncategorized");
-    const sourceAffinity = interest.sources.get(entry.feed_id) ?? 0;
-    const scoreBreakdown = scoreRecommendation({
-      feedId: entry.feed_id,
-      text: `${entry.title} ${toText(entry.content).slice(0, 240)}`,
-      publishedAt: entry.published_at,
-      starred: entry.starred,
-      now: syncedAt?.getTime() ?? todayClock,
-      profile: interest,
+  const stories = useMemo<Story[]>(() => {
+    return entries.map((entry) => {
+      const feed = entry.feed ?? feedMap.get(entry.feed_id);
+      const source = feed?.title ?? t("feed.unknownSource");
+      const category = feed?.category?.title ?? t("settings.uncategorized");
+      const sourceAffinity = interest.sources.get(entry.feed_id) ?? 0;
+      const scoreBreakdown = scoreRecommendation({
+        feedId: entry.feed_id,
+        text: `${entry.title} ${toText(entry.content).slice(0, 240)}`,
+        publishedAt: entry.published_at,
+        starred: entry.starred,
+        now: syncedAt?.getTime() ?? todayClock,
+        profile: interest,
+      });
+      const terms = scoreBreakdown.matchedTerms.slice(0, 2).join(", ");
+      const reason = sourceAffinity >= 2
+        ? t("recommendation.reasonSource", { source, interest: scoreBreakdown.matchedTerms[0] ? t("recommendation.reasonSourceInterest", { terms }) : "" })
+        : scoreBreakdown.matchedTerms[0]
+          ? t("recommendation.reasonTerms", { terms })
+          : entry.starred
+            ? t("recommendation.reasonSaved")
+            : recommendationEvents.length
+              ? t("recommendation.reasonCategory", { category })
+              : t("recommendation.reasonNew");
+      const summary = toText(entry.content).slice(0, 160);
+      return {
+        ...entry,
+        source,
+        category,
+        categoryId: feed?.category?.id,
+        mark: source.trim().slice(0, 1).toUpperCase() || "·",
+        summary: summary ? `${summary}${summary.length >= 160 ? "…" : ""}` : t("feed.noSummary"),
+        score: scoreBreakdown.score,
+        scoreBreakdown,
+        reason,
+      };
     });
-    const terms = scoreBreakdown.matchedTerms.slice(0, 2).join(", ");
-    const reason = sourceAffinity >= 2
-      ? t("recommendation.reasonSource", { source, interest: scoreBreakdown.matchedTerms[0] ? t("recommendation.reasonSourceInterest", { terms }) : "" })
-      : scoreBreakdown.matchedTerms[0]
-        ? t("recommendation.reasonTerms", { terms })
-        : entry.starred
-          ? t("recommendation.reasonSaved")
-          : recommendationEvents.length
-            ? t("recommendation.reasonCategory", { category })
-            : t("recommendation.reasonNew");
-    const summary = toText(entry.content).slice(0, 160);
-    return {
-      ...entry,
-      source,
-      category,
-      categoryId: feed?.category?.id,
-      mark: source.trim().slice(0, 1).toUpperCase() || "·",
-      summary: summary ? `${summary}${summary.length >= 160 ? "…" : ""}` : t("feed.noSummary"),
-      score: scoreBreakdown.score,
-      scoreBreakdown,
-      reason,
-    };
-  }), [entries, recommendationEvents.length, feedMap, interest, syncedAt, todayClock, t]);
+  }, [entries, recommendationEvents.length, feedMap, interest, syncedAt, todayClock, t]);
 
   const persistActive = useCallback(async () => {
     if (!activeEvent.current) return;
@@ -1568,9 +1571,11 @@ export default function App() {
   const commitActiveEvent = useCallback(() => {
     if (!activeEvent.current) return;
     const snapshot = { ...activeEvent.current };
-    setEvents((all) => {
-      const index = all.findIndex((event) => event.id === snapshot.id);
-      return index < 0 ? [...all, snapshot] : all.map((event, i) => i === index ? snapshot : event);
+    startTransition(() => {
+      setEvents((all) => {
+        const index = all.findIndex((event) => event.id === snapshot.id);
+        return index < 0 ? [...all, snapshot] : all.map((event, i) => i === index ? snapshot : event);
+      });
     });
   }, []);
 
@@ -1648,6 +1653,17 @@ export default function App() {
   useEffect(() => { visibleEmptyRef.current = !visible.length; }, [visible]);
 
   const selected = stories.find((story) => story.id === selectedId) ?? null;
+  const selectedReadingEvent = selected
+    ? events.reduce<ReadingEvent | undefined>((latest, event) => event.entryId === selected.id
+      && (!latest || event.openedAt > latest.openedAt) ? event : latest, undefined)
+    : undefined;
+  const selectedCandidateTerms = selected && activeCandidates?.entryId === selected.id
+    ? activeCandidates.terms.slice(0, 5)
+    : selectedReadingEvent?.termExtractionVersion ? selectedReadingEvent.terms.slice(0, 5) : [];
+  const selectedTopicTerms = useMemo(
+    () => selectedId !== null ? selectedTopicTermsForEntry(recommendationEvents, selectedId) : new Set<string>(),
+    [recommendationEvents, selectedId],
+  );
   const selectedReadingSeconds = selected
     ? recommendationEvents.reduce((sum, event) => event.entryId === selected.id ? sum + event.activeSeconds : sum, 0)
     : 0;
@@ -1766,18 +1782,55 @@ export default function App() {
     readerRef.current?.scrollTo({ top: 0 });
     const eventOrigin = origin ?? (query ? "search" : mode === "today" ? "recommendation" : mode === "saved" ? "saved" : "feed");
     const attribution = eventOrigin === "recommendation" ? rankingAttribution(latestExposure.current, story.id) : {};
-    activeEvent.current = newReadingEvent({
+    const readingEvent = newReadingEvent({
       entryId: story.id,
       feedId: story.feed_id,
       title: story.title,
       source: story.source,
-      terms: extractLegacyRecommendationTerms(`${story.title} ${story.summary}`),
+      terms: [],
       origin: eventOrigin,
       readingTime: story.reading_time,
       listPosition: (() => { const i = visible.findIndex((s) => s.id === story.id); return i >= 0 ? i : undefined; })(),
       ...attribution,
     });
-    void putReadingEvent(activeEvent.current);
+    activeEvent.current = readingEvent;
+    setActiveCandidates({ entryId: story.id, terms: [], loading: true });
+    const initialPersistence = putReadingEvent(readingEvent);
+    void extractRecommendationCandidateTermsAsync(story.title, story.summary).then(async (extracted) => {
+      await initialPersistence;
+      const updatedAt = new Date().toISOString();
+      let updatedEvent: ReadingEvent | null;
+      if (activeEvent.current?.id === readingEvent.id) {
+        updatedEvent = {
+          ...activeEvent.current,
+          terms: extracted.terms,
+          termExtractionVersion: extracted.version,
+          updatedAt,
+        };
+        activeEvent.current = updatedEvent;
+        setActiveCandidates({ entryId: story.id, terms: extracted.terms, loading: false });
+        await putReadingEvent(updatedEvent);
+      } else {
+        updatedEvent = await patchReadingEvent(readingEvent.id, {
+          terms: extracted.terms,
+          termExtractionVersion: extracted.version,
+          updatedAt,
+        });
+      }
+      if (!updatedEvent) return;
+      if (activeEvent.current?.id !== updatedEvent.id) {
+        startTransition(() => {
+          setEvents((current) => current.some((event) => event.id === updatedEvent.id)
+            ? current.map((event) => event.id === updatedEvent.id ? updatedEvent : event)
+            : [...current, updatedEvent]);
+        });
+      }
+      scheduleWebDavUpload();
+    }).catch(() => {
+      if (activeEvent.current?.id === readingEvent.id) {
+        setActiveCandidates({ entryId: story.id, terms: [], loading: false });
+      }
+    });
     if (config && entryLabels.get(story.id)?.includes("updated")) {
       void removeEntryLabel(config, story.id, "updated");
       setEntryLabels((current) => {
@@ -1977,6 +2030,39 @@ export default function App() {
     }
   };
 
+  const toggleTopicInterest = async (term: string) => {
+    if (!selected) return;
+    if (!activeEvent.current || activeEvent.current.entryId !== selected.id) choose(selected);
+    if (!activeEvent.current) return;
+    const normalizedTerm = normalizeRecommendationTerm(term);
+    if (!normalizedTerm) return;
+    const currentEvent = activeEvent.current;
+    const currentlySelected = selectedTopicTermsForEntry([
+      ...recommendationEvents.filter((event) => event.id !== currentEvent.id),
+      currentEvent,
+    ], selected.id).has(normalizedTerm);
+    const updatedAt = new Date().toISOString();
+    const operation = {
+      id: crypto.randomUUID(),
+      term: normalizedTerm,
+      interested: !currentlySelected,
+      updatedAt,
+    };
+    const updatedEvent: ReadingEvent = {
+      ...currentEvent,
+      topicFeedback: [...(currentEvent.topicFeedback ?? []), operation],
+      updatedAt,
+    };
+    activeEvent.current = updatedEvent;
+    await putReadingEvent(updatedEvent);
+    setEvents((current) => {
+      const index = current.findIndex((event) => event.id === updatedEvent.id);
+      return index < 0 ? [...current, updatedEvent] : current.map((event, i) => i === index ? updatedEvent : event);
+    });
+    scheduleWebDavUpload();
+    notify(t(operation.interested ? "recommendation.topicSelected" : "recommendation.topicRemoved", { term }));
+  };
+
   const categorySources = useMemo(() => categories.map((category) => ({
     ...category,
     feeds: feeds.filter((feed) => feed.category?.id === category.id),
@@ -2170,6 +2256,15 @@ export default function App() {
                 onReadingTick={recordReadingTick}
                 t={t}
               />
+              {activeCandidates?.entryId === selected.id && activeCandidates.loading ? <section className="topicPicker topicPickerLoading" aria-live="polite">
+                <div><strong>{t("recommendation.candidateTopics")}</strong><small>{t("recommendation.extractingTopics")}</small></div>
+              </section> : selectedCandidateTerms.length > 0 && <section className="topicPicker" aria-labelledby="topic-picker-title">
+                <div><strong id="topic-picker-title">{t("recommendation.candidateTopics")}</strong><small>{t("recommendation.candidateTopicsHint")}</small></div>
+                <div>{selectedCandidateTerms.map((term) => {
+                  const selectedTopic = selectedTopicTerms.has(term);
+                  return <button key={term} className={selectedTopic ? "selected" : ""} aria-pressed={selectedTopic} onClick={() => void toggleTopicInterest(term)}>{selectedTopic ? "✓ " : "+ "}{term}</button>;
+                })}</div>
+              </section>}
               <section className="reason">
                 <button className="reasonHead" onClick={() => setReasonOpen(!reasonOpen)}><span>{t("recommendation.reason")}</span><small>{reasonOpen ? t("recommendation.collapse") : t("recommendation.view")}</small></button>
                 {reasonOpen && <><p>{selected.reason}</p><div className="tags">{[selected.category, selected.source, ...(selected.tags ?? [])].slice(0, 4).map((tag) => <span key={tag}>{tag}</span>)}</div></>}
@@ -2202,7 +2297,6 @@ export default function App() {
         timeZoneSource={timeZoneSelection.source}
         sourceWeights={interest.sources}
         wordWeights={interest.words}
-        negativeWeights={interest.negatives}
         exposures={recommendationExposures}
         starredCount={savedCount}
         onClose={() => setSettingsOpen(false)}

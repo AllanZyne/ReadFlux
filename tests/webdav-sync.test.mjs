@@ -52,6 +52,25 @@ test("recommendation sync uses client-owned monthly files and read-only remote m
   assert.match(syncSource, /v1\/clients\/\$\{clientId\}\/exposures\/\$\{month\}\.json/);
 });
 
+test("malformed topic feedback is rejected without throwing", () => {
+  const event = {
+    id: "event-1",
+    entryId: 1,
+    feedId: 2,
+    title: "LLVM",
+    source: "Compiler feed",
+    terms: ["llvm"],
+    openedAt: "2026-08-14T00:00:00.000Z",
+    activeSeconds: 10,
+    scrollDepth: 0.5,
+    origin: "feed",
+    updatedAt: "2026-08-14T00:00:00.000Z",
+    topicFeedback: [null],
+  };
+  assert.doesNotThrow(() => syncModule.validReadingEvent(event));
+  assert.equal(syncModule.validReadingEvent(event), false);
+});
+
 test("WebDAV settings support the agreed automatic intervals and manual sync", () => {
   assert.match(clientSource, /WebDavSyncInterval\s*=\s*0\s*\|\s*5\s*\|\s*15\s*\|\s*30\s*\|\s*60/);
   assert.match(appSource, /onSyncWebDav/);

@@ -1,6 +1,7 @@
 import type { ReadingEvent, RankingExposure } from "./readflux-client.ts";
+import { normalizeRecommendationTerm } from "./recommendation-terms.ts";
 
-export const RECOMMENDATION_ALGORITHM_VERSION = "heuristic-v1-observable";
+export const RECOMMENDATION_ALGORITHM_VERSION = "heuristic-v2-explicit-topics";
 
 export type InterestProfile = {
   sources: Map<number, number>;
@@ -25,13 +26,49 @@ export type RankingCandidate = {
   statusPriority: number;
 };
 
-type StarredDocument = { feedId: number; text: string };
+const round = (value: number) => Math.round(value * 1000) / 1000;
 
-export const extractLegacyRecommendationTerms = (value: string) => value
-  .toLowerCase()
-  .split(/[^\p{L}\p{N}+#-]+/u)
-  .filter((word) => word.length > 2)
-  .slice(0, 80);
+type StarredDocument = { feedId: number };
+
+export { extractRecommendationTerms } from "./recommendation-terms.ts";
+
+type FoldedTopicFeedback = {
+  entryId: number;
+  term: string;
+  interested: boolean;
+  updatedAt: string;
+  id: string;
+};
+
+export function foldTopicFeedback(events: ReadingEvent[]) {
+  const latest = new Map<string, FoldedTopicFeedback>();
+  events.forEach((event) => event.topicFeedback?.forEach((operation) => {
+    const term = normalizeRecommendationTerm(operation.term);
+    if (!term) return;
+    const key = `${event.entryId}\n${term}`;
+    const candidate = { ...operation, entryId: event.entryId, term };
+    const current = latest.get(key);
+    if (!current || `${candidate.updatedAt}\n${candidate.id}` > `${current.updatedAt}\n${current.id}`) {
+      latest.set(key, candidate);
+    }
+  }));
+  return [...latest.values()];
+}
+
+export function selectedTopicTermsForEntry(events: ReadingEvent[], entryId: number) {
+  return selectedTopicTermsByEntry(events).get(entryId) ?? new Set<string>();
+}
+
+export function selectedTopicTermsByEntry(events: ReadingEvent[]) {
+  const selected = new Map<number, Set<string>>();
+  foldTopicFeedback(events).forEach((operation) => {
+    if (!operation.interested) return;
+    const terms = selected.get(operation.entryId) ?? new Set<string>();
+    terms.add(operation.term);
+    selected.set(operation.entryId, terms);
+  });
+  return selected;
+}
 
 export function deriveInterestProfile(
   events: ReadingEvent[],
@@ -48,19 +85,21 @@ export function deriveInterestProfile(
     const recency = Math.exp(-ageDays / 28);
     const engaged = Math.min(4, event.activeSeconds / 30) + event.scrollDepth * 2;
     const positive = event.feedback === "helpful" ? 5 : engaged;
-    if (event.feedback === "not_interested") {
-      event.terms.forEach((term) => negatives.set(term, (negatives.get(term) ?? 0) + 4 * recency));
-      return;
-    }
+    if (event.feedback === "not_interested") return;
     if (event.activeSeconds < 6 && event.scrollDepth < 0.15 && event.feedback !== "helpful") return;
     const weight = Math.max(0.2, positive) * recency;
     sources.set(event.feedId, (sources.get(event.feedId) ?? 0) + weight);
-    event.terms.forEach((term) => words.set(term, (words.get(term) ?? 0) + weight));
   });
   starred.forEach((document) => {
     sources.set(document.feedId, (sources.get(document.feedId) ?? 0) + 5);
-    extractLegacyRecommendationTerms(document.text)
-      .forEach((term) => words.set(term, (words.get(term) ?? 0) + 3));
+  });
+  foldTopicFeedback(events).forEach((operation) => {
+    if (!operation.interested) return;
+    const selectedAt = new Date(operation.updatedAt).getTime();
+    if (!Number.isFinite(selectedAt)) return;
+    const ageDays = Math.max(0, (now - selectedAt) / 86_400_000);
+    const weight = Math.exp(-ageDays / 90);
+    words.set(operation.term, (words.get(operation.term) ?? 0) + weight);
   });
   return { sources, words, negatives };
 }
@@ -73,21 +112,20 @@ export function scoreRecommendation(input: {
   now: number;
   profile: InterestProfile;
 }): RecommendationScoreBreakdown {
-  const terms = extractLegacyRecommendationTerms(input.text);
-  const hits = terms
-    .map((term) => [term, input.profile.words.get(term) ?? 0] as const)
-    .filter(([, weight]) => weight > 0)
-    .sort((a, b) => b[1] - a[1]);
+  const normalizedText = normalizeRecommendationTerm(input.text);
+  const hits = [...input.profile.words.entries()]
+    .filter(([term, weight]) => weight > 0 && recommendationTextContainsTerm(normalizedText, term))
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   const sourceAffinity = input.profile.sources.get(input.feedId) ?? 0;
-  const sourceScore = Math.min(25, sourceAffinity * 3);
-  const termScore = Math.min(20, hits.reduce((sum, [, weight]) => sum + weight, 0));
+  const sourceScore = round(Math.min(20, 20 * Math.log1p(sourceAffinity) / Math.log(201)));
+  const termSignal = hits.reduce((sum, [, weight]) => sum + Math.log1p(weight), 0);
+  const termScore = round(Math.min(24, 9 * Math.log1p(termSignal)));
   const publishedAt = new Date(input.publishedAt).getTime();
   const ageDays = Number.isFinite(publishedAt) ? Math.max(0, (input.now - publishedAt) / 86_400_000) : 12;
-  const freshnessScore = Math.max(0, 12 - Math.floor(ageDays));
+  const freshnessScore = round(Math.max(0, 12 - ageDays));
   const savedBonus = input.starred ? 8 : 0;
-  const negativeSignal = terms.reduce((sum, term) => sum + (input.profile.negatives.get(term) ?? 0), 0);
-  const negativePenalty = negativeSignal * 2;
-  const unclampedScore = 44 + sourceScore + termScore + freshnessScore + savedBonus - negativePenalty;
+  const negativePenalty = 0;
+  const unclampedScore = round(40 + sourceScore + termScore + freshnessScore + savedBonus);
   return {
     score: Math.max(1, Math.min(99, Math.round(unclampedScore))),
     unclampedScore,
@@ -98,6 +136,14 @@ export function scoreRecommendation(input: {
     negativePenalty,
     matchedTerms: hits.slice(0, 3).map(([term]) => term),
   };
+}
+
+function recommendationTextContainsTerm(text: string, termValue: string) {
+  const term = normalizeRecommendationTerm(termValue);
+  if (!term) return false;
+  if (/\p{Script=Han}/u.test(term)) return text.includes(term);
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, "u").test(text);
 }
 
 export function createRankingExposure(input: {

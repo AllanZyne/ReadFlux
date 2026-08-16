@@ -47,6 +47,8 @@ export type ReadingEvent = {
   title: string;
   source: string;
   terms: string[];
+  termExtractionVersion?: string;
+  topicFeedback?: TopicFeedbackOperation[];
   openedAt: string;
   activeSeconds: number;
   scrollDepth: number;
@@ -62,6 +64,13 @@ export type ReadingEvent = {
   updatedAt: string;
   remoteClientId?: string;
   remoteClientName?: string;
+};
+
+export type TopicFeedbackOperation = {
+  id: string;
+  term: string;
+  interested: boolean;
+  updatedAt: string;
 };
 
 export type RankingExposureItem = {
@@ -459,6 +468,26 @@ export async function putReadingEvent(event: ReadingEvent) {
   await addDirtyMonths(tx.objectStore(SETTINGS), [readingEventMonth(event), ...(previous ? [readingEventMonth(previous)] : [])]);
   await transactionComplete(tx);
   db.close();
+}
+
+export async function patchReadingEvent(id: string, patch: Partial<ReadingEvent>): Promise<ReadingEvent | null> {
+  const db = await openDb();
+  const tx = db.transaction([EVENTS, SETTINGS], "readwrite");
+  const store = tx.objectStore(EVENTS);
+  const previous = await requestResult(store.get(id)) as ReadingEvent | undefined;
+  if (!previous) {
+    await transactionComplete(tx);
+    db.close();
+    return null;
+  }
+  const updated = { ...previous, ...patch, id: previous.id };
+  delete updated.remoteClientId;
+  delete updated.remoteClientName;
+  store.put(updated);
+  await addDirtyMonths(tx.objectStore(SETTINGS), [readingEventMonth(previous), readingEventMonth(updated)]);
+  await transactionComplete(tx);
+  db.close();
+  return updated;
 }
 
 export async function deleteReadingEvent(id: string) {
