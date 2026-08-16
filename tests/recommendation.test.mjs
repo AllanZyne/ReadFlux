@@ -36,6 +36,13 @@ test("candidate extraction removes obvious noise and preserves technical terms",
   );
 });
 
+test("candidate extraction removes numbers, dates, times, months, and weekdays", () => {
+  assert.deepEqual(
+    extractRecommendationTerms("LLVM 42 3.14 80% 2026-08-16 08:30 August Sunday GPT-4 IPv6 C++20"),
+    ["llvm", "gpt-4", "ipv6", "c++20"],
+  );
+});
+
 test("Chinese candidates exclude single characters and keep mixed technical tokens", () => {
   const terms = extractRecommendationCandidateTerms(
     "人工智能和LLVM编译器优化技术",

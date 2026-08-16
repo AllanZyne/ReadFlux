@@ -26,9 +26,16 @@ const CHINESE_IGNORED = new Set([
   "为", "这", "那", "一个", "我们", "你们", "他们", "以及", "通过", "关于",
 ]);
 
+const DATE_WORDS = new Set([
+  "jan", "january", "feb", "february", "mar", "march", "apr", "april", "may", "jun", "june",
+  "jul", "july", "aug", "august", "sep", "sept", "september", "oct", "october", "nov", "november",
+  "dec", "december", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+]);
+
 const URL_OR_EMAIL = /(?:https?:\/\/|www\.)\S+|\b[^\s@]+@[^\s@]+\.[^\s@]+\b/giu;
 const HTML_REMNANT = /<[^>]*>|&(?:[a-z]+|#\d+);/giu;
-const PURE_YEAR = /^(?:19|20)\d{2}$/;
+const DATE_OR_TIME = /\b(?:19|20)\d{2}[-/.年]\d{1,2}(?:[-/.月]\d{1,2}日?)?(?:[t\s]\d{1,2}:\d{2}(?::\d{2})?)?|\b\d{1,2}[-/.月]\d{1,2}(?:[-/.]\d{2,4}|日)?|\b\d{1,2}:\d{2}(?::\d{2})?\b/giu;
+const PURE_NUMERIC = /^\p{N}+(?:[.,:/+-]\p{N}+)*%?$/u;
 const HAS_SIGNAL = /[\p{L}\p{N}]/u;
 const HAN = /\p{Script=Han}/u;
 const ONLY_HAN = /^\p{Script=Han}+$/u;
@@ -73,7 +80,7 @@ function fallbackHanTokens(cleaned: string): CandidateToken[] {
 }
 
 function tokenize(value: string): CandidateToken[] {
-  const cleaned = value.normalize("NFKC").replace(URL_OR_EMAIL, " ").replace(HTML_REMNANT, " ");
+  const cleaned = value.normalize("NFKC").replace(URL_OR_EMAIL, " ").replace(HTML_REMNANT, " ").replace(DATE_OR_TIME, " ");
   const rough = cleaned.toLocaleLowerCase().match(/[\p{Script=Latin}\p{N}]+(?:[+#-][\p{Script=Latin}\p{N}+#-]*)?/gu) ?? [];
   const nonHan = rough
     .map((term) => ({ term, index: cleaned.toLocaleLowerCase().indexOf(term) }));
@@ -91,7 +98,8 @@ function accepted(term: string, tag?: string) {
       && !UNIVERSAL_IGNORED.has(term)
       && !ENGLISH_IGNORED.has(term)
       && !CHINESE_IGNORED.has(term)
-      && !PURE_YEAR.test(term)
+      && !DATE_WORDS.has(term)
+      && !PURE_NUMERIC.test(term)
       && term.length >= 2
       && (!tag || /^(?:n|v|a|eng|l|i|j|z)/.test(tag));
 }
