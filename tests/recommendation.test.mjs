@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -13,6 +14,10 @@ import {
   scoreRecommendation,
 } from "../src/recommendation.ts";
 import { extractRecommendationCandidateTerms } from "../src/recommendation-terms.ts";
+
+const appSource = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+const termSource = await readFile(new URL("../src/recommendation-terms.ts", import.meta.url), "utf8");
+const termWorkerSource = await readFile(new URL("../src/recommendation-terms.worker.ts", import.meta.url), "utf8");
 
 const event = (overrides = {}) => ({
   id: "event-1",
@@ -54,6 +59,13 @@ test("Chinese candidates exclude single characters and keep mixed technical toke
 
 test("candidate extraction gives title terms more weight than summary terms", () => {
   assert.equal(extractRecommendationCandidateTerms("LLVM", "compiler internals")[0], "llvm");
+});
+
+test("article opening delegates Jieba extraction and dictionary warmup to a worker", () => {
+  assert.match(appSource, /terms:\s*\[\][\s\S]*?extractRecommendationCandidateTermsAsync/);
+  assert.match(appSource, /const initialPersistence = putReadingEvent\(readingEvent\)[\s\S]*?await initialPersistence/);
+  assert.match(termSource, /new Worker\(new URL\("\.\/recommendation-terms\.worker\.ts"/);
+  assert.match(termWorkerSource, /tag\("中文分词预热", true\)/);
 });
 
 test("reading and saving never imply topic interest", () => {

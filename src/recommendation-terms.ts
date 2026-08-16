@@ -2,10 +2,20 @@ export const FALLBACK_TERM_EXTRACTION_VERSION = "candidate-v2-intl";
 export const JIEBA_TERM_EXTRACTION_VERSION = "candidate-v2-jieba";
 
 type JiebaTag = { word: string; tag: string };
-type JiebaTagger = (value: string, hmm: boolean) => JiebaTag[];
+type WorkerResponse = {
+  id: number;
+  ok: boolean;
+  titleTags?: JiebaTag[];
+  summaryTags?: JiebaTag[];
+};
+type WorkerRequest =
+  | { type: "initialize" }
+  | { type: "extract"; title: string; summary: string };
 
-let jiebaTagger: JiebaTagger | null = null;
-let jiebaInitialization: Promise<boolean> | null = null;
+let jiebaWorker: Worker | null = null;
+let jiebaRequestId = 0;
+const jiebaRequests = new Map<number, { resolve: (response: WorkerResponse) => void; reject: (cause: Error) => void }>();
+const candidateCache = new Map<string, Promise<ExtractedRecommendationCandidates>>();
 
 const UNIVERSAL_IGNORED = new Set([
   "http", "https", "www", "com", "org", "net", "html", "htm", "php",
@@ -40,21 +50,38 @@ const HAS_SIGNAL = /[\p{L}\p{N}]/u;
 const HAN = /\p{Script=Han}/u;
 const ONLY_HAN = /^\p{Script=Han}+$/u;
 
-export function recommendationTermExtractionVersion() {
-  return jiebaTagger ? JIEBA_TERM_EXTRACTION_VERSION : FALLBACK_TERM_EXTRACTION_VERSION;
+function workerRequest(request: WorkerRequest) {
+  if (typeof Worker !== "function") return Promise.reject(new Error("Web Workers are unavailable"));
+  if (!jiebaWorker) {
+    jiebaWorker = new Worker(new URL("./recommendation-terms.worker.ts", import.meta.url), { type: "module" });
+    jiebaWorker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+      const pending = jiebaRequests.get(event.data.id);
+      if (!pending) return;
+      jiebaRequests.delete(event.data.id);
+      if (event.data.ok) pending.resolve(event.data);
+      else pending.reject(new Error("Jieba worker failed"));
+    };
+    jiebaWorker.onerror = () => {
+      jiebaRequests.forEach(({ reject }) => reject(new Error("Jieba worker failed")));
+      jiebaRequests.clear();
+      jiebaWorker?.terminate();
+      jiebaWorker = null;
+    };
+  }
+  const id = ++jiebaRequestId;
+  return new Promise<WorkerResponse>((resolve, reject) => {
+    jiebaRequests.set(id, { resolve, reject });
+    jiebaWorker!.postMessage({ ...request, id });
+  });
 }
 
-export function initializeChineseRecommendationTerms() {
-  if (jiebaTagger) return Promise.resolve(true);
-  if (jiebaInitialization) return jiebaInitialization;
-  jiebaInitialization = import("wasmjieba-web")
-    .then(async (jieba) => {
-      await jieba.default();
-      jiebaTagger = jieba.tag;
-      return true;
-    })
-    .catch(() => false);
-  return jiebaInitialization;
+export async function initializeChineseRecommendationTerms() {
+  try {
+    await workerRequest({ type: "initialize" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function normalizeRecommendationTerm(value: string) {
@@ -79,14 +106,21 @@ function fallbackHanTokens(cleaned: string): CandidateToken[] {
     .map((part) => ({ term: part.segment, index: part.index }));
 }
 
-function tokenize(value: string): CandidateToken[] {
-  const cleaned = value.normalize("NFKC").replace(URL_OR_EMAIL, " ").replace(HTML_REMNANT, " ").replace(DATE_OR_TIME, " ");
+function technicalTokens(cleaned: string): CandidateToken[] {
   const rough = cleaned.toLocaleLowerCase().match(/[\p{Script=Latin}\p{N}]+(?:[+#-][\p{Script=Latin}\p{N}+#-]*)?/gu) ?? [];
-  const nonHan = rough
-    .map((term) => ({ term, index: cleaned.toLocaleLowerCase().indexOf(term) }));
+  return rough.map((term) => ({ term, index: cleaned.toLocaleLowerCase().indexOf(term) }));
+}
+
+function cleanedText(value: string) {
+  return value.normalize("NFKC").replace(URL_OR_EMAIL, " ").replace(HTML_REMNANT, " ").replace(DATE_OR_TIME, " ");
+}
+
+function tokenize(value: string, jiebaTags?: JiebaTag[]): CandidateToken[] {
+  const cleaned = cleanedText(value);
+  const nonHan = technicalTokens(cleaned);
   if (!HAN.test(cleaned)) return nonHan;
-  const han = jiebaTagger
-    ? jiebaTagger(cleaned, true)
+  const han = jiebaTags
+    ? jiebaTags
       .filter((token) => HAN.test(token.word))
       .map((token) => ({ term: token.word, tag: token.tag, index: cleaned.indexOf(token.word) }))
     : fallbackHanTokens(cleaned);
@@ -112,9 +146,9 @@ function posBoost(tag?: string) {
   return 0;
 }
 
-function rankRecommendationTerms(fields: Array<{ value: string; weight: number }>, limit: number) {
+function rankRecommendationTerms(fields: Array<{ value: string; weight: number; jiebaTags?: JiebaTag[] }>, limit: number) {
   const ranked = new Map<string, { score: number; firstIndex: number }>();
-  fields.forEach((field) => tokenize(field.value).forEach((token) => {
+  fields.forEach((field) => tokenize(field.value, field.jiebaTags).forEach((token) => {
     const term = normalizeRecommendationTerm(token.term);
     if (!accepted(term, token.tag)) return;
     const current = ranked.get(term) ?? { score: 0, firstIndex: token.index };
@@ -138,4 +172,34 @@ export function extractRecommendationCandidateTerms(title: string, summary: stri
     { value: title, weight: 3 },
     { value: summary, weight: 1 },
   ], limit);
+}
+
+export type ExtractedRecommendationCandidates = {
+  terms: string[];
+  version: string;
+};
+
+export function extractRecommendationCandidateTermsAsync(title: string, summary: string, limit = 5) {
+  const key = `${limit}\n${title}\n${summary}`;
+  const cached = candidateCache.get(key);
+  if (cached) return cached;
+  const extraction = (HAN.test(title) || HAN.test(summary)
+    ? workerRequest({ type: "extract", title: cleanedText(title), summary: cleanedText(summary) }).then((response) => ({
+        terms: rankRecommendationTerms([
+          { value: title, weight: 3, jiebaTags: response.titleTags },
+          { value: summary, weight: 1, jiebaTags: response.summaryTags },
+        ], limit),
+        version: JIEBA_TERM_EXTRACTION_VERSION,
+      }))
+    : Promise.resolve({
+        terms: extractRecommendationCandidateTerms(title, summary, limit),
+        version: FALLBACK_TERM_EXTRACTION_VERSION,
+      }))
+    .catch(() => ({
+      terms: extractRecommendationCandidateTerms(title, summary, limit),
+      version: FALLBACK_TERM_EXTRACTION_VERSION,
+    }));
+  if (candidateCache.size >= 500) candidateCache.delete(candidateCache.keys().next().value ?? "");
+  candidateCache.set(key, extraction);
+  return extraction;
 }

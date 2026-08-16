@@ -203,6 +203,7 @@
     "reinforced": "已强化这类内容",
     "candidateTopics": "可能的主题",
     "candidateTopicsHint": "仅在你主动选择后才会影响推荐",
+    "extractingTopics": "正在后台提取，不影响文章阅读…",
     "topicSelected": "已关注主题“{{term}}”",
     "topicRemoved": "已取消关注主题“{{term}}”",
     "reason": "推荐依据",

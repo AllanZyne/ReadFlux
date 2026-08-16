@@ -203,6 +203,7 @@
     "reinforced": "Ce type de contenu sera davantage recommandé",
     "candidateTopics": "Sujets possibles",
     "candidateTopicsHint": "Ils n’influencent les recommandations qu’après votre sélection",
+    "extractingTopics": "Extraction en arrière-plan sans bloquer la lecture…",
     "topicSelected": "Sujet suivi : « {{term}} »",
     "topicRemoved": "Sujet retiré : « {{term}} »",
     "reason": "Pourquoi cette recommandation",

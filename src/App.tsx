@@ -1,4 +1,4 @@
-import { CSSProperties, FormEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CSSProperties, FormEvent, memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import {
@@ -46,6 +46,7 @@ import {
   markAllRankingExposureMonthsDirty,
   markAllReadingEventMonthsDirty,
   normalizeReadingEventOpenedAt,
+  patchReadingEvent,
   putCachedEntries,
   putCachedFeedIcons,
   ProfileSettings,
@@ -64,7 +65,7 @@ import {
   WebDavSyncInterval,
 } from "./readflux-client";
 import { createRankingExposure, deriveInterestProfile, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, selectedTopicTermsForEntry, type RecommendationScoreBreakdown } from "./recommendation";
-import { extractRecommendationCandidateTerms, initializeChineseRecommendationTerms, recommendationTermExtractionVersion } from "./recommendation-terms";
+import { extractRecommendationCandidateTermsAsync, initializeChineseRecommendationTerms } from "./recommendation-terms";
 import {
   clearWebDavEtagCache,
   synchronizeWebDav,
@@ -1020,7 +1021,7 @@ export default function App() {
   const [contentError, setContentError] = useState<{ id: number; error: LocalizedError } | null>(null);
   const [error, setError] = useState<LocalizedError | null>(null);
   const [pendingNew, setPendingNew] = useState(0);
-  const [termExtractorRevision, setTermExtractorRevision] = useState(0);
+  const [activeCandidates, setActiveCandidates] = useState<{ entryId: number; terms: string[]; loading: boolean } | null>(null);
   const [entryLabels, setEntryLabels] = useState<Map<number, string[]>>(new Map());
   const [visibleIds, setVisibleIds] = useState<number[]>([]);
   const [referrerScopeState, setReferrerScopeState] = useState({ url: "", scope: "" });
@@ -1205,9 +1206,7 @@ export default function App() {
   useEffect(() => {
     if (termExtractorRequested.current || !entries.some((entry) => /\p{Script=Han}/u.test(entry.title))) return;
     termExtractorRequested.current = true;
-    void initializeChineseRecommendationTerms().then((initialized) => {
-      if (initialized) setTermExtractorRevision(1);
-    });
+    void initializeChineseRecommendationTerms();
   }, [entries]);
 
   useEffect(() => {
@@ -1574,9 +1573,11 @@ export default function App() {
   const commitActiveEvent = useCallback(() => {
     if (!activeEvent.current) return;
     const snapshot = { ...activeEvent.current };
-    setEvents((all) => {
-      const index = all.findIndex((event) => event.id === snapshot.id);
-      return index < 0 ? [...all, snapshot] : all.map((event, i) => i === index ? snapshot : event);
+    startTransition(() => {
+      setEvents((all) => {
+        const index = all.findIndex((event) => event.id === snapshot.id);
+        return index < 0 ? [...all, snapshot] : all.map((event, i) => i === index ? snapshot : event);
+      });
     });
   }, []);
 
@@ -1657,9 +1658,9 @@ export default function App() {
   const selectedReadingEvent = selected
     ? events.filter((event) => event.entryId === selected.id).sort((a, b) => b.openedAt.localeCompare(a.openedAt))[0]
     : undefined;
-  void termExtractorRevision;
-  const selectedCandidateTerms = selectedReadingEvent?.terms
-    ?? (selected ? extractRecommendationCandidateTerms(selected.title, selected.summary) : []);
+  const selectedCandidateTerms = selected && activeCandidates?.entryId === selected.id
+    ? activeCandidates.terms
+    : selectedReadingEvent?.terms ?? [];
   const selectedTopicTerms = useMemo(
     () => selectedId !== null ? selectedTopicTermsForEntry(recommendationEvents, selectedId) : new Set<string>(),
     [recommendationEvents, selectedId],
@@ -1787,16 +1788,46 @@ export default function App() {
       feedId: story.feed_id,
       title: story.title,
       source: story.source,
-      terms: extractRecommendationCandidateTerms(story.title, story.summary),
-      termExtractionVersion: recommendationTermExtractionVersion(),
+      terms: [],
       origin: eventOrigin,
       readingTime: story.reading_time,
       listPosition: (() => { const i = visible.findIndex((s) => s.id === story.id); return i >= 0 ? i : undefined; })(),
       ...attribution,
     });
     activeEvent.current = readingEvent;
-    setEvents((current) => [...current, readingEvent]);
-    void putReadingEvent(readingEvent);
+    setActiveCandidates({ entryId: story.id, terms: [], loading: true });
+    const initialPersistence = putReadingEvent(readingEvent);
+    void extractRecommendationCandidateTermsAsync(story.title, story.summary).then(async (extracted) => {
+      await initialPersistence;
+      const updatedAt = new Date().toISOString();
+      let updatedEvent: ReadingEvent | null;
+      if (activeEvent.current?.id === readingEvent.id) {
+        updatedEvent = {
+          ...activeEvent.current,
+          terms: extracted.terms,
+          termExtractionVersion: extracted.version,
+          updatedAt,
+        };
+        activeEvent.current = updatedEvent;
+        setActiveCandidates({ entryId: story.id, terms: extracted.terms, loading: false });
+        await putReadingEvent(updatedEvent);
+      } else {
+        updatedEvent = await patchReadingEvent(readingEvent.id, {
+          terms: extracted.terms,
+          termExtractionVersion: extracted.version,
+          updatedAt,
+        });
+      }
+      if (!updatedEvent) return;
+      if (activeEvent.current?.id !== updatedEvent.id) {
+        startTransition(() => {
+          setEvents((current) => current.some((event) => event.id === updatedEvent.id)
+            ? current.map((event) => event.id === updatedEvent.id ? updatedEvent : event)
+            : [...current, updatedEvent]);
+        });
+      }
+      scheduleWebDavUpload();
+    });
     if (config && entryLabels.get(story.id)?.includes("updated")) {
       void removeEntryLabel(config, story.id, "updated");
       setEntryLabels((current) => {
@@ -2215,7 +2246,9 @@ export default function App() {
                 onReadingTick={recordReadingTick}
                 t={t}
               />
-              {selectedCandidateTerms.length > 0 && <section className="topicPicker" aria-labelledby="topic-picker-title">
+              {activeCandidates?.entryId === selected.id && activeCandidates.loading ? <section className="topicPicker topicPickerLoading" aria-live="polite">
+                <div><strong>{t("recommendation.candidateTopics")}</strong><small>{t("recommendation.extractingTopics")}</small></div>
+              </section> : selectedCandidateTerms.length > 0 && <section className="topicPicker" aria-labelledby="topic-picker-title">
                 <div><strong id="topic-picker-title">{t("recommendation.candidateTopics")}</strong><small>{t("recommendation.candidateTopicsHint")}</small></div>
                 <div>{selectedCandidateTerms.map((term) => {
                   const selectedTopic = selectedTopicTerms.has(term);
