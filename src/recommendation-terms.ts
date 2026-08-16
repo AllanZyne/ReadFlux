@@ -85,7 +85,7 @@ export async function initializeChineseRecommendationTerms() {
 }
 
 export function normalizeRecommendationTerm(value: string) {
-  return value.normalize("NFKC").trim().toLocaleLowerCase();
+  return value.normalize("NFKC").trim().toLowerCase();
 }
 
 type CandidateToken = { term: string; tag?: string; index: number };
@@ -107,8 +107,9 @@ function fallbackHanTokens(cleaned: string): CandidateToken[] {
 }
 
 function technicalTokens(cleaned: string): CandidateToken[] {
-  const rough = cleaned.toLocaleLowerCase().match(/[\p{Script=Latin}\p{N}]+(?:[+#-][\p{Script=Latin}\p{N}+#-]*)?/gu) ?? [];
-  return rough.map((term) => ({ term, index: cleaned.toLocaleLowerCase().indexOf(term) }));
+  const normalized = cleaned.toLowerCase();
+  const rough = normalized.match(/[\p{Script=Latin}\p{N}]+(?:[+#-][\p{Script=Latin}\p{N}+#-]*)?/gu) ?? [];
+  return rough.map((term) => ({ term, index: normalized.indexOf(term) }));
 }
 
 function cleanedText(value: string) {

@@ -262,7 +262,7 @@ function validMonthFile(value: unknown): value is EventMonthFile {
     && file.events.every(validReadingEvent);
 }
 
-function validReadingEvent(value: unknown): value is ReadingEvent {
+export function validReadingEvent(value: unknown): value is ReadingEvent {
   if (!value || typeof value !== "object") return false;
   const event = value as Partial<ReadingEvent>;
   return typeof event.id === "string"
@@ -279,7 +279,9 @@ function validReadingEvent(value: unknown): value is ReadingEvent {
     && typeof event.updatedAt === "string"
     && (event.termExtractionVersion === undefined || typeof event.termExtractionVersion === "string")
     && (event.topicFeedback === undefined || (Array.isArray(event.topicFeedback)
-      && event.topicFeedback.every((operation) => typeof operation.id === "string"
+      && event.topicFeedback.every((operation) => !!operation
+        && typeof operation === "object"
+        && typeof operation.id === "string"
         && typeof operation.term === "string"
         && typeof operation.interested === "boolean"
         && typeof operation.updatedAt === "string")))

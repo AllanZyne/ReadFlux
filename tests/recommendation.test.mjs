@@ -12,6 +12,7 @@ import {
   recordBulkDismissal,
   RECOMMENDATION_ALGORITHM_VERSION,
   scoreRecommendation,
+  selectedTopicTermsByEntry,
 } from "../src/recommendation.ts";
 import { extractRecommendationCandidateTerms } from "../src/recommendation-terms.ts";
 
@@ -90,6 +91,15 @@ test("only the latest explicit per-article topic choice contributes", () => {
   const profile = deriveInterestProfile([selected], [], Date.parse("2026-08-14T02:00:00.000Z"));
   assert.equal(profile.words.get("llvm"), 1);
   assert.equal(profile.negatives.size, 0);
+});
+
+test("selected topics are folded once into an entry lookup", () => {
+  const selected = selectedTopicTermsByEntry([
+    event({ entryId: 1, topicFeedback: [{ id: "a", term: "LLVM", interested: true, updatedAt: "2026-08-14T00:00:00.000Z" }] }),
+    event({ id: "event-2", entryId: 2, topicFeedback: [{ id: "b", term: "Rust", interested: true, updatedAt: "2026-08-14T00:00:00.000Z" }] }),
+  ]);
+  assert.deepEqual([...selected.get(1) ?? []], ["llvm"]);
+  assert.deepEqual([...selected.get(2) ?? []], ["rust"]);
 });
 
 test("log-scaled scoring retains discrimination at high affinity", () => {

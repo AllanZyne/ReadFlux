@@ -56,9 +56,18 @@ export function foldTopicFeedback(events: ReadingEvent[]) {
 }
 
 export function selectedTopicTermsForEntry(events: ReadingEvent[], entryId: number) {
-  return new Set(foldTopicFeedback(events)
-    .filter((operation) => operation.entryId === entryId && operation.interested)
-    .map((operation) => operation.term));
+  return selectedTopicTermsByEntry(events).get(entryId) ?? new Set<string>();
+}
+
+export function selectedTopicTermsByEntry(events: ReadingEvent[]) {
+  const selected = new Map<number, Set<string>>();
+  foldTopicFeedback(events).forEach((operation) => {
+    if (!operation.interested) return;
+    const terms = selected.get(operation.entryId) ?? new Set<string>();
+    terms.add(operation.term);
+    selected.set(operation.entryId, terms);
+  });
+  return selected;
 }
 
 export function deriveInterestProfile(

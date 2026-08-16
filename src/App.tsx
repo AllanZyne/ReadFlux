@@ -64,7 +64,7 @@ import {
   WebDavConfig,
   WebDavSyncInterval,
 } from "./readflux-client";
-import { createRankingExposure, deriveInterestProfile, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, selectedTopicTermsForEntry, type RecommendationScoreBreakdown } from "./recommendation";
+import { createRankingExposure, deriveInterestProfile, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, selectedTopicTermsByEntry, selectedTopicTermsForEntry, type RecommendationScoreBreakdown } from "./recommendation";
 import { extractRecommendationCandidateTermsAsync, initializeChineseRecommendationTerms } from "./recommendation-terms";
 import {
   clearWebDavEtagCache,
@@ -649,6 +649,7 @@ function SettingsDialog({
   const topSources = [...sourceWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
   const topWords = [...wordWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
   const diagnostics = recommendationDiagnostics(exposures, events);
+  const selectedTermsByEntry = useMemo(() => selectedTopicTermsByEntry(events), [events]);
   const shownEvents = [...events]
     .filter((event) => !eventQuery.trim() || `${event.title} ${event.source} ${event.terms.join(" ")}`.toLowerCase().includes(eventQuery.trim().toLowerCase()))
     .sort((a, b) => b.openedAt.localeCompare(a.openedAt));
@@ -885,7 +886,7 @@ function SettingsDialog({
                 {shownEvents.length ? shownEvents.map((event) => <div className="eventRow" key={`${event.remoteClientId ?? "local"}:${event.id}`}>
                   <span><strong>{event.title}</strong><small>{event.source} · {formatZonedDateTime(event.openedAt, timeZone)}{event.remoteClientName ? ` · ${event.remoteClientName}` : ""}</small></span>
                   <span><b>{t("common.secondsShort", { count: Math.round(event.activeSeconds) })}</b><small>{t("recommendation.scrollSummary", { depth: Math.round(event.scrollDepth * 100), origin: t(`recommendation.origin${event.origin[0].toUpperCase()}${event.origin.slice(1)}`) })}</small></span>
-                  <span><b>{event.feedback === "helpful" ? t("recommendation.helpful") : event.feedback === "not_interested" ? t("recommendation.notInterested") : t("recommendation.implicit")}</b><small>{[...selectedTopicTermsForEntry(events, event.entryId)].join(" · ") || t("recommendation.noSelectedTopics")}</small><small>{t("recommendation.candidateSummary", { terms: event.terms.slice(0, 5).join(" · ") || t("recommendation.noTerms") })}</small></span>
+                  <span><b>{event.feedback === "helpful" ? t("recommendation.helpful") : event.feedback === "not_interested" ? t("recommendation.notInterested") : t("recommendation.implicit")}</b><small>{[...(selectedTermsByEntry.get(event.entryId) ?? [])].join(" · ") || t("recommendation.noSelectedTopics")}</small><small>{t("recommendation.candidateSummary", { terms: event.terms.slice(0, 5).join(" · ") || t("recommendation.noTerms") })}</small></span>
                   <span>{event.remoteClientId
                     ? <small>{t("webdav.remoteReadOnly")}</small>
                     : <><button onClick={() => setDraft({ ...event })}>{t("common.edit")}</button><button className="danger" onClick={() => void removeEvent(event)}>{t("common.delete")}</button></>}</span>
@@ -1517,10 +1518,7 @@ export default function App() {
   const feedMap = useMemo(() => new Map(feeds.map((feed) => [feed.id, feed])), [feeds]);
   const interest = useMemo(() => deriveInterestProfile(
     recommendationEvents,
-    entries.filter((entry) => entry.starred).map((entry) => ({
-      feedId: entry.feed_id,
-      text: `${entry.title} ${toText(entry.content).slice(0, 500)}`,
-    })),
+    entries.filter((entry) => entry.starred).map((entry) => ({ feedId: entry.feed_id })),
     syncedAt?.getTime() ?? todayClock,
   ), [recommendationEvents, entries, syncedAt, todayClock]);
 
@@ -1659,8 +1657,8 @@ export default function App() {
     ? events.filter((event) => event.entryId === selected.id).sort((a, b) => b.openedAt.localeCompare(a.openedAt))[0]
     : undefined;
   const selectedCandidateTerms = selected && activeCandidates?.entryId === selected.id
-    ? activeCandidates.terms
-    : selectedReadingEvent?.terms ?? [];
+    ? activeCandidates.terms.slice(0, 5)
+    : selectedReadingEvent?.termExtractionVersion ? selectedReadingEvent.terms.slice(0, 5) : [];
   const selectedTopicTerms = useMemo(
     () => selectedId !== null ? selectedTopicTermsForEntry(recommendationEvents, selectedId) : new Set<string>(),
     [recommendationEvents, selectedId],
