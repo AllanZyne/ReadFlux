@@ -1,6 +1,7 @@
 import type { ReadingEvent, RankingExposure } from "./readflux-client.ts";
+import { extractRecommendationTerms, sanitizeRecordedTerms, type EffectiveTermRules } from "./recommendation-terms.ts";
 
-export const RECOMMENDATION_ALGORITHM_VERSION = "heuristic-v1-observable";
+export const RECOMMENDATION_ALGORITHM_VERSION = "heuristic-v2";
 
 export type InterestProfile = {
   sources: Map<number, number>;
@@ -27,16 +28,11 @@ export type RankingCandidate = {
 
 type StarredDocument = { feedId: number; text: string };
 
-export const extractLegacyRecommendationTerms = (value: string) => value
-  .toLowerCase()
-  .split(/[^\p{L}\p{N}+#-]+/u)
-  .filter((word) => word.length > 2)
-  .slice(0, 80);
-
 export function deriveInterestProfile(
   events: ReadingEvent[],
   starred: StarredDocument[],
   now: number,
+  rules: EffectiveTermRules = new Map(),
 ): InterestProfile {
   const sources = new Map<number, number>();
   const words = new Map<string, number>();
@@ -46,24 +42,28 @@ export function deriveInterestProfile(
     if (!Number.isFinite(openedAt)) return;
     const ageDays = Math.max(0, (now - openedAt) / 86_400_000);
     const recency = Math.exp(-ageDays / 28);
-    const engaged = Math.min(4, event.activeSeconds / 30) + event.scrollDepth * 2;
-    const positive = event.feedback === "helpful" ? 5 : engaged;
+    const terms = sanitizeRecordedTerms(event.terms, rules);
+    const normalization = Math.sqrt(Math.max(1, terms.length));
     if (event.feedback === "not_interested") {
-      event.terms.forEach((term) => negatives.set(term, (negatives.get(term) ?? 0) + 4 * recency));
+      terms.forEach((term) => negatives.set(term, (negatives.get(term) ?? 0) + 4 * recency / normalization));
       return;
     }
     if (event.activeSeconds < 6 && event.scrollDepth < 0.15 && event.feedback !== "helpful") return;
-    const weight = Math.max(0.2, positive) * recency;
+    const engaged = Math.min(4, event.activeSeconds / 30) + event.scrollDepth * 2;
+    const weight = Math.max(0.2, event.feedback === "helpful" ? 5 : engaged) * recency;
     sources.set(event.feedId, (sources.get(event.feedId) ?? 0) + weight);
-    event.terms.forEach((term) => words.set(term, (words.get(term) ?? 0) + weight));
+    terms.forEach((term) => words.set(term, (words.get(term) ?? 0) + weight / normalization));
   });
   starred.forEach((document) => {
     sources.set(document.feedId, (sources.get(document.feedId) ?? 0) + 5);
-    extractLegacyRecommendationTerms(document.text)
-      .forEach((term) => words.set(term, (words.get(term) ?? 0) + 3));
+    const terms = extractRecommendationTerms(document.text, rules);
+    const normalization = Math.sqrt(Math.max(1, terms.length));
+    terms.forEach((term) => words.set(term, (words.get(term) ?? 0) + 3 / normalization));
   });
   return { sources, words, negatives };
 }
+
+const round = (value: number) => Math.round(value * 1000) / 1000;
 
 export function scoreRecommendation(input: {
   feedId: number;
@@ -72,22 +72,24 @@ export function scoreRecommendation(input: {
   starred: boolean;
   now: number;
   profile: InterestProfile;
+  rules?: EffectiveTermRules;
 }): RecommendationScoreBreakdown {
-  const terms = extractLegacyRecommendationTerms(input.text);
+  const terms = extractRecommendationTerms(input.text, input.rules);
   const hits = terms
     .map((term) => [term, input.profile.words.get(term) ?? 0] as const)
     .filter(([, weight]) => weight > 0)
-    .sort((a, b) => b[1] - a[1]);
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   const sourceAffinity = input.profile.sources.get(input.feedId) ?? 0;
-  const sourceScore = Math.min(25, sourceAffinity * 3);
-  const termScore = Math.min(20, hits.reduce((sum, [, weight]) => sum + weight, 0));
+  const sourceScore = round(Math.min(20, 20 * Math.log1p(sourceAffinity) / Math.log(201)));
+  const termSignal = hits.reduce((sum, [, weight]) => sum + Math.log1p(weight), 0);
+  const termScore = round(Math.min(24, 9 * Math.log1p(termSignal)));
   const publishedAt = new Date(input.publishedAt).getTime();
   const ageDays = Number.isFinite(publishedAt) ? Math.max(0, (input.now - publishedAt) / 86_400_000) : 12;
-  const freshnessScore = Math.max(0, 12 - Math.floor(ageDays));
+  const freshnessScore = round(Math.max(0, 12 - ageDays));
   const savedBonus = input.starred ? 8 : 0;
   const negativeSignal = terms.reduce((sum, term) => sum + (input.profile.negatives.get(term) ?? 0), 0);
-  const negativePenalty = negativeSignal * 2;
-  const unclampedScore = 44 + sourceScore + termScore + freshnessScore + savedBonus - negativePenalty;
+  const negativePenalty = round(5 * Math.log1p(negativeSignal));
+  const unclampedScore = round(40 + sourceScore + termScore + freshnessScore + savedBonus - negativePenalty);
   return {
     score: Math.max(1, Math.min(99, Math.round(unclampedScore))),
     unclampedScore,

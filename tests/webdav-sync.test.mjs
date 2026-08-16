@@ -52,6 +52,15 @@ test("recommendation sync uses client-owned monthly files and read-only remote m
   assert.match(syncSource, /v1\/clients\/\$\{clientId\}\/exposures\/\$\{month\}\.json/);
 });
 
+test("term rules sync as append-only operations in client-owned preference files", () => {
+  assert.match(syncSource, /v1\/clients\/\$\{clientId\}\/preferences\/term-rules\.jsonl/);
+  assert.match(syncSource, /operation\.clientId\s*===\s*clientId/);
+  assert.match(syncSource, /operation\.clientId\s*===\s*client\.name/);
+  assert.match(clientSource, /export async function claimDirtyTermRules/);
+  assert.match(clientSource, /export async function replaceRemoteTermRuleOperations/);
+  assert.doesNotMatch(syncSource, /v1\/preferences\/term-rules/);
+});
+
 test("WebDAV settings support the agreed automatic intervals and manual sync", () => {
   assert.match(clientSource, /WebDavSyncInterval\s*=\s*0\s*\|\s*5\s*\|\s*15\s*\|\s*30\s*\|\s*60/);
   assert.match(appSource, /onSyncWebDav/);

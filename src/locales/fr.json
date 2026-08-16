@@ -154,6 +154,26 @@
     "negativeTerms": "Mots-clés négatifs",
     "negativeTermsHint": "Issus des avis Pas intéressé",
     "noNegativeTerms": "Aucun mot-clé négatif",
+    "ignoreTerm": "Ignorer {{term}}",
+    "termRules": "Règles Ignorer / Conserver",
+    "termRulesHint": "Listes {{version}} · universelle {{universal}}, anglaise {{en}}, chinoise {{zh}}",
+    "termSearchPlaceholder": "Rechercher ou saisir un mot-clé exact",
+    "ignore": "Ignorer",
+    "keep": "Conserver",
+    "removeOverride": "Valeur par défaut",
+    "ruleSaveFailed": "Impossible d’enregistrer la règle de mot-clé",
+    "termRuleExplanation": "« {{term}} » est {{state}} ({{reason}}).",
+    "ruleState": {
+      "ignore": "ignoré",
+      "keep": "conservé"
+    },
+    "ruleReason": {
+      "user": "règle utilisateur",
+      "structural": "bruit structurel",
+      "english": "liste anglaise",
+      "chinese": "liste chinoise",
+      "normal": "extraction normale"
+    },
     "editEvent": "Modifier l’événement de lecture",
     "addEvent": "Ajouter un événement de lecture",
     "editorHint": "La profondeur utilise 0–1 ; séparez les mots-clés par des virgules.",

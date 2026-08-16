@@ -1,26 +1,31 @@
 import {
   claimDirtyRankingExposureMonths,
   claimDirtyReadingEventMonths,
+  claimDirtyTermRules,
   getReadingEvents,
   getRankingExposures,
   getRemoteRankingExposures,
   getRemoteRankingExposureSourceMonths,
   getRemoteReadingEvents,
   getRemoteReadingEventSourceMonths,
+  getTermRuleOperations,
   getWebDavClientCreatedAt,
   getWebDavClientId,
   markRankingExposureMonthsDirty,
   markReadingEventMonthsDirty,
   rankingExposureMonth,
+  markTermRulesDirty,
   readingEventMonth,
   removeRemoteRankingExposureMonth,
   removeRemoteReadingEventMonth,
   replaceRemoteRankingExposureMonth,
   replaceRemoteReadingEventMonth,
+  replaceRemoteTermRuleOperations,
   type ReadingEvent,
   type RankingExposure,
   type WebDavConfig,
 } from "./readflux-client.ts";
+import type { TermRuleOperation } from "./recommendation-terms.ts";
 
 const SCHEMA_VERSION = 1;
 const ETAG_CACHE = "readflux.webdav.etags";
@@ -158,7 +163,7 @@ async function ensureCollection(config: WebDavConfig, path: string) {
 }
 
 async function ensureClientCollections(config: WebDavConfig, clientId: string) {
-  for (const path of ["v1/", "v1/clients/", `v1/clients/${clientId}/`, `v1/clients/${clientId}/events/`, `v1/clients/${clientId}/exposures/`]) {
+  for (const path of ["v1/", "v1/clients/", `v1/clients/${clientId}/`, `v1/clients/${clientId}/events/`, `v1/clients/${clientId}/exposures/`, `v1/clients/${clientId}/preferences/`]) {
     await ensureCollection(config, path);
   }
 }
@@ -168,6 +173,71 @@ function cleanExposure(exposure: RankingExposure): RankingExposure {
   delete cleaned.remoteClientId;
   delete cleaned.remoteClientName;
   return cleaned;
+}
+
+function validTermRuleOperation(value: unknown): value is TermRuleOperation {
+  if (!value || typeof value !== "object") return false;
+  const operation = value as Partial<TermRuleOperation>;
+  return typeof operation.id === "string"
+    && typeof operation.clientId === "string"
+    && typeof operation.term === "string"
+    && ["ignore", "keep", "remove"].includes(operation.action ?? "")
+    && typeof operation.updatedAt === "string"
+    && !Number.isNaN(Date.parse(operation.updatedAt));
+}
+
+async function uploadLocalTermRules(config: WebDavConfig, clientId: string) {
+  if (!await claimDirtyTermRules()) return false;
+  try {
+    const operations = (await getTermRuleOperations())
+      .filter((operation) => operation.clientId === clientId)
+      .sort((a, b) => `${a.updatedAt}\n${a.id}`.localeCompare(`${b.updatedAt}\n${b.id}`));
+    await request(config, `v1/clients/${clientId}/preferences/term-rules.jsonl`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/x-ndjson" },
+      body: operations.map((operation) => JSON.stringify(operation)).join("\n") + (operations.length ? "\n" : ""),
+    });
+    return true;
+  } catch (cause) {
+    await markTermRulesDirty();
+    throw cause;
+  }
+}
+
+async function downloadRemoteTermRules(config: WebDavConfig, ownClientId: string) {
+  const clients = (await propfind(config, "v1/clients/"))
+    .filter((entry) => entry.collection && entry.name && entry.name !== ownClientId);
+  for (const client of clients) {
+    let entries: WebDavEntry[];
+    try {
+      entries = await propfind(config, `v1/clients/${encodeURIComponent(client.name)}/preferences/`);
+    } catch (cause) {
+      if (cause instanceof WebDavError && cause.status === 404) {
+        await replaceRemoteTermRuleOperations(client.name, []);
+        continue;
+      }
+      throw cause;
+    }
+    if (!entries.some((entry) => !entry.collection && entry.name === "term-rules.jsonl")) {
+      await replaceRemoteTermRuleOperations(client.name, []);
+      continue;
+    }
+    const response = await request(config, `v1/clients/${encodeURIComponent(client.name)}/preferences/term-rules.jsonl`);
+    const operations = (await response.text()).split(/\r?\n/).filter(Boolean).flatMap((line) => {
+      try {
+        const operation = JSON.parse(line) as unknown;
+        return validTermRuleOperation(operation) && operation.clientId === client.name ? [operation] : [];
+      } catch {
+        return [];
+      }
+    });
+    await replaceRemoteTermRuleOperations(client.name, operations);
+  }
+  const remoteClientIds = new Set(clients.map((client) => client.name));
+  const staleClientIds = new Set((await getTermRuleOperations())
+    .map((operation) => operation.clientId)
+    .filter((clientId) => clientId !== ownClientId && !remoteClientIds.has(clientId)));
+  for (const clientId of staleClientIds) await replaceRemoteTermRuleOperations(clientId, []);
 }
 
 function cleanEvent(event: ReadingEvent): ReadingEvent {
@@ -443,12 +513,14 @@ export function synchronizeWebDav(config: WebDavConfig, options: { pull?: boolea
       });
       const uploadedMonths = await uploadLocalMonths(config, clientId);
       const uploadedExposureMonths = await uploadLocalExposureMonths(config, clientId);
+      await uploadLocalTermRules(config, clientId);
       const remoteEvents = options.pull === false
         ? { downloaded: 0, clientCount: 0 }
         : await downloadRemoteMonths(config, clientId);
       const remoteExposures = options.pull === false
         ? { downloaded: 0, clientCount: 0 }
         : await downloadRemoteExposureMonths(config, clientId);
+      if (options.pull !== false) await downloadRemoteTermRules(config, clientId);
       return {
         events: await getRemoteReadingEvents(),
         exposures: await getRemoteRankingExposures(),

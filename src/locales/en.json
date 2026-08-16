@@ -154,6 +154,26 @@
     "negativeTerms": "Negative keywords",
     "negativeTermsHint": "From Not interested feedback",
     "noNegativeTerms": "No negative keywords yet",
+    "ignoreTerm": "Ignore {{term}}",
+    "termRules": "Keyword Ignore / Keep rules",
+    "termRulesHint": "Defaults {{version}} · universal {{universal}}, English {{en}}, Chinese {{zh}}",
+    "termSearchPlaceholder": "Search or enter an exact keyword",
+    "ignore": "Ignore",
+    "keep": "Keep",
+    "removeOverride": "Use default",
+    "ruleSaveFailed": "Could not save the keyword rule",
+    "termRuleExplanation": "“{{term}}” is {{state}} ({{reason}}).",
+    "ruleState": {
+      "ignore": "ignored",
+      "keep": "kept"
+    },
+    "ruleReason": {
+      "user": "user override",
+      "structural": "structural noise",
+      "english": "English default list",
+      "chinese": "Chinese default list",
+      "normal": "normal extraction"
+    },
     "editEvent": "Edit reading event",
     "addEvent": "Add reading event",
     "editorHint": "Scroll depth uses 0–1; separate keywords with commas.",

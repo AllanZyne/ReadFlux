@@ -154,6 +154,26 @@
     "negativeTerms": "负向关键词",
     "negativeTermsHint": "来自“不感兴趣”反馈",
     "noNegativeTerms": "还没有负向关键词",
+    "ignoreTerm": "忽略 {{term}}",
+    "termRules": "关键词忽略 / 保留规则",
+    "termRulesHint": "默认列表 {{version}} · 通用 {{universal}}、英文 {{en}}、中文 {{zh}}",
+    "termSearchPlaceholder": "搜索或输入完整关键词",
+    "ignore": "忽略",
+    "keep": "保留",
+    "removeOverride": "恢复默认",
+    "ruleSaveFailed": "无法保存关键词规则",
+    "termRuleExplanation": "“{{term}}”当前为{{state}}（{{reason}}）。",
+    "ruleState": {
+      "ignore": "忽略",
+      "keep": "保留"
+    },
+    "ruleReason": {
+      "user": "用户规则",
+      "structural": "结构噪声",
+      "english": "英文默认列表",
+      "chinese": "中文默认列表",
+      "normal": "正常提取"
+    },
     "editEvent": "编辑阅读事件",
     "addEvent": "添加阅读事件",
     "editorHint": "滚动深度使用 0–1；关键词用逗号分隔。",

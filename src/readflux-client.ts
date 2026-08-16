@@ -4,6 +4,7 @@ import {
   type ImageLoadingPreferences,
 } from "./article-images.ts";
 import { isSupportedLanguage, type SupportedLanguage } from "./languages.ts";
+import type { TermRuleOperation } from "./recommendation-terms.ts";
 
 export type ConnectionConfig = {
   url: string;
@@ -105,7 +106,7 @@ export type WebDavConfig = {
 const LOCAL_CONFIG = "readflux.miniflux.local";
 const SESSION_CONFIG = "readflux.miniflux.session";
 const DB_NAME = "readflux-profile";
-const DB_VERSION = 7;
+const DB_VERSION = 8;
 const EVENTS = "reading-events";
 const SETTINGS = "settings";
 const ENTRY_CACHE = "entry-cache";
@@ -114,11 +115,13 @@ const FEED_ICONS = "feed-icons";
 const REMOTE_EVENTS = "remote-reading-events";
 const RANKING_EXPOSURES = "ranking-exposures";
 const REMOTE_RANKING_EXPOSURES = "remote-ranking-exposures";
+const TERM_RULE_OPERATIONS = "term-rule-operations";
 const WEBDAV_CONFIG = "readflux.webdav";
 const WEBDAV_CLIENT_ID = "readflux.webdav.client-id";
 const WEBDAV_CLIENT_CREATED_AT = "readflux.webdav.client-created-at";
 const WEBDAV_DIRTY_MONTHS = "webdav-dirty-months";
 const WEBDAV_DIRTY_EXPOSURE_MONTHS = "webdav-dirty-exposure-months";
+const WEBDAV_TERM_RULES_DIRTY = "webdav-term-rules-dirty";
 
 type CacheableEntry = {
   id: number;
@@ -250,6 +253,10 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(REMOTE_RANKING_EXPOSURES)) {
         const store = db.createObjectStore(REMOTE_RANKING_EXPOSURES, { keyPath: "key" });
         store.createIndex("sourceMonth", "sourceMonth");
+        store.createIndex("clientId", "clientId");
+      }
+      if (!db.objectStoreNames.contains(TERM_RULE_OPERATIONS)) {
+        const store = db.createObjectStore(TERM_RULE_OPERATIONS, { keyPath: "id" });
         store.createIndex("clientId", "clientId");
       }
     };
@@ -644,6 +651,62 @@ export async function clearRemoteRankingExposures() {
   const db = await openDb();
   const transaction = db.transaction(REMOTE_RANKING_EXPOSURES, "readwrite");
   transaction.objectStore(REMOTE_RANKING_EXPOSURES).clear();
+  await transactionComplete(transaction);
+  db.close();
+}
+
+export async function getTermRuleOperations(): Promise<TermRuleOperation[]> {
+  const db = await openDb();
+  const operations = await requestResult(db.transaction(TERM_RULE_OPERATIONS).objectStore(TERM_RULE_OPERATIONS).getAll()) as TermRuleOperation[];
+  db.close();
+  return operations;
+}
+
+export async function putTermRuleOperation(operation: TermRuleOperation) {
+  const db = await openDb();
+  const transaction = db.transaction([TERM_RULE_OPERATIONS, SETTINGS], "readwrite");
+  transaction.objectStore(TERM_RULE_OPERATIONS).put(operation);
+  transaction.objectStore(SETTINGS).put(true, WEBDAV_TERM_RULES_DIRTY);
+  await transactionComplete(transaction);
+  db.close();
+}
+
+export async function claimDirtyTermRules() {
+  const db = await openDb();
+  const transaction = db.transaction(SETTINGS, "readwrite");
+  const store = transaction.objectStore(SETTINGS);
+  const dirty = await requestResult(store.get(WEBDAV_TERM_RULES_DIRTY)) === true;
+  store.put(false, WEBDAV_TERM_RULES_DIRTY);
+  await transactionComplete(transaction);
+  db.close();
+  return dirty;
+}
+
+export async function markTermRulesDirty() {
+  const db = await openDb();
+  const transaction = db.transaction(SETTINGS, "readwrite");
+  transaction.objectStore(SETTINGS).put(true, WEBDAV_TERM_RULES_DIRTY);
+  await transactionComplete(transaction);
+  db.close();
+}
+
+export async function replaceRemoteTermRuleOperations(clientId: string, operations: TermRuleOperation[]) {
+  const db = await openDb();
+  const transaction = db.transaction(TERM_RULE_OPERATIONS, "readwrite");
+  const store = transaction.objectStore(TERM_RULE_OPERATIONS);
+  const keys = await requestResult(store.index("clientId").getAllKeys(IDBKeyRange.only(clientId)));
+  keys.forEach((key) => store.delete(key));
+  operations.forEach((operation) => store.put(operation));
+  await transactionComplete(transaction);
+  db.close();
+}
+
+export async function clearRemoteTermRuleOperations(ownClientId: string) {
+  const db = await openDb();
+  const transaction = db.transaction(TERM_RULE_OPERATIONS, "readwrite");
+  const store = transaction.objectStore(TERM_RULE_OPERATIONS);
+  const operations = await requestResult(store.getAll()) as TermRuleOperation[];
+  operations.filter((operation) => operation.clientId !== ownClientId).forEach((operation) => store.delete(operation.id));
   await transactionComplete(transaction);
   db.close();
 }

@@ -175,7 +175,11 @@ export function compareSmartFeedEntries(a, b, mode, labels) {
   if (mode === "today") {
     const sp = smartFeedStatusPriority(b, labels) - smartFeedStatusPriority(a, labels);
     if (sp !== 0) return sp;
-    return b.score - a.score;
+    const score = b.score - a.score;
+    if (score !== 0) return score;
+    const published = new Date(b.published_at).getTime() - new Date(a.published_at).getTime();
+    if (Number.isFinite(published) && published !== 0) return published;
+    return a.id - b.id;
   }
   return new Date(b.published_at).getTime() - new Date(a.published_at).getTime();
 }

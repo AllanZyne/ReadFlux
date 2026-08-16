@@ -25,6 +25,7 @@ import {
   clearConnection,
   clearRemoteRankingExposures,
   clearRemoteReadingEvents,
+  clearRemoteTermRuleOperations,
   clearWebDavConfig,
   ConnectionConfig,
   deleteReadingEvent,
@@ -39,18 +40,22 @@ import {
   getReadingEvents,
   getRemoteRankingExposures,
   getRemoteReadingEvents,
+  getTermRuleOperations,
+  getWebDavClientId,
   getWebDavConfig,
   MinifluxRequestError,
   minifluxFetch,
   newReadingEvent,
   markAllRankingExposureMonthsDirty,
   markAllReadingEventMonthsDirty,
+  markTermRulesDirty,
   normalizeReadingEventOpenedAt,
   putCachedEntries,
   putCachedFeedIcons,
   ProfileSettings,
   putRankingExposure,
   putReadingEvent,
+  putTermRuleOperation,
   RankingExposure,
   ReadingEvent,
   removeEntryLabel,
@@ -63,7 +68,8 @@ import {
   WebDavConfig,
   WebDavSyncInterval,
 } from "./readflux-client";
-import { createRankingExposure, deriveInterestProfile, extractLegacyRecommendationTerms, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, type RecommendationScoreBreakdown } from "./recommendation";
+import { createRankingExposure, deriveInterestProfile, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, type RecommendationScoreBreakdown } from "./recommendation";
+import { explainTermRule, extractRecommendationTerms, foldTermRules, normalizeRecommendationTerm, TERM_LIST_COUNTS, TERM_RULES_VERSION, type TermRuleAction, type TermRuleOperation } from "./recommendation-terms";
 import {
   clearWebDavEtagCache,
   synchronizeWebDav,
@@ -422,11 +428,13 @@ function SettingsDialog({
   wordWeights,
   negativeWeights,
   exposures,
+  termRuleOperations,
   starredCount,
   onClose,
   onSettingsChange,
   onImageModeChange,
   onEventsChange,
+  onTermRuleChange,
   webDavConfig,
   webDavStatus,
   onSaveWebDav,
@@ -449,11 +457,13 @@ function SettingsDialog({
   wordWeights: Map<string, number>;
   negativeWeights: Map<string, number>;
   exposures: RankingExposure[];
+  termRuleOperations: TermRuleOperation[];
   starredCount: number;
   onClose: () => void;
   onSettingsChange: (settings: ProfileSettings) => void;
   onImageModeChange: (feedId?: number) => void;
   onEventsChange: (events: ReadingEvent[]) => void;
+  onTermRuleChange: (term: string, action: TermRuleAction) => Promise<void>;
   webDavConfig: WebDavConfig | null;
   webDavStatus: WebDavSyncStatus;
   onSaveWebDav: (config: WebDavConfig) => Promise<boolean>;
@@ -470,6 +480,7 @@ function SettingsDialog({
   const [resetting, setResetting] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
   const [eventQuery, setEventQuery] = useState("");
+  const [termQuery, setTermQuery] = useState("");
   const [draft, setDraft] = useState<EventDraft | null>(null);
   const [webDavDraft, setWebDavDraft] = useState<WebDavConfig>(() => webDavConfig ?? {
     url: "",
@@ -649,6 +660,9 @@ function SettingsDialog({
   const topSources = [...sourceWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
   const topWords = [...wordWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
   const topNegatives = [...negativeWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
+  const effectiveTermRules = foldTermRules(termRuleOperations);
+  const ruleExplanation = termQuery.trim() ? explainTermRule(termQuery, effectiveTermRules) : null;
+  const explicitRules = [...effectiveTermRules.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   const diagnostics = recommendationDiagnostics(exposures, events);
   const shownEvents = [...events]
     .filter((event) => !eventQuery.trim() || `${event.title} ${event.source} ${event.terms.join(" ")}`.toLowerCase().includes(eventQuery.trim().toLowerCase()))
@@ -858,12 +872,24 @@ function SettingsDialog({
               </div>
               <div>
                 <header><h3>{t("recommendation.positiveTerms")}</h3><small>{t("recommendation.positiveTermsHint")}</small></header>
-                <div className="weightTags">{topWords.length ? topWords.map(([word, weight]) => <span key={word}>{word}<em>{weight.toFixed(1)}</em></span>) : <p>{t("recommendation.noKeywords")}</p>}</div>
+                <div className="weightTags">{topWords.length ? topWords.map(([word, weight]) => <span key={word}>{word}<em>{weight.toFixed(1)}</em><button title={t("recommendation.ignoreTerm", { term: word })} onClick={() => void onTermRuleChange(word, "ignore")}>×</button></span>) : <p>{t("recommendation.noKeywords")}</p>}</div>
               </div>
               <div>
                 <header><h3>{t("recommendation.negativeTerms")}</h3><small>{t("recommendation.negativeTermsHint")}</small></header>
                 <div className="weightTags negative">{topNegatives.length ? topNegatives.map(([word, weight]) => <span key={word}>{word}<em>{weight.toFixed(1)}</em></span>) : <p>{t("recommendation.noNegativeTerms")}</p>}</div>
               </div>
+            </section>
+
+            <section className="termRules">
+              <header><div><h3>{t("recommendation.termRules")}</h3><small>{t("recommendation.termRulesHint", { version: TERM_RULES_VERSION, universal: TERM_LIST_COUNTS.universal, en: TERM_LIST_COUNTS.en, zh: TERM_LIST_COUNTS.zh })}</small></div></header>
+              <div className="termRuleSearch">
+                <input value={termQuery} onChange={(event) => setTermQuery(event.target.value)} placeholder={t("recommendation.termSearchPlaceholder")} />
+                <button disabled={!normalizeRecommendationTerm(termQuery)} onClick={() => void onTermRuleChange(termQuery, "ignore")}>{t("recommendation.ignore")}</button>
+                <button disabled={!normalizeRecommendationTerm(termQuery)} onClick={() => void onTermRuleChange(termQuery, "keep")}>{t("recommendation.keep")}</button>
+                <button disabled={!normalizeRecommendationTerm(termQuery)} onClick={() => void onTermRuleChange(termQuery, "remove")}>{t("recommendation.removeOverride")}</button>
+              </div>
+              {ruleExplanation && <p>{t("recommendation.termRuleExplanation", { term: ruleExplanation.term, state: t(`recommendation.ruleState.${ruleExplanation.state}`), reason: t(`recommendation.ruleReason.${ruleExplanation.reason}`) })}</p>}
+              <div className="weightTags">{explicitRules.map(([term, action]) => <span key={term}>{term}<em>{t(`recommendation.ruleState.${action}`)}</em><button onClick={() => void onTermRuleChange(term, "remove")}>×</button></span>)}</div>
             </section>
 
             {draft && <section className="eventEditor">
@@ -968,6 +994,7 @@ export default function App() {
   const [remoteEvents, setRemoteEvents] = useState<ReadingEvent[]>([]);
   const [exposures, setExposures] = useState<RankingExposure[]>([]);
   const [remoteExposures, setRemoteExposures] = useState<RankingExposure[]>([]);
+  const [termRuleOperations, setTermRuleOperations] = useState<TermRuleOperation[]>([]);
   const [webDavConfig, setWebDavConfig] = useState<WebDavConfig | null>(null);
   const [webDavStatus, setWebDavStatus] = useState<WebDavSyncStatus>({ state: "idle" });
   const [settings, setSettings] = useState<ProfileSettings>({ theme: "day", imageLoadingPreferences: {}, updatedAt: new Date(0).toISOString() });
@@ -1054,6 +1081,7 @@ export default function App() {
   const webDavUploadTimer = useRef<number | undefined>(undefined);
   const recommendationEvents = useMemo(() => [...events, ...remoteEvents], [events, remoteEvents]);
   const recommendationExposures = useMemo(() => [...exposures, ...remoteExposures], [exposures, remoteExposures]);
+  const effectiveTermRules = useMemo(() => foldTermRules(termRuleOperations), [termRuleOperations]);
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -1068,6 +1096,7 @@ export default function App() {
       const result: WebDavSyncResult = await synchronizeWebDav(activeConfig, { pull });
       setRemoteEvents(result.events);
       setRemoteExposures(result.exposures);
+      setTermRuleOperations(await getTermRuleOperations());
       setWebDavStatus({ state: "success", syncedAt: result.syncedAt });
       return true;
     } catch (cause) {
@@ -1085,14 +1114,23 @@ export default function App() {
         && webDavConnectionIdentity(webDavConfig) !== webDavConnectionIdentity(next);
       if (webDavConfig && connectionChanged) {
         clearWebDavEtagCache();
-        await Promise.all([clearRemoteReadingEvents(), clearRemoteRankingExposures()]);
+        await Promise.all([
+          clearRemoteReadingEvents(),
+          clearRemoteRankingExposures(),
+          clearRemoteTermRuleOperations(getWebDavClientId()),
+        ]);
         setRemoteEvents([]);
         setRemoteExposures([]);
+        setTermRuleOperations(await getTermRuleOperations());
       }
       saveWebDavConfig(next);
       setWebDavConfig(next);
       if (!webDavConfig || connectionChanged || webDavConfig.clientName !== next.clientName) {
-        await Promise.all([markAllReadingEventMonthsDirty(), markAllRankingExposureMonthsDirty()]);
+        await Promise.all([
+          markAllReadingEventMonthsDirty(),
+          markAllRankingExposureMonthsDirty(),
+          markTermRulesDirty(),
+        ]);
       }
       const synced = await runWebDavSync(next);
       if (synced) notify(t("webdav.saved"));
@@ -1106,9 +1144,14 @@ export default function App() {
   const handleDisconnectWebDav = useCallback(async () => {
     clearWebDavConfig();
     clearWebDavEtagCache();
-    await Promise.all([clearRemoteReadingEvents(), clearRemoteRankingExposures()]);
+    await Promise.all([
+      clearRemoteReadingEvents(),
+      clearRemoteRankingExposures(),
+      clearRemoteTermRuleOperations(getWebDavClientId()),
+    ]);
     setRemoteEvents([]);
     setRemoteExposures([]);
+    setTermRuleOperations(await getTermRuleOperations());
     setWebDavConfig(null);
     setWebDavStatus({ state: "idle" });
     notify(t("webdav.disconnected"));
@@ -1193,12 +1236,13 @@ export default function App() {
   const imageProxyAvailable = true;
 
   useEffect(() => {
-    Promise.all([getReadingEvents(), getRemoteReadingEvents(), getProfileSettings(), getRankingExposures(), getRemoteRankingExposures()]).then(async ([history, remoteHistory, profile, storedExposures, storedRemoteExposures]) => {
+    Promise.all([getReadingEvents(), getRemoteReadingEvents(), getProfileSettings(), getRankingExposures(), getRemoteRankingExposures(), getTermRuleOperations()]).then(async ([history, remoteHistory, profile, storedExposures, storedRemoteExposures, storedTermRules]) => {
       if (profile.language) await i18n.changeLanguage(profile.language);
       setEvents(history);
       setRemoteEvents(remoteHistory);
       setExposures(storedExposures);
       setRemoteExposures(storedRemoteExposures);
+      setTermRuleOperations(storedTermRules);
       setWebDavConfig(getWebDavConfig());
       setSettings(profile);
       setConfig(getConnection());
@@ -1519,7 +1563,8 @@ export default function App() {
       text: `${entry.title} ${toText(entry.content).slice(0, 500)}`,
     })),
     syncedAt?.getTime() ?? todayClock,
-  ), [recommendationEvents, entries, syncedAt, todayClock]);
+    effectiveTermRules,
+  ), [recommendationEvents, entries, syncedAt, todayClock, effectiveTermRules]);
 
   const stories = useMemo<Story[]>(() => entries.map((entry) => {
     const feed = entry.feed ?? feedMap.get(entry.feed_id);
@@ -1533,6 +1578,7 @@ export default function App() {
       starred: entry.starred,
       now: syncedAt?.getTime() ?? todayClock,
       profile: interest,
+      rules: effectiveTermRules,
     });
     const terms = scoreBreakdown.matchedTerms.slice(0, 2).join(", ");
     const reason = sourceAffinity >= 2
@@ -1556,7 +1602,7 @@ export default function App() {
       scoreBreakdown,
       reason,
     };
-  }), [entries, recommendationEvents.length, feedMap, interest, syncedAt, todayClock, t]);
+  }), [entries, recommendationEvents.length, feedMap, interest, syncedAt, todayClock, t, effectiveTermRules]);
 
   const persistActive = useCallback(async () => {
     if (!activeEvent.current) return;
@@ -1771,7 +1817,7 @@ export default function App() {
       feedId: story.feed_id,
       title: story.title,
       source: story.source,
-      terms: extractLegacyRecommendationTerms(`${story.title} ${story.summary}`),
+      terms: extractRecommendationTerms(`${story.title} ${story.summary}`, effectiveTermRules),
       origin: eventOrigin,
       readingTime: story.reading_time,
       listPosition: (() => { const i = visible.findIndex((s) => s.id === story.id); return i >= 0 ? i : undefined; })(),
@@ -1795,7 +1841,7 @@ export default function App() {
       }), t("reader.markedRead"));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, mode, query, visible, persistActive, commitActiveEvent, loadEntryContent, entryLabels, navigateToArticle, t]);
+  }, [config, mode, query, visible, persistActive, commitActiveEvent, loadEntryContent, entryLabels, navigateToArticle, t, effectiveTermRules]);
 
   useEffect(() => {
     if (route.kind === "article") {
@@ -2204,6 +2250,7 @@ export default function App() {
         wordWeights={interest.words}
         negativeWeights={interest.negatives}
         exposures={recommendationExposures}
+        termRuleOperations={termRuleOperations}
         starredCount={savedCount}
         onClose={() => setSettingsOpen(false)}
         onSettingsChange={setSettings}
@@ -2218,6 +2265,24 @@ export default function App() {
             activeEvent.current = updatedActiveEvent ? { ...updatedActiveEvent } : null;
           }
           setEvents(next.filter((event) => !event.remoteClientId));
+        }}
+        onTermRuleChange={async (termValue, action) => {
+          const term = normalizeRecommendationTerm(termValue);
+          if (!term) return;
+          try {
+            const operation: TermRuleOperation = {
+              id: crypto.randomUUID(),
+              clientId: getWebDavClientId(),
+              term,
+              action,
+              updatedAt: new Date().toISOString(),
+            };
+            await putTermRuleOperation(operation);
+            setTermRuleOperations((current) => [...current, operation]);
+            scheduleWebDavUpload();
+          } catch {
+            notify(t("recommendation.ruleSaveFailed"));
+          }
         }}
         webDavConfig={webDavConfig}
         webDavStatus={webDavStatus}

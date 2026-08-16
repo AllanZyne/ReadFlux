@@ -153,6 +153,14 @@ test("Today sorts by recommendation while All unread sorts newest first", () => 
   assert.ok(compareSmartFeedEntries(olderRecommended, newer, "unread") > 0);
 });
 
+test("Today score ties use a deterministic publication and ID order", () => {
+  const entries = [
+    { id: 2, status: "unread", starred: false, published_at: "2026-02-20T09:00:00Z", score: 80 },
+    { id: 1, status: "unread", starred: false, published_at: "2026-02-20T09:00:00Z", score: 80 },
+  ];
+  assert.deepEqual(entries.sort((a, b) => compareSmartFeedEntries(a, b, "today")).map((entry) => entry.id), [1, 2]);
+});
+
 test("smart feed counts are calculated together for the current local day", () => {
   const entries = [
     entry(),

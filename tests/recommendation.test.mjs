@@ -2,9 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  explainTermRule,
+  extractRecommendationTerms,
+  foldTermRules,
+  sanitizeRecordedTerms,
+} from "../src/recommendation-terms.ts";
+import {
   createRankingExposure,
   deriveInterestProfile,
-  extractLegacyRecommendationTerms,
   rankingAttribution,
   recommendationDiagnostics,
   recordBulkDismissal,
@@ -27,50 +32,71 @@ const event = (overrides = {}) => ({
   ...overrides,
 });
 
-test("observable v1 preserves legacy token extraction behavior", () => {
-  assert.deepEqual(
-    extractLegacyRecommendationTerms("The the LLVM https org C++ C# GPT-4 2025 LLVM"),
-    ["the", "the", "llvm", "https", "org", "c++", "gpt-4", "2025", "llvm"],
-  );
+test("term extraction removes structural noise, stop words, years, URLs, and duplicates", () => {
+  const terms = extractRecommendationTerms("The the LLVM and https://llvm.org/slides/2025.pdf C++ C# GPT-4 2025 LLVM");
+  assert.deepEqual(terms, ["llvm", "c++", "c#", "gpt-4"]);
 });
 
-test("observable v1 preserves repeated event term contributions", () => {
-  const profile = deriveInterestProfile([
-    event({ terms: ["llvm", "llvm"] }),
-  ], [], Date.parse("2026-08-14T00:00:00.000Z"));
-  assert.equal(profile.words.get("llvm"), 8);
+test("term extraction segments Chinese and keeps mixed technical tokens", () => {
+  const terms = extractRecommendationTerms("这是一个关于人工智能和 LLVM 的技术文章 C++");
+  assert.ok(terms.includes("人工"));
+  assert.ok(terms.includes("智能"));
+  assert.ok(terms.includes("llvm"));
+  assert.ok(terms.includes("c++"));
+  assert.ok(!terms.includes("的"));
 });
 
-test("score breakdown preserves the production v1 formula", () => {
+test("user rules fold deterministically and Keep overrides a language default", () => {
+  const rules = foldTermRules([
+    { id: "a", clientId: "one", term: "IT", action: "ignore", updatedAt: "2026-01-01T00:00:00Z" },
+    { id: "b", clientId: "two", term: "it", action: "keep", updatedAt: "2026-01-01T00:00:00Z" },
+    { id: "c", clientId: "one", term: "llvm", action: "ignore", updatedAt: "2026-01-02T00:00:00Z" },
+  ]);
+  assert.deepEqual(extractRecommendationTerms("It is LLVM", rules), ["it"]);
+  assert.equal(explainTermRule("it", rules).reason, "user");
+});
+
+test("remove operations restore defaults without mutating recorded terms", () => {
+  const raw = ["the", "llvm", "llvm", "https", "2025"];
+  const rules = foldTermRules([
+    { id: "a", clientId: "one", term: "the", action: "keep", updatedAt: "2026-01-01T00:00:00Z" },
+    { id: "b", clientId: "two", term: "the", action: "remove", updatedAt: "2026-01-02T00:00:00Z" },
+  ]);
+  assert.deepEqual(sanitizeRecordedTerms(raw, rules), ["llvm"]);
+  assert.deepEqual(raw, ["the", "llvm", "llvm", "https", "2025"]);
+});
+
+test("profile derivation deduplicates and normalizes each document contribution", () => {
+  const now = Date.parse("2026-08-14T00:00:00.000Z");
+  const repeated = deriveInterestProfile([event({ terms: ["llvm", "llvm", "rust"] })], [], now);
+  const unique = deriveInterestProfile([event({ terms: ["llvm", "rust"] })], [], now);
+  assert.equal(repeated.words.get("llvm"), unique.words.get("llvm"));
+  assert.equal(repeated.words.get("rust"), unique.words.get("rust"));
+});
+
+test("score components explain the unclamped score and high affinity does not force 99", () => {
+  const profile = {
+    sources: new Map([[2, 10_000]]),
+    words: new Map([["llvm", 10_000]]),
+    negatives: new Map(),
+  };
   const breakdown = scoreRecommendation({
     feedId: 2,
     text: "LLVM compiler internals",
     publishedAt: "2026-08-14T00:00:00.000Z",
     starred: false,
     now: Date.parse("2026-08-14T00:00:00.000Z"),
-    profile: {
-      sources: new Map([[2, 10]]),
-      words: new Map([["llvm", 30]]),
-      negatives: new Map(),
-    },
+    profile,
   });
-  assert.deepEqual({
-    sourceScore: breakdown.sourceScore,
-    termScore: breakdown.termScore,
-    freshnessScore: breakdown.freshnessScore,
-    unclampedScore: breakdown.unclampedScore,
-    score: breakdown.score,
-  }, {
-    sourceScore: 25,
-    termScore: 20,
-    freshnessScore: 12,
-    unclampedScore: 101,
-    score: 99,
-  });
-  assert.equal(RECOMMENDATION_ALGORITHM_VERSION, "heuristic-v1-observable");
+  assert.equal(
+    breakdown.unclampedScore,
+    Math.round((40 + breakdown.sourceScore + breakdown.termScore + breakdown.freshnessScore + breakdown.savedBonus - breakdown.negativePenalty) * 1000) / 1000,
+  );
+  assert.ok(breakdown.score < 99);
+  assert.equal(RECOMMENDATION_ALGORITHM_VERSION, "heuristic-v2");
 });
 
-test("exposure capture bounds ordered items and attribution uses a one-based rank", () => {
+test("exposure capture bounds ordered items and attribution uses its documented one-based rank", () => {
   const breakdown = {
     score: 80,
     unclampedScore: 80,
@@ -95,7 +121,7 @@ test("exposure capture bounds ordered items and attribution uses a one-based ran
   assert.deepEqual(rankingAttribution(exposure, 100), {
     rankingId: "ranking-1",
     exposedRank: 1,
-    algorithmVersion: "heuristic-v1-observable",
+    algorithmVersion: "heuristic-v2",
   });
   assert.deepEqual(rankingAttribution(exposure, 999), {});
 });
@@ -127,7 +153,7 @@ test("diagnostics use matching exposure items rather than opens as their denomin
   const exposure = {
     id: "ranking-1",
     createdAt: "2026-08-14T00:00:00.000Z",
-    algorithmVersion: "heuristic-v1-observable",
+    algorithmVersion: "heuristic-v2",
     schemaVersion: 1,
     surface: "today",
     candidateCount: 3,

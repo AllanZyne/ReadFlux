@@ -15,7 +15,7 @@ test("every entry sync loads the full Miniflux history in resumable phases", () 
 });
 
 test("entry cache is connection-scoped and records resumable sync state", () => {
-  assert.match(client, /DB_VERSION\s*=\s*7/);
+  assert.match(client, /DB_VERSION\s*=\s*8/);
   assert.match(client, /createIndex\("scope",\s*"scope"\)/);
   assert.match(client, /ENTRY_LABELS\s*=\s*"entry-labels"/);
   assert.match(client, /initialSyncComplete:\s*boolean/);
