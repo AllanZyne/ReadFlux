@@ -69,6 +69,11 @@ test("article opening delegates Jieba extraction and dictionary warmup to a work
   assert.match(termWorkerSource, /tag\("中文分词预热", true\)/);
 });
 
+test("topic toggles derive current state from the active event", () => {
+  assert.match(appSource, /const currentEvent = activeEvent\.current[\s\S]*?selectedTopicTermsForEntry\([\s\S]*?currentEvent[\s\S]*?interested: !currentlySelected/);
+  assert.match(appSource, /term: normalizedTerm/);
+});
+
 test("reading and saving never imply topic interest", () => {
   const profile = deriveInterestProfile([event({ terms: ["llvm"] })], [
     { feedId: 2, text: "LLVM" },

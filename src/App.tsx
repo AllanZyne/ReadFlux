@@ -65,7 +65,7 @@ import {
   WebDavSyncInterval,
 } from "./readflux-client";
 import { createRankingExposure, deriveInterestProfile, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, selectedTopicTermsByEntry, selectedTopicTermsForEntry, type RecommendationScoreBreakdown } from "./recommendation";
-import { extractRecommendationCandidateTermsAsync, initializeChineseRecommendationTerms } from "./recommendation-terms";
+import { extractRecommendationCandidateTermsAsync, initializeChineseRecommendationTerms, normalizeRecommendationTerm } from "./recommendation-terms";
 import {
   clearWebDavEtagCache,
   synchronizeWebDav,
@@ -2029,16 +2029,23 @@ export default function App() {
     if (!selected) return;
     if (!activeEvent.current || activeEvent.current.entryId !== selected.id) choose(selected);
     if (!activeEvent.current) return;
+    const normalizedTerm = normalizeRecommendationTerm(term);
+    if (!normalizedTerm) return;
+    const currentEvent = activeEvent.current;
+    const currentlySelected = selectedTopicTermsForEntry([
+      ...recommendationEvents.filter((event) => event.id !== currentEvent.id),
+      currentEvent,
+    ], selected.id).has(normalizedTerm);
     const updatedAt = new Date().toISOString();
     const operation = {
       id: crypto.randomUUID(),
-      term,
-      interested: !selectedTopicTerms.has(term),
+      term: normalizedTerm,
+      interested: !currentlySelected,
       updatedAt,
     };
     const updatedEvent: ReadingEvent = {
-      ...activeEvent.current,
-      topicFeedback: [...(activeEvent.current.topicFeedback ?? []), operation],
+      ...currentEvent,
+      topicFeedback: [...(currentEvent.topicFeedback ?? []), operation],
       updatedAt,
     };
     activeEvent.current = updatedEvent;

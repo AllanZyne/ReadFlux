@@ -5,6 +5,7 @@ type JiebaTag = { word: string; tag: string };
 type WorkerResponse = {
   id: number;
   ok: boolean;
+  message?: string;
   titleTags?: JiebaTag[];
   summaryTags?: JiebaTag[];
 };
@@ -59,7 +60,7 @@ function workerRequest(request: WorkerRequest) {
       if (!pending) return;
       jiebaRequests.delete(event.data.id);
       if (event.data.ok) pending.resolve(event.data);
-      else pending.reject(new Error("Jieba worker failed"));
+      else pending.reject(new Error(event.data.message || "Jieba worker failed"));
     };
     jiebaWorker.onerror = () => {
       jiebaRequests.forEach(({ reject }) => reject(new Error("Jieba worker failed")));
