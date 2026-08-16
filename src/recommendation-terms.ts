@@ -93,11 +93,13 @@ type CandidateToken = { term: string; tag?: string; index: number };
 
 function fallbackHanTokens(cleaned: string): CandidateToken[] {
   if (typeof Intl.Segmenter !== "function") {
-    return (cleaned.match(/\p{Script=Han}+/gu) ?? []).flatMap((run) => {
-      if (run.length <= 2) return [{ term: run, index: cleaned.indexOf(run) }];
+    return [...cleaned.matchAll(/\p{Script=Han}+/gu)].flatMap((match) => {
+      const run = match[0];
+      const runIndex = match.index ?? 0;
+      if (run.length <= 2) return [{ term: run, index: runIndex }];
       return Array.from({ length: run.length - 1 }, (_, index) => ({
         term: run.slice(index, index + 2),
-        index: cleaned.indexOf(run) + index,
+        index: runIndex + index,
       }));
     });
   }
@@ -109,8 +111,8 @@ function fallbackHanTokens(cleaned: string): CandidateToken[] {
 
 function technicalTokens(cleaned: string): CandidateToken[] {
   const normalized = cleaned.toLowerCase();
-  const rough = normalized.match(/[\p{Script=Latin}\p{N}]+(?:[+#-][\p{Script=Latin}\p{N}+#-]*)?/gu) ?? [];
-  return rough.map((term) => ({ term, index: normalized.indexOf(term) }));
+  return [...normalized.matchAll(/[\p{Script=Latin}\p{N}]+(?:[+#-][\p{Script=Latin}\p{N}+#-]*)?/gu)]
+    .map((match) => ({ term: match[0], index: match.index ?? 0 }));
 }
 
 function cleanedText(value: string) {

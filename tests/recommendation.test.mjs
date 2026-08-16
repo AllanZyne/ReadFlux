@@ -74,6 +74,12 @@ test("topic toggles derive current state from the active event", () => {
   assert.match(appSource, /term: normalizedTerm/);
 });
 
+test("background extraction handles persistence failures and avoids sorting event history", () => {
+  assert.match(appSource, /extractRecommendationCandidateTermsAsync[\s\S]*?\.catch\(\(\) => \{/);
+  assert.match(appSource, /events\.reduce<ReadingEvent \| undefined>/);
+  assert.doesNotMatch(appSource, /events\.filter\(\(event\) => event\.entryId === selected\.id\)\.sort/);
+});
+
 test("reading and saving never imply topic interest", () => {
   const profile = deriveInterestProfile([event({ terms: ["llvm"] })], [
     { feedId: 2, text: "LLVM" },
@@ -96,6 +102,13 @@ test("only the latest explicit per-article topic choice contributes", () => {
   const profile = deriveInterestProfile([selected], [], Date.parse("2026-08-14T02:00:00.000Z"));
   assert.equal(profile.words.get("llvm"), 1);
   assert.equal(profile.negatives.size, 0);
+});
+
+test("invalid explicit-topic timestamps do not receive maximum weight", () => {
+  const profile = deriveInterestProfile([event({
+    topicFeedback: [{ id: "invalid", term: "llvm", interested: true, updatedAt: "not-a-date" }],
+  })], [], Date.parse("2026-08-14T02:00:00.000Z"));
+  assert.equal(profile.words.size, 0);
 });
 
 test("selected topics are folded once into an entry lookup", () => {

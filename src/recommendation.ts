@@ -96,7 +96,8 @@ export function deriveInterestProfile(
   foldTopicFeedback(events).forEach((operation) => {
     if (!operation.interested) return;
     const selectedAt = new Date(operation.updatedAt).getTime();
-    const ageDays = Number.isFinite(selectedAt) ? Math.max(0, (now - selectedAt) / 86_400_000) : 0;
+    if (!Number.isFinite(selectedAt)) return;
+    const ageDays = Math.max(0, (now - selectedAt) / 86_400_000);
     const weight = Math.exp(-ageDays / 90);
     words.set(operation.term, (words.get(operation.term) ?? 0) + weight);
   });

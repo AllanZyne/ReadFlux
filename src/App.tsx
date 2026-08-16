@@ -1654,7 +1654,8 @@ export default function App() {
 
   const selected = stories.find((story) => story.id === selectedId) ?? null;
   const selectedReadingEvent = selected
-    ? events.filter((event) => event.entryId === selected.id).sort((a, b) => b.openedAt.localeCompare(a.openedAt))[0]
+    ? events.reduce<ReadingEvent | undefined>((latest, event) => event.entryId === selected.id
+      && (!latest || event.openedAt > latest.openedAt) ? event : latest, undefined)
     : undefined;
   const selectedCandidateTerms = selected && activeCandidates?.entryId === selected.id
     ? activeCandidates.terms.slice(0, 5)
@@ -1825,6 +1826,10 @@ export default function App() {
         });
       }
       scheduleWebDavUpload();
+    }).catch(() => {
+      if (activeEvent.current?.id === readingEvent.id) {
+        setActiveCandidates({ entryId: story.id, terms: [], loading: false });
+      }
     });
     if (config && entryLabels.get(story.id)?.includes("updated")) {
       void removeEntryLabel(config, story.id, "updated");
