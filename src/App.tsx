@@ -23,6 +23,7 @@ import {
   addEntryLabel,
   CachedFeedIcon,
   clearConnection,
+  clearRemoteRankingExposures,
   clearRemoteReadingEvents,
   clearWebDavConfig,
   ConnectionConfig,
@@ -36,11 +37,13 @@ import {
   getProfileSettings,
   getRankingExposures,
   getReadingEvents,
+  getRemoteRankingExposures,
   getRemoteReadingEvents,
   getWebDavConfig,
   MinifluxRequestError,
   minifluxFetch,
   newReadingEvent,
+  markAllRankingExposureMonthsDirty,
   markAllReadingEventMonthsDirty,
   normalizeReadingEventOpenedAt,
   putCachedEntries,
@@ -60,7 +63,7 @@ import {
   WebDavConfig,
   WebDavSyncInterval,
 } from "./readflux-client";
-import { createRankingExposure, deriveInterestProfile, extractLegacyRecommendationTerms, rankingAttribution, recommendationDiagnostics, scoreRecommendation, type RecommendationScoreBreakdown } from "./recommendation";
+import { createRankingExposure, deriveInterestProfile, extractLegacyRecommendationTerms, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, type RecommendationScoreBreakdown } from "./recommendation";
 import {
   clearWebDavEtagCache,
   synchronizeWebDav,
@@ -843,6 +846,10 @@ function SettingsDialog({
                 <header><h3>{t("recommendation.engagementByRank")}</h3><small>{t("recommendation.engagementByRankHint")}</small></header>
                 <div className="weightList">{diagnostics.rankEngagement.filter((row) => row.impressions > 0).map((row) => <span key={row.rank}><b>#{row.rank} · {row.engagedOpens}/{row.impressions}</b><em>{row.engagedOpenPercent.toFixed(1)}%</em></span>)}</div>
               </div>
+              <div>
+                <header><h3>{t("recommendation.evaluationAtK")}</h3><small>{t("recommendation.evaluationAtKHint")}</small></header>
+                <div className="weightList">{diagnostics.evaluationAtK.filter((row) => row.impressions > 0).map((row) => <span key={row.k}><b>@{row.k} · {t("recommendation.openRate")} {row.openPercent.toFixed(1)}% · {t("recommendation.engagedRate")} {row.engagedOpenPercent.toFixed(1)}%</b><em>{t("recommendation.starRate")} {row.starredPercent.toFixed(1)}% · {t("recommendation.bulkDismissRate")} {row.bulkDismissedPercent.toFixed(1)}%</em></span>)}</div>
+              </div>
             </section>
             <section className="derivedData">
               <div>
@@ -960,6 +967,7 @@ export default function App() {
   const [events, setEvents] = useState<ReadingEvent[]>([]);
   const [remoteEvents, setRemoteEvents] = useState<ReadingEvent[]>([]);
   const [exposures, setExposures] = useState<RankingExposure[]>([]);
+  const [remoteExposures, setRemoteExposures] = useState<RankingExposure[]>([]);
   const [webDavConfig, setWebDavConfig] = useState<WebDavConfig | null>(null);
   const [webDavStatus, setWebDavStatus] = useState<WebDavSyncStatus>({ state: "idle" });
   const [settings, setSettings] = useState<ProfileSettings>({ theme: "day", imageLoadingPreferences: {}, updatedAt: new Date(0).toISOString() });
@@ -1045,6 +1053,7 @@ export default function App() {
   const routeRef = useRef(route);
   const webDavUploadTimer = useRef<number | undefined>(undefined);
   const recommendationEvents = useMemo(() => [...events, ...remoteEvents], [events, remoteEvents]);
+  const recommendationExposures = useMemo(() => [...exposures, ...remoteExposures], [exposures, remoteExposures]);
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -1058,6 +1067,7 @@ export default function App() {
     try {
       const result: WebDavSyncResult = await synchronizeWebDav(activeConfig, { pull });
       setRemoteEvents(result.events);
+      setRemoteExposures(result.exposures);
       setWebDavStatus({ state: "success", syncedAt: result.syncedAt });
       return true;
     } catch (cause) {
@@ -1075,13 +1085,14 @@ export default function App() {
         && webDavConnectionIdentity(webDavConfig) !== webDavConnectionIdentity(next);
       if (webDavConfig && connectionChanged) {
         clearWebDavEtagCache();
-        await clearRemoteReadingEvents();
+        await Promise.all([clearRemoteReadingEvents(), clearRemoteRankingExposures()]);
         setRemoteEvents([]);
+        setRemoteExposures([]);
       }
       saveWebDavConfig(next);
       setWebDavConfig(next);
       if (!webDavConfig || connectionChanged || webDavConfig.clientName !== next.clientName) {
-        await markAllReadingEventMonthsDirty();
+        await Promise.all([markAllReadingEventMonthsDirty(), markAllRankingExposureMonthsDirty()]);
       }
       const synced = await runWebDavSync(next);
       if (synced) notify(t("webdav.saved"));
@@ -1095,8 +1106,9 @@ export default function App() {
   const handleDisconnectWebDav = useCallback(async () => {
     clearWebDavConfig();
     clearWebDavEtagCache();
-    await clearRemoteReadingEvents();
+    await Promise.all([clearRemoteReadingEvents(), clearRemoteRankingExposures()]);
     setRemoteEvents([]);
+    setRemoteExposures([]);
     setWebDavConfig(null);
     setWebDavStatus({ state: "idle" });
     notify(t("webdav.disconnected"));
@@ -1181,11 +1193,12 @@ export default function App() {
   const imageProxyAvailable = true;
 
   useEffect(() => {
-    Promise.all([getReadingEvents(), getRemoteReadingEvents(), getProfileSettings(), getRankingExposures()]).then(async ([history, remoteHistory, profile, storedExposures]) => {
+    Promise.all([getReadingEvents(), getRemoteReadingEvents(), getProfileSettings(), getRankingExposures(), getRemoteRankingExposures()]).then(async ([history, remoteHistory, profile, storedExposures, storedRemoteExposures]) => {
       if (profile.language) await i18n.changeLanguage(profile.language);
       setEvents(history);
       setRemoteEvents(remoteHistory);
       setExposures(storedExposures);
+      setRemoteExposures(storedRemoteExposures);
       setWebDavConfig(getWebDavConfig());
       setSettings(profile);
       setConfig(getConnection());
@@ -1620,14 +1633,17 @@ export default function App() {
           })),
         });
         latestExposure.current = exposure;
-        void putRankingExposure(exposure).then(() => setExposures((current) => [...current, exposure])).catch(() => undefined);
+        void putRankingExposure(exposure).then(() => {
+          setExposures((current) => [...current, exposure]);
+          scheduleWebDavUpload();
+        }).catch(() => undefined);
       } else {
         latestExposure.current = null;
       }
       // eslint-disable-next-line react-hooks/set-state-in-effect -- captures and freezes a fresh sorted order
       setVisibleIds(visible.map((s) => s.id));
     }
-  }, [visible, visibleIds, mode, topic, query, entryLabels]);
+  }, [visible, visibleIds, mode, topic, query, entryLabels, scheduleWebDavUpload]);
 
   useEffect(() => { visibleEmptyRef.current = !visible.length; }, [visible]);
 
@@ -1666,10 +1682,31 @@ export default function App() {
       const cached = before.find((entry) => entry.id === id);
       if (config && cached) await putCachedEntries(config, [{ ...cached, ...patch }]);
       notify(success);
+      return true;
     } catch (cause) {
       replaceEntries(before);
       notify(errorMessage(cause, t, "errors.sync"));
+      return false;
     }
+  };
+
+  const toggleStarred = async (story: Story) => {
+    if (!config) return;
+    const starred = !story.starred;
+    const readingEvent = activeEvent.current?.entryId === story.id ? activeEvent.current : null;
+    const saved = await updateEntry(
+      story.id,
+      { starred },
+      () => minifluxFetch(config, `/v1/entries/${story.id}/bookmark`, { method: "PUT" }),
+      starred ? t("reader.saved") : t("reader.unsaved"),
+    );
+    if (!saved || !readingEvent) return;
+    const starredAt = new Date().toISOString();
+    const updatedEvent = { ...readingEvent, starred, starredAt, updatedAt: starredAt };
+    if (activeEvent.current?.id === readingEvent.id) activeEvent.current = updatedEvent;
+    await putReadingEvent(updatedEvent);
+    setEvents((current) => current.map((event) => event.id === updatedEvent.id ? updatedEvent : event));
+    scheduleWebDavUpload();
   };
 
   const loadEntryContent = useCallback(async (id: number) => {
@@ -1816,6 +1853,17 @@ export default function App() {
         body: JSON.stringify({ entry_ids: ids, status: "read" }),
       });
       await putCachedEntries(config, after.filter((entry) => ids.includes(entry.id)));
+      const currentExposure = latestExposure.current;
+      if (currentExposure) {
+        const updatedExposure = recordBulkDismissal(currentExposure, ids, new Date().toISOString());
+        if (updatedExposure !== currentExposure) {
+          latestExposure.current = updatedExposure;
+          void putRankingExposure(updatedExposure).then(() => {
+            setExposures((current) => current.map((exposure) => exposure.id === updatedExposure.id ? updatedExposure : exposure));
+            scheduleWebDavUpload();
+          }).catch(() => undefined);
+        }
+      }
       notify(t("feed.markedRead", { count: ids.length }));
     } catch (cause) {
       replaceEntries(before);
@@ -1823,7 +1871,7 @@ export default function App() {
       setListReadSnapshot(new Map(before.map((entry) => [entry.id, entry.status])));
       notify(errorMessage(cause, t, "errors.sync"));
     }
-  }, [config, entries, notify, replaceEntries, t, visible]);
+  }, [config, entries, notify, replaceEntries, scheduleWebDavUpload, t, visible]);
 
   const positionMarkAllRead = useCallback(() => {
     const trigger = markAllReadButtonRef.current;
@@ -1896,7 +1944,7 @@ export default function App() {
         if (nextUnread) choose(nextUnread);
       }
       if (!selected || !config) return;
-      if (event.key.toLowerCase() === "s") void updateEntry(selected.id, { starred: !selected.starred }, () => minifluxFetch(config, `/v1/entries/${selected.id}/bookmark`, { method: "PUT" }), selected.starred ? t("reader.unsaved") : t("reader.saved"));
+      if (event.key.toLowerCase() === "s") void toggleStarred(selected);
       if (["m", "u", "r"].includes(event.key.toLowerCase())) toggleRead(selected);
       if (event.key === "Enter") window.open(selected.url, "_blank", "noopener,noreferrer");
       if (event.key === " ") {
@@ -2111,7 +2159,7 @@ export default function App() {
               const depth = target.scrollHeight <= target.clientHeight ? 1 : target.scrollTop / (target.scrollHeight - target.clientHeight);
               activeEvent.current.scrollDepth = Math.max(activeEvent.current.scrollDepth, Math.min(1, depth));
             }}>
-              <div className="readerToolbar"><button className="mobileBack" onClick={() => { navigateToList(); setMobileView("list"); }}>‹ {t("reader.backToArticles")}</button><div><button onClick={() => toggleRead(selected)} title={t(selected.status === "read" ? "reader.markUnread" : "reader.markRead")}>{selected.status === "read" ? "○" : "●"}</button><button className={selected.starred ? "pressed" : ""} title={t(selected.starred ? "reader.unsave" : "reader.save")} onClick={() => void updateEntry(selected.id, { starred: !selected.starred }, () => minifluxFetch(config, `/v1/entries/${selected.id}/bookmark`, { method: "PUT" }), selected.starred ? t("reader.unsaved") : t("reader.saved"))}>{selected.starred ? "★" : "☆"}</button><a href={selected.url} target="_blank" rel="noreferrer" title={t("reader.openOriginal")}>↗</a><button title={t("reader.copyLink")} onClick={async () => { await navigator.clipboard.writeText(articlePermalink(window.location.href, selected.id)); notify(t("reader.linkCopied")); }}>⧉</button><button title={t("reader.notInterested")} onClick={() => void setFeedback("not_interested")}>−</button></div></div>
+              <div className="readerToolbar"><button className="mobileBack" onClick={() => { navigateToList(); setMobileView("list"); }}>‹ {t("reader.backToArticles")}</button><div><button onClick={() => toggleRead(selected)} title={t(selected.status === "read" ? "reader.markUnread" : "reader.markRead")}>{selected.status === "read" ? "○" : "●"}</button><button className={selected.starred ? "pressed" : ""} title={t(selected.starred ? "reader.unsave" : "reader.save")} onClick={() => void toggleStarred(selected)}>{selected.starred ? "★" : "☆"}</button><a href={selected.url} target="_blank" rel="noreferrer" title={t("reader.openOriginal")}>↗</a><button title={t("reader.copyLink")} onClick={async () => { await navigator.clipboard.writeText(articlePermalink(window.location.href, selected.id)); notify(t("reader.linkCopied")); }}>⧉</button><button title={t("reader.notInterested")} onClick={() => void setFeedback("not_interested")}>−</button></div></div>
               <p className="crumb">{selected.category} · {selected.source}</p>
               <ArticleMetadata
                 key={`${selected.id}:${selectedReadingSeconds}`}
@@ -2155,7 +2203,7 @@ export default function App() {
         sourceWeights={interest.sources}
         wordWeights={interest.words}
         negativeWeights={interest.negatives}
-        exposures={exposures}
+        exposures={recommendationExposures}
         starredCount={savedCount}
         onClose={() => setSettingsOpen(false)}
         onSettingsChange={setSettings}

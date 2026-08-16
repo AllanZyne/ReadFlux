@@ -1,15 +1,24 @@
 import {
+  claimDirtyRankingExposureMonths,
   claimDirtyReadingEventMonths,
   getReadingEvents,
+  getRankingExposures,
+  getRemoteRankingExposures,
+  getRemoteRankingExposureSourceMonths,
   getRemoteReadingEvents,
   getRemoteReadingEventSourceMonths,
   getWebDavClientCreatedAt,
   getWebDavClientId,
+  markRankingExposureMonthsDirty,
   markReadingEventMonthsDirty,
+  rankingExposureMonth,
   readingEventMonth,
+  removeRemoteRankingExposureMonth,
   removeRemoteReadingEventMonth,
+  replaceRemoteRankingExposureMonth,
   replaceRemoteReadingEventMonth,
   type ReadingEvent,
+  type RankingExposure,
   type WebDavConfig,
 } from "./readflux-client.ts";
 
@@ -32,10 +41,22 @@ type EventMonthFile = {
   events: ReadingEvent[];
 };
 
+type ExposureMonthFile = {
+  schemaVersion: 1;
+  clientId: string;
+  clientName: string;
+  month: string;
+  updatedAt: string;
+  exposures: RankingExposure[];
+};
+
 export type WebDavSyncResult = {
   events: ReadingEvent[];
+  exposures: RankingExposure[];
   uploadedMonths: number;
+  uploadedExposureMonths: number;
   downloadedMonths: number;
+  downloadedExposureMonths: number;
   clientCount: number;
   syncedAt: string;
 };
@@ -137,9 +158,16 @@ async function ensureCollection(config: WebDavConfig, path: string) {
 }
 
 async function ensureClientCollections(config: WebDavConfig, clientId: string) {
-  for (const path of ["v1/", "v1/clients/", `v1/clients/${clientId}/`, `v1/clients/${clientId}/events/`]) {
+  for (const path of ["v1/", "v1/clients/", `v1/clients/${clientId}/`, `v1/clients/${clientId}/events/`, `v1/clients/${clientId}/exposures/`]) {
     await ensureCollection(config, path);
   }
+}
+
+function cleanExposure(exposure: RankingExposure): RankingExposure {
+  const cleaned = { ...exposure };
+  delete cleaned.remoteClientId;
+  delete cleaned.remoteClientName;
+  return cleaned;
 }
 
 function cleanEvent(event: ReadingEvent): ReadingEvent {
@@ -195,6 +223,35 @@ async function uploadLocalMonths(config: WebDavConfig, clientId: string) {
   return uploaded;
 }
 
+async function uploadLocalExposureMonths(config: WebDavConfig, clientId: string) {
+  const dirtyMonths = await claimDirtyRankingExposureMonths();
+  if (!dirtyMonths.length) return 0;
+  let uploaded = 0;
+  try {
+    const exposures = await getRankingExposures();
+    for (const month of dirtyMonths) {
+      const payload: ExposureMonthFile = {
+        schemaVersion: SCHEMA_VERSION,
+        clientId,
+        clientName: config.clientName,
+        month,
+        updatedAt: new Date().toISOString(),
+        exposures: exposures.filter((exposure) => rankingExposureMonth(exposure) === month).map(cleanExposure),
+      };
+      await request(config, `v1/clients/${clientId}/exposures/${month}.json`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      uploaded += 1;
+    }
+  } catch (cause) {
+    await markRankingExposureMonthsDirty(dirtyMonths.slice(uploaded));
+    throw cause;
+  }
+  return uploaded;
+}
+
 function validMonthFile(value: unknown): value is EventMonthFile {
   if (!value || typeof value !== "object") return false;
   const file = value as Partial<EventMonthFile>;
@@ -222,7 +279,55 @@ function validReadingEvent(value: unknown): value is ReadingEvent {
     && typeof event.updatedAt === "string"
     && (event.rankingId === undefined || typeof event.rankingId === "string")
     && (event.exposedRank === undefined || Number.isSafeInteger(event.exposedRank))
-    && (event.algorithmVersion === undefined || typeof event.algorithmVersion === "string");
+    && (event.algorithmVersion === undefined || typeof event.algorithmVersion === "string")
+    && (event.starred === undefined || typeof event.starred === "boolean")
+    && (event.starredAt === undefined || typeof event.starredAt === "string");
+}
+
+function validRankingExposure(value: unknown): value is RankingExposure {
+  if (!value || typeof value !== "object") return false;
+  const exposure = value as Partial<RankingExposure>;
+  return typeof exposure.id === "string"
+    && typeof exposure.createdAt === "string"
+    && typeof exposure.algorithmVersion === "string"
+    && [1, 2].includes(exposure.schemaVersion ?? 0)
+    && exposure.surface === "today"
+    && Number.isSafeInteger(exposure.candidateCount)
+    && Number.isSafeInteger(exposure.displayedCount)
+    && Array.isArray(exposure.items)
+    && exposure.items.every((item) => Number.isFinite(item.entryId)
+      && Number.isSafeInteger(item.rank)
+      && Number.isFinite(item.score)
+      && Number.isFinite(item.sourceScore)
+      && Number.isFinite(item.termScore)
+      && Number.isFinite(item.freshnessScore)
+      && Number.isFinite(item.savedBonus)
+      && Number.isFinite(item.negativePenalty)
+      && Number.isFinite(item.statusPriority)
+      && Array.isArray(item.matchedTerms)
+      && item.matchedTerms.every((term) => typeof term === "string"))
+    && (exposure.bulkDismissedAt === undefined || typeof exposure.bulkDismissedAt === "string")
+    && (exposure.bulkDismissedEntryIds === undefined || (Array.isArray(exposure.bulkDismissedEntryIds)
+      && exposure.bulkDismissedEntryIds.every(Number.isFinite)));
+}
+
+function validExposureMonthFile(value: unknown): value is ExposureMonthFile {
+  if (!value || typeof value !== "object") return false;
+  const file = value as Partial<ExposureMonthFile>;
+  return file.schemaVersion === 1
+    && typeof file.clientId === "string"
+    && /^\d{4}-\d{2}$/.test(file.month ?? "")
+    && Array.isArray(file.exposures)
+    && file.exposures.every(validRankingExposure);
+}
+
+async function optionalPropfind(config: WebDavConfig, path: string) {
+  try {
+    return await propfind(config, path);
+  } catch (cause) {
+    if (cause instanceof WebDavError && cause.status === 404) return [];
+    throw cause;
+  }
 }
 
 async function downloadRemoteMonths(config: WebDavConfig, ownClientId: string) {
@@ -241,12 +346,13 @@ async function downloadRemoteMonths(config: WebDavConfig, ownClientId: string) {
       const month = entry.name.slice(0, 7);
       const sourceMonth = `${client.name}:${month}`;
       remoteSourceMonths.add(sourceMonth);
-      if (cachedSources.has(sourceMonth) && entry.etag && cachedEtags[sourceMonth] === entry.etag) continue;
+      const etagKey = `events:${sourceMonth}`;
+      if (cachedSources.has(sourceMonth) && entry.etag && cachedEtags[etagKey] === entry.etag) continue;
       const response = await request(config, `v1/clients/${encodeURIComponent(client.name)}/events/${entry.name}`);
       const payload = await response.json() as unknown;
       if (!validMonthFile(payload) || payload.clientId !== client.name || payload.month !== month) continue;
       await replaceRemoteReadingEventMonth(client.name, payload.clientName || client.name, month, payload.events.map(cleanEvent));
-      nextEtags[sourceMonth] = entry.etag;
+      nextEtags[etagKey] = entry.etag;
       downloaded += 1;
     }
   }
@@ -254,7 +360,43 @@ async function downloadRemoteMonths(config: WebDavConfig, ownClientId: string) {
   for (const sourceMonth of cachedSources) {
     if (remoteSourceMonths.has(sourceMonth)) continue;
     await removeRemoteReadingEventMonth(sourceMonth);
-    delete nextEtags[sourceMonth];
+    delete nextEtags[`events:${sourceMonth}`];
+  }
+  writeEtagCache(config, nextEtags);
+  return { downloaded, clientCount: clients.length };
+}
+
+async function downloadRemoteExposureMonths(config: WebDavConfig, ownClientId: string) {
+  const clients = (await propfind(config, "v1/clients/"))
+    .filter((entry) => entry.collection && entry.name && entry.name !== ownClientId);
+  const cachedEtags = readEtagCache(config);
+  const nextEtags = { ...cachedEtags };
+  const cachedSources = new Set(await getRemoteRankingExposureSourceMonths());
+  const remoteSourceMonths = new Set<string>();
+  let downloaded = 0;
+
+  for (const client of clients) {
+    const entries = (await optionalPropfind(config, `v1/clients/${encodeURIComponent(client.name)}/exposures/`))
+      .filter((entry) => !entry.collection && /^\d{4}-\d{2}\.json$/.test(entry.name));
+    for (const entry of entries) {
+      const month = entry.name.slice(0, 7);
+      const sourceMonth = `${client.name}:${month}`;
+      const etagKey = `exposures:${sourceMonth}`;
+      remoteSourceMonths.add(sourceMonth);
+      if (cachedSources.has(sourceMonth) && entry.etag && cachedEtags[etagKey] === entry.etag) continue;
+      const response = await request(config, `v1/clients/${encodeURIComponent(client.name)}/exposures/${entry.name}`);
+      const payload = await response.json() as unknown;
+      if (!validExposureMonthFile(payload) || payload.clientId !== client.name || payload.month !== month) continue;
+      await replaceRemoteRankingExposureMonth(client.name, payload.clientName || client.name, month, payload.exposures.map(cleanExposure));
+      nextEtags[etagKey] = entry.etag;
+      downloaded += 1;
+    }
+  }
+
+  for (const sourceMonth of cachedSources) {
+    if (remoteSourceMonths.has(sourceMonth)) continue;
+    await removeRemoteRankingExposureMonth(sourceMonth);
+    delete nextEtags[`exposures:${sourceMonth}`];
   }
   writeEtagCache(config, nextEtags);
   return { downloaded, clientCount: clients.length };
@@ -300,14 +442,21 @@ export function synchronizeWebDav(config: WebDavConfig, options: { pull?: boolea
         }),
       });
       const uploadedMonths = await uploadLocalMonths(config, clientId);
-      const remote = options.pull === false
+      const uploadedExposureMonths = await uploadLocalExposureMonths(config, clientId);
+      const remoteEvents = options.pull === false
         ? { downloaded: 0, clientCount: 0 }
         : await downloadRemoteMonths(config, clientId);
+      const remoteExposures = options.pull === false
+        ? { downloaded: 0, clientCount: 0 }
+        : await downloadRemoteExposureMonths(config, clientId);
       return {
         events: await getRemoteReadingEvents(),
+        exposures: await getRemoteRankingExposures(),
         uploadedMonths,
-        downloadedMonths: remote.downloaded,
-        clientCount: remote.clientCount + 1,
+        uploadedExposureMonths,
+        downloadedMonths: remoteEvents.downloaded,
+        downloadedExposureMonths: remoteExposures.downloaded,
+        clientCount: Math.max(remoteEvents.clientCount, remoteExposures.clientCount) + 1,
         syncedAt: new Date().toISOString(),
       };
     });

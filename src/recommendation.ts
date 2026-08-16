@@ -107,12 +107,12 @@ export function createRankingExposure(input: {
   candidates: RankingCandidate[];
   limit?: number;
 }): RankingExposure {
-  const candidates = input.candidates.slice(0, input.limit ?? 40);
+  const candidates = input.candidates.slice(0, input.limit ?? 50);
   return {
     id: input.id,
     createdAt: input.createdAt,
     algorithmVersion: RECOMMENDATION_ALGORITHM_VERSION,
-    schemaVersion: 1,
+    schemaVersion: 2,
     surface: "today",
     candidateCount: input.candidateCount,
     displayedCount: candidates.length,
@@ -128,6 +128,24 @@ export function createRankingExposure(input: {
       statusPriority: candidate.statusPriority,
       matchedTerms: candidate.breakdown.matchedTerms.slice(0, 3),
     })),
+  };
+}
+
+export function recordBulkDismissal(
+  exposure: RankingExposure,
+  entryIds: number[],
+  occurredAt: string,
+): RankingExposure {
+  const dismissed = new Set(entryIds);
+  const bulkDismissedEntryIds = exposure.items
+    .filter((item) => dismissed.has(item.entryId))
+    .map((item) => item.entryId);
+  if (!bulkDismissedEntryIds.length) return exposure;
+  return {
+    ...exposure,
+    schemaVersion: 2,
+    bulkDismissedAt: occurredAt,
+    bulkDismissedEntryIds,
   };
 }
 
@@ -175,6 +193,40 @@ export function recommendationDiagnostics(exposures: RankingExposure[], events: 
       engagedOpenPercent: impressions ? engagedOpens / impressions * 100 : 0,
     };
   });
+  const evaluationAtK = [5, 10, 20, 50].map((k) => {
+    const impressionKeys = new Set(exposures.flatMap((exposure) => exposure.items
+      .filter((item) => item.rank <= k)
+      .map((item) => `${exposure.id}:${item.entryId}`)));
+    const openKeys = new Set(attributed
+      .filter((event) => (event.exposedRank ?? Infinity) <= k)
+      .map((event) => `${event.rankingId}:${event.entryId}`));
+    const engagedKeys = new Set(engaged
+      .filter((event) => (event.exposedRank ?? Infinity) <= k)
+      .map((event) => `${event.rankingId}:${event.entryId}`));
+    const starredKeys = new Set(attributed
+      .filter((event) => event.starred === true && (event.exposedRank ?? Infinity) <= k)
+      .map((event) => `${event.rankingId}:${event.entryId}`));
+    const dismissedKeys = new Set(exposures.flatMap((exposure) => {
+      const dismissedIds = new Set(exposure.bulkDismissedEntryIds ?? []);
+      return exposure.items
+        .filter((item) => item.rank <= k && dismissedIds.has(item.entryId))
+        .map((item) => `${exposure.id}:${item.entryId}`);
+    }));
+    const impressions = impressionKeys.size;
+    const rate = (count: number) => impressions ? count / impressions * 100 : 0;
+    return {
+      k,
+      impressions,
+      opens: openKeys.size,
+      engagedOpens: engagedKeys.size,
+      starred: starredKeys.size,
+      bulkDismissed: dismissedKeys.size,
+      openPercent: rate(openKeys.size),
+      engagedOpenPercent: rate(engagedKeys.size),
+      starredPercent: rate(starredKeys.size),
+      bulkDismissedPercent: rate(dismissedKeys.size),
+    };
+  });
   return {
     exposureCount: exposures.length,
     displayedCount: items.length,
@@ -192,5 +244,6 @@ export function recommendationDiagnostics(exposures: RankingExposure[], events: 
       freshness: summarize(items.map((item) => item.freshnessScore)),
     },
     rankEngagement,
+    evaluationAtK,
   };
 }

@@ -44,9 +44,12 @@ test("WebDAV connection identity includes the username and normalizes trailing s
 
 test("recommendation sync uses client-owned monthly files and read-only remote mirrors", () => {
   assert.match(clientSource, /REMOTE_EVENTS\s*=\s*"remote-reading-events"/);
+  assert.match(clientSource, /REMOTE_RANKING_EXPOSURES\s*=\s*"remote-ranking-exposures"/);
   assert.match(clientSource, /sourceMonth:\s*string/);
   assert.match(appSource, /recommendationEvents\s*=\s*useMemo\(\(\)\s*=>\s*\[\.\.\.events,\s*\.\.\.remoteEvents\]/);
+  assert.match(appSource, /recommendationExposures\s*=\s*useMemo\(\(\)\s*=>\s*\[\.\.\.exposures,\s*\.\.\.remoteExposures\]/);
   assert.match(appSource, /event\.remoteClientId[\s\S]*?remoteReadOnly/);
+  assert.match(syncSource, /v1\/clients\/\$\{clientId\}\/exposures\/\$\{month\}\.json/);
 });
 
 test("WebDAV settings support the agreed automatic intervals and manual sync", () => {
@@ -78,4 +81,10 @@ test("WebDAV upload claims dirty months before snapshotting and restores unfinis
   const restoreAt = syncSource.indexOf("markReadingEventMonthsDirty(dirtyMonths.slice(uploaded))", snapshotAt);
   assert.ok(claimAt >= 0 && snapshotAt > claimAt && restoreAt > snapshotAt);
   assert.doesNotMatch(syncSource.slice(claimAt, restoreAt), /clearDirtyReadingEventMonth/);
+  assert.match(clientSource, /export async function claimDirtyRankingExposureMonths/);
+  assert.match(clientSource, /export async function markRankingExposureMonthsDirty/);
+  const exposureClaimAt = syncSource.indexOf("await claimDirtyRankingExposureMonths()");
+  const exposureSnapshotAt = syncSource.indexOf("await getRankingExposures()", exposureClaimAt);
+  const exposureRestoreAt = syncSource.indexOf("markRankingExposureMonthsDirty(dirtyMonths.slice(uploaded))", exposureSnapshotAt);
+  assert.ok(exposureClaimAt >= 0 && exposureSnapshotAt > exposureClaimAt && exposureRestoreAt > exposureSnapshotAt);
 });

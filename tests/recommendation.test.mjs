@@ -7,6 +7,7 @@ import {
   extractLegacyRecommendationTerms,
   rankingAttribution,
   recommendationDiagnostics,
+  recordBulkDismissal,
   RECOMMENDATION_ALGORITHM_VERSION,
   scoreRecommendation,
 } from "../src/recommendation.ts";
@@ -84,11 +85,12 @@ test("exposure capture bounds ordered items and attribution uses a one-based ran
     id: "ranking-1",
     createdAt: "2026-08-15T00:00:00.000Z",
     candidateCount: 50,
-    candidates: Array.from({ length: 45 }, (_, index) => ({ entryId: index + 100, breakdown, statusPriority: 1 })),
+    candidates: Array.from({ length: 55 }, (_, index) => ({ entryId: index + 100, breakdown, statusPriority: 1 })),
   });
-  assert.equal(exposure.displayedCount, 40);
+  assert.equal(exposure.schemaVersion, 2);
+  assert.equal(exposure.displayedCount, 50);
   assert.equal(exposure.items[0].rank, 1);
-  assert.equal(exposure.items[39].rank, 40);
+  assert.equal(exposure.items[49].rank, 50);
   assert.deepEqual(exposure.items[0].matchedTerms, ["llvm", "compiler", "extra"]);
   assert.deepEqual(rankingAttribution(exposure, 100), {
     rankingId: "ranking-1",
@@ -96,6 +98,29 @@ test("exposure capture bounds ordered items and attribution uses a one-based ran
     algorithmVersion: "heuristic-v1-observable",
   });
   assert.deepEqual(rankingAttribution(exposure, 999), {});
+});
+
+test("bulk dismissal records only exposed Top 50 items without changing scores", () => {
+  const breakdown = {
+    score: 80,
+    unclampedScore: 80,
+    sourceScore: 10,
+    termScore: 10,
+    freshnessScore: 10,
+    savedBonus: 0,
+    negativePenalty: 0,
+    matchedTerms: [],
+  };
+  const exposure = createRankingExposure({
+    id: "ranking-1",
+    createdAt: "2026-08-15T00:00:00.000Z",
+    candidateCount: 60,
+    candidates: Array.from({ length: 60 }, (_, index) => ({ entryId: index + 1, breakdown, statusPriority: 1 })),
+  });
+  const updated = recordBulkDismissal(exposure, [2, 50, 51, 999], "2026-08-15T01:00:00.000Z");
+  assert.deepEqual(updated.bulkDismissedEntryIds, [2, 50]);
+  assert.equal(updated.bulkDismissedAt, "2026-08-15T01:00:00.000Z");
+  assert.deepEqual(updated.items, exposure.items);
 });
 
 test("diagnostics use matching exposure items rather than opens as their denominator", () => {
@@ -119,9 +144,11 @@ test("diagnostics use matching exposure items rather than opens as their denomin
       statusPriority: 1,
       matchedTerms: [],
     })),
+    bulkDismissedAt: "2026-08-14T01:00:00.000Z",
+    bulkDismissedEntryIds: [3],
   };
   const diagnostics = recommendationDiagnostics([exposure], [
-    event({ rankingId: "ranking-1", exposedRank: 1 }),
+    event({ rankingId: "ranking-1", exposedRank: 1, starred: true, starredAt: "2026-08-14T00:30:00.000Z" }),
     event({ id: "duplicate", rankingId: "ranking-1", exposedRank: 1 }),
     event({ id: "remote", rankingId: "unknown-ranking", exposedRank: 1 }),
   ]);
@@ -130,4 +157,8 @@ test("diagnostics use matching exposure items rather than opens as their denomin
   assert.equal(diagnostics.rankEngagement[0].engagedOpens, 1);
   assert.equal(Math.round(diagnostics.clampedPercent), 33);
   assert.equal(Math.round(diagnostics.tiePercent), 67);
+  assert.equal(diagnostics.evaluationAtK[0].impressions, 3);
+  assert.equal(diagnostics.evaluationAtK[0].opens, 1);
+  assert.equal(diagnostics.evaluationAtK[0].starred, 1);
+  assert.equal(diagnostics.evaluationAtK[0].bulkDismissed, 1);
 });

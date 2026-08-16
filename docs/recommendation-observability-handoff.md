@@ -284,7 +284,8 @@ No encryption is required beyond the configured WebDAV transport.
 
 ### RankingExposure
 
-Create a new local record whenever the Today list first captures a new order.
+Create a new local record whenever the Today list first captures a new order,
+then synchronize it through the configured WebDAV connection.
 Do not create records on every React render.
 
 ```ts
@@ -295,7 +296,9 @@ type RankingExposure = {
   surface: "today";
   candidateCount: number;
   displayedCount: number;
-  items: RankingExposureItem[]; // recommended Top 30–50
+  items: RankingExposureItem[]; // recommended Top 50
+  bulkDismissedAt?: string;
+  bulkDismissedEntryIds?: number[];
 };
 
 type RankingExposureItem = {
@@ -312,7 +315,7 @@ type RankingExposureItem = {
 };
 ```
 
-Top 30–50 is sufficient for initial diagnostics and bounds storage growth.
+Top 50 is sufficient for initial diagnostics and bounds storage growth.
 Persist the ranking when `visibleIds` is first captured for a fresh Today list.
 
 ### ReadingEvent additions
@@ -325,21 +328,29 @@ type ReadingEvent = {
   rankingId?: string;
   exposedRank?: number;
   algorithmVersion?: string;
+  starred?: boolean;           // latest star state changed during this read
+  starredAt?: string;          // timestamp of that state change
 };
 ```
 
 When a Today article is opened, look up its latest captured exposure and attach
-these fields. Feed, search, saved, and direct-route opens may omit them.
+these fields. Feed, search, saved, and direct-route opens may omit them. Record
+star and unstar actions independently of article length. When the user marks the
+remaining Today list read in bulk, annotate only the affected items that belong
+to the captured Top 50. Treat this as a weak skip outcome for evaluation, not as
+per-item explicit negative feedback and not as an input to the interest profile.
 
 ### Versioning and WebDAV
 
 - Keep ranking schema versions explicit.
-- The WebDAV PR currently synchronizes only monthly `ReadingEvent` files.
-- Decide separately whether exposures should sync. Recommended first step:
-  store exposures locally and prove their utility before extending the WebDAV
-  protocol.
-- If exposure sync is added later, use client-owned monthly files just like
-  events, never a shared manifest.
+- Synchronize exposures because cross-client evaluation requires both the
+  reading-event numerator and its matching exposure denominator.
+- Use client-owned monthly files under
+  `<client-id>/exposures/YYYY-MM.json`, never a shared manifest.
+- Other clients download exposures into a separate read-only mirror. A client
+  must upload only records created locally under its own client ID.
+- Keep exposure files separate from reading-event files so each stream can be
+  validated, retried, and evolved independently.
 
 ## Recommended implementation sequence
 
@@ -349,7 +360,8 @@ these fields. Feed, search, saved, and direct-route opens may omit them.
    `App.tsx` into pure modules.
 2. Return a structured score breakdown rather than only a number and reason.
 3. Add an explicit `algorithmVersion` constant.
-4. Persist `RankingExposure` records in a new IndexedDB store.
+4. Persist local and read-only remote `RankingExposure` records in separate
+   IndexedDB stores.
 5. Attribute Today reading events to `rankingId` and `exposedRank`.
 6. Add Recommendation Data diagnostics:
    - score distribution;
@@ -379,15 +391,20 @@ changes.
 
 ### Phase 3: evaluation and controlled comparison
 
-Add local reports for:
+Add aggregate local reports over local and WebDAV-mirrored records for:
 
-- open rate and engaged-open rate at 5/10;
-- long-read rate by rank;
+- open rate, engaged-open rate, star rate, and bulk-dismiss rate at 5/10/20/50;
+- engaged-open rate by rank;
 - score calibration by bucket;
 - saturation and tie rate;
 - source concentration/diversity;
 - recommendation-origin versus non-recommendation-origin engagement;
 - explicit feedback coverage.
+
+Do not infer reading intent from estimated article length. A short or long
+article may be starred, read deeply, skimmed, or skipped depending on the user.
+Keep those outcomes separate so later evaluation can choose or combine them
+without baking one person's reading workflow into the data model.
 
 Logged exposure from only one ranker is still position biased. To compare
 rankers causally, introduce a small controlled experiment only after exposure
@@ -412,7 +429,9 @@ assignment, and keep the experiment easy to disable.
 - It can distinguish exposures, opens, valid/engaged opens, and explicit
   feedback.
 - Metrics never treat opened events as the exposure denominator.
-- Remote WebDAV reading events remain read-only.
+- Remote WebDAV reading events and ranking exposures remain read-only.
+- Every attributed remote event is evaluated only when its matching remote
+  exposure is present; missing denominators are never synthesized.
 
 ### Feature/scoring fixes
 
@@ -471,8 +490,8 @@ source-regex tests for the new evaluation logic.
 
 ## Scope boundaries
 
-- Do not combine this work with WebDAV credential/protocol changes unless
-  exposure sync is explicitly approved.
+- Exposure sync is explicitly approved for cross-client evaluation; do not
+  change WebDAV credentials or the client-owned-directory convention.
 - Term-rule synchronization is approved scope, but should reuse the existing
   WebDAV connection, scheduling, and client-owned-directory conventions rather
   than changing credential handling or introducing a shared writable file.

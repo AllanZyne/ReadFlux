@@ -57,6 +57,8 @@ export type ReadingEvent = {
   rankingId?: string;
   exposedRank?: number;
   algorithmVersion?: string;
+  starred?: boolean;
+  starredAt?: string;
   updatedAt: string;
   remoteClientId?: string;
   remoteClientName?: string;
@@ -79,11 +81,15 @@ export type RankingExposure = {
   id: string;
   createdAt: string;
   algorithmVersion: string;
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   surface: "today";
   candidateCount: number;
   displayedCount: number;
   items: RankingExposureItem[];
+  bulkDismissedAt?: string;
+  bulkDismissedEntryIds?: number[];
+  remoteClientId?: string;
+  remoteClientName?: string;
 };
 
 export type WebDavSyncInterval = 0 | 5 | 15 | 30 | 60;
@@ -99,7 +105,7 @@ export type WebDavConfig = {
 const LOCAL_CONFIG = "readflux.miniflux.local";
 const SESSION_CONFIG = "readflux.miniflux.session";
 const DB_NAME = "readflux-profile";
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 const EVENTS = "reading-events";
 const SETTINGS = "settings";
 const ENTRY_CACHE = "entry-cache";
@@ -107,10 +113,12 @@ const ENTRY_LABELS = "entry-labels";
 const FEED_ICONS = "feed-icons";
 const REMOTE_EVENTS = "remote-reading-events";
 const RANKING_EXPOSURES = "ranking-exposures";
+const REMOTE_RANKING_EXPOSURES = "remote-ranking-exposures";
 const WEBDAV_CONFIG = "readflux.webdav";
 const WEBDAV_CLIENT_ID = "readflux.webdav.client-id";
 const WEBDAV_CLIENT_CREATED_AT = "readflux.webdav.client-created-at";
 const WEBDAV_DIRTY_MONTHS = "webdav-dirty-months";
+const WEBDAV_DIRTY_EXPOSURE_MONTHS = "webdav-dirty-exposure-months";
 
 type CacheableEntry = {
   id: number;
@@ -140,6 +148,14 @@ type RemoteEventRecord = {
   clientId: string;
   month: string;
   event: ReadingEvent;
+};
+
+type RemoteExposureRecord = {
+  key: string;
+  sourceMonth: string;
+  clientId: string;
+  month: string;
+  exposure: RankingExposure;
 };
 
 export function getConnection(): ConnectionConfig | null {
@@ -230,6 +246,11 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(RANKING_EXPOSURES)) {
         const store = db.createObjectStore(RANKING_EXPOSURES, { keyPath: "id" });
         store.createIndex("createdAt", "createdAt");
+      }
+      if (!db.objectStoreNames.contains(REMOTE_RANKING_EXPOSURES)) {
+        const store = db.createObjectStore(REMOTE_RANKING_EXPOSURES, { keyPath: "key" });
+        store.createIndex("sourceMonth", "sourceMonth");
+        store.createIndex("clientId", "clientId");
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -354,6 +375,10 @@ export function readingEventMonth(event: Pick<ReadingEvent, "openedAt">) {
   return event.openedAt.slice(0, 7);
 }
 
+export function rankingExposureMonth(exposure: Pick<RankingExposure, "createdAt">) {
+  return exposure.createdAt.slice(0, 7);
+}
+
 async function addDirtyMonths(store: IDBObjectStore, months: string[]) {
   const current = await requestResult(store.get(WEBDAV_DIRTY_MONTHS)) as string[] | undefined;
   store.put([...new Set([...(current ?? []), ...months.filter(Boolean)])].sort(), WEBDAV_DIRTY_MONTHS);
@@ -387,6 +412,34 @@ export async function markAllReadingEventMonthsDirty() {
   await addDirtyMonths(transaction.objectStore(SETTINGS), events.map(readingEventMonth));
   await transactionComplete(transaction);
   db.close();
+}
+
+export async function claimDirtyRankingExposureMonths(): Promise<string[]> {
+  const db = await openDb();
+  const transaction = db.transaction(SETTINGS, "readwrite");
+  const store = transaction.objectStore(SETTINGS);
+  const value = await requestResult(store.get(WEBDAV_DIRTY_EXPOSURE_MONTHS));
+  const months = Array.isArray(value) ? value.filter((month): month is string => typeof month === "string") : [];
+  store.put([], WEBDAV_DIRTY_EXPOSURE_MONTHS);
+  await transactionComplete(transaction);
+  db.close();
+  return months;
+}
+
+export async function markRankingExposureMonthsDirty(months: string[]) {
+  if (!months.length) return;
+  const db = await openDb();
+  const transaction = db.transaction(SETTINGS, "readwrite");
+  const store = transaction.objectStore(SETTINGS);
+  const current = await requestResult(store.get(WEBDAV_DIRTY_EXPOSURE_MONTHS)) as string[] | undefined;
+  store.put([...new Set([...(current ?? []), ...months.filter(Boolean)])].sort(), WEBDAV_DIRTY_EXPOSURE_MONTHS);
+  await transactionComplete(transaction);
+  db.close();
+}
+
+export async function markAllRankingExposureMonthsDirty() {
+  const exposures = await getRankingExposures();
+  await markRankingExposureMonthsDirty(exposures.map(rankingExposureMonth));
 }
 
 export function normalizeReadingEventOpenedAt(value: string): string | null {
@@ -530,8 +583,67 @@ export async function getRankingExposures(): Promise<RankingExposure[]> {
 
 export async function putRankingExposure(exposure: RankingExposure) {
   const db = await openDb();
-  const transaction = db.transaction(RANKING_EXPOSURES, "readwrite");
-  transaction.objectStore(RANKING_EXPOSURES).put(exposure);
+  const transaction = db.transaction([RANKING_EXPOSURES, SETTINGS], "readwrite");
+  const store = transaction.objectStore(RANKING_EXPOSURES);
+  const previous = await requestResult(store.get(exposure.id)) as RankingExposure | undefined;
+  const localExposure = { ...exposure };
+  delete localExposure.remoteClientId;
+  delete localExposure.remoteClientName;
+  store.put(localExposure);
+  const months = [rankingExposureMonth(exposure), ...(previous ? [rankingExposureMonth(previous)] : [])];
+  const settingsStore = transaction.objectStore(SETTINGS);
+  const current = await requestResult(settingsStore.get(WEBDAV_DIRTY_EXPOSURE_MONTHS)) as string[] | undefined;
+  settingsStore.put([...new Set([...(current ?? []), ...months.filter(Boolean)])].sort(), WEBDAV_DIRTY_EXPOSURE_MONTHS);
+  await transactionComplete(transaction);
+  db.close();
+}
+
+export async function getRemoteRankingExposures(): Promise<RankingExposure[]> {
+  const db = await openDb();
+  const records = await requestResult(db.transaction(REMOTE_RANKING_EXPOSURES).objectStore(REMOTE_RANKING_EXPOSURES).getAll()) as RemoteExposureRecord[];
+  db.close();
+  return records.map((record) => record.exposure).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export async function getRemoteRankingExposureSourceMonths(): Promise<string[]> {
+  const db = await openDb();
+  const keys = await requestResult(db.transaction(REMOTE_RANKING_EXPOSURES).objectStore(REMOTE_RANKING_EXPOSURES).index("sourceMonth").getAllKeys());
+  db.close();
+  return [...new Set(keys.map(String))];
+}
+
+export async function replaceRemoteRankingExposureMonth(clientId: string, clientName: string, month: string, exposures: RankingExposure[]) {
+  const sourceMonth = `${clientId}:${month}`;
+  const db = await openDb();
+  const transaction = db.transaction(REMOTE_RANKING_EXPOSURES, "readwrite");
+  const store = transaction.objectStore(REMOTE_RANKING_EXPOSURES);
+  const existingKeys = await requestResult(store.index("sourceMonth").getAllKeys(IDBKeyRange.only(sourceMonth)));
+  existingKeys.forEach((key) => store.delete(key));
+  exposures.forEach((exposure) => store.put({
+    key: `${sourceMonth}:${exposure.id}`,
+    sourceMonth,
+    clientId,
+    month,
+    exposure: { ...exposure, remoteClientId: clientId, remoteClientName: clientName },
+  } satisfies RemoteExposureRecord));
+  await transactionComplete(transaction);
+  db.close();
+}
+
+export async function removeRemoteRankingExposureMonth(sourceMonth: string) {
+  const db = await openDb();
+  const transaction = db.transaction(REMOTE_RANKING_EXPOSURES, "readwrite");
+  const store = transaction.objectStore(REMOTE_RANKING_EXPOSURES);
+  const keys = await requestResult(store.index("sourceMonth").getAllKeys(IDBKeyRange.only(sourceMonth)));
+  keys.forEach((key) => store.delete(key));
+  await transactionComplete(transaction);
+  db.close();
+}
+
+export async function clearRemoteRankingExposures() {
+  const db = await openDb();
+  const transaction = db.transaction(REMOTE_RANKING_EXPOSURES, "readwrite");
+  transaction.objectStore(REMOTE_RANKING_EXPOSURES).clear();
   await transactionComplete(transaction);
   db.close();
 }
