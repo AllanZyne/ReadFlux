@@ -63,7 +63,8 @@ import {
   WebDavConfig,
   WebDavSyncInterval,
 } from "./readflux-client";
-import { createRankingExposure, deriveInterestProfile, extractLegacyRecommendationTerms, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, type RecommendationScoreBreakdown } from "./recommendation";
+import { createRankingExposure, deriveInterestProfile, extractRecommendationTerms, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, selectedTopicTermsForEntry, type RecommendationScoreBreakdown } from "./recommendation";
+import { TERM_EXTRACTION_VERSION } from "./recommendation-terms";
 import {
   clearWebDavEtagCache,
   synchronizeWebDav,
@@ -420,7 +421,6 @@ function SettingsDialog({
   timeZoneSource,
   sourceWeights,
   wordWeights,
-  negativeWeights,
   exposures,
   starredCount,
   onClose,
@@ -447,7 +447,6 @@ function SettingsDialog({
   timeZoneSource: "miniflux" | "browser";
   sourceWeights: Map<number, number>;
   wordWeights: Map<string, number>;
-  negativeWeights: Map<string, number>;
   exposures: RankingExposure[];
   starredCount: number;
   onClose: () => void;
@@ -648,7 +647,6 @@ function SettingsDialog({
   feeds.forEach((feed) => sourceName.set(feed.id, feed.title));
   const topSources = [...sourceWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
   const topWords = [...wordWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
-  const topNegatives = [...negativeWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
   const diagnostics = recommendationDiagnostics(exposures, events);
   const shownEvents = [...events]
     .filter((event) => !eventQuery.trim() || `${event.title} ${event.source} ${event.terms.join(" ")}`.toLowerCase().includes(eventQuery.trim().toLowerCase()))
@@ -851,7 +849,7 @@ function SettingsDialog({
                 <div className="weightList">{diagnostics.evaluationAtK.filter((row) => row.impressions > 0).map((row) => <span key={row.k}><b>@{row.k} · {t("recommendation.openRate")} {row.openPercent.toFixed(1)}% · {t("recommendation.engagedRate")} {row.engagedOpenPercent.toFixed(1)}%</b><em>{t("recommendation.starRate")} {row.starredPercent.toFixed(1)}% · {t("recommendation.bulkDismissRate")} {row.bulkDismissedPercent.toFixed(1)}%</em></span>)}</div>
               </div>
             </section>
-            <section className="derivedData">
+            <section className="derivedData twoColumns">
               <div>
                 <header><h3>{t("recommendation.sourceWeights")}</h3><small>{t("recommendation.sourceWeightsHint")}</small></header>
                 <div className="weightList">{topSources.length ? topSources.map(([feedId, weight]) => <span key={feedId}><b>{sourceName.get(feedId) ?? `${t("common.feed")} ${feedId}`}</b><em>{weight.toFixed(2)}</em></span>) : <p>{t("recommendation.noWeights")}</p>}</div>
@@ -859,10 +857,6 @@ function SettingsDialog({
               <div>
                 <header><h3>{t("recommendation.positiveTerms")}</h3><small>{t("recommendation.positiveTermsHint")}</small></header>
                 <div className="weightTags">{topWords.length ? topWords.map(([word, weight]) => <span key={word}>{word}<em>{weight.toFixed(1)}</em></span>) : <p>{t("recommendation.noKeywords")}</p>}</div>
-              </div>
-              <div>
-                <header><h3>{t("recommendation.negativeTerms")}</h3><small>{t("recommendation.negativeTermsHint")}</small></header>
-                <div className="weightTags negative">{topNegatives.length ? topNegatives.map(([word, weight]) => <span key={word}>{word}<em>{weight.toFixed(1)}</em></span>) : <p>{t("recommendation.noNegativeTerms")}</p>}</div>
               </div>
             </section>
 
@@ -890,7 +884,7 @@ function SettingsDialog({
                 {shownEvents.length ? shownEvents.map((event) => <div className="eventRow" key={`${event.remoteClientId ?? "local"}:${event.id}`}>
                   <span><strong>{event.title}</strong><small>{event.source} · {formatZonedDateTime(event.openedAt, timeZone)}{event.remoteClientName ? ` · ${event.remoteClientName}` : ""}</small></span>
                   <span><b>{t("common.secondsShort", { count: Math.round(event.activeSeconds) })}</b><small>{t("recommendation.scrollSummary", { depth: Math.round(event.scrollDepth * 100), origin: t(`recommendation.origin${event.origin[0].toUpperCase()}${event.origin.slice(1)}`) })}</small></span>
-                  <span><b>{event.feedback === "helpful" ? t("recommendation.helpful") : event.feedback === "not_interested" ? t("recommendation.notInterested") : t("recommendation.implicit")}</b><small>{event.terms.slice(0, 4).join(" · ") || t("recommendation.noTerms")}</small></span>
+                  <span><b>{event.feedback === "helpful" ? t("recommendation.helpful") : event.feedback === "not_interested" ? t("recommendation.notInterested") : t("recommendation.implicit")}</b><small>{[...selectedTopicTermsForEntry(events, event.entryId)].join(" · ") || t("recommendation.noSelectedTopics")}</small><small>{t("recommendation.candidateSummary", { terms: event.terms.slice(0, 5).join(" · ") || t("recommendation.noTerms") })}</small></span>
                   <span>{event.remoteClientId
                     ? <small>{t("webdav.remoteReadOnly")}</small>
                     : <><button onClick={() => setDraft({ ...event })}>{t("common.edit")}</button><button className="danger" onClick={() => void removeEvent(event)}>{t("common.delete")}</button></>}</span>
@@ -1648,6 +1642,15 @@ export default function App() {
   useEffect(() => { visibleEmptyRef.current = !visible.length; }, [visible]);
 
   const selected = stories.find((story) => story.id === selectedId) ?? null;
+  const selectedReadingEvent = selected
+    ? events.filter((event) => event.entryId === selected.id).sort((a, b) => b.openedAt.localeCompare(a.openedAt))[0]
+    : undefined;
+  const selectedCandidateTerms = selectedReadingEvent?.terms
+    ?? (selected ? extractRecommendationTerms(`${selected.title} ${selected.summary}`, 5) : []);
+  const selectedTopicTerms = useMemo(
+    () => selected ? selectedTopicTermsForEntry(recommendationEvents, selected.id) : new Set<string>(),
+    [recommendationEvents, selected],
+  );
   const selectedReadingSeconds = selected
     ? recommendationEvents.reduce((sum, event) => event.entryId === selected.id ? sum + event.activeSeconds : sum, 0)
     : 0;
@@ -1766,18 +1769,21 @@ export default function App() {
     readerRef.current?.scrollTo({ top: 0 });
     const eventOrigin = origin ?? (query ? "search" : mode === "today" ? "recommendation" : mode === "saved" ? "saved" : "feed");
     const attribution = eventOrigin === "recommendation" ? rankingAttribution(latestExposure.current, story.id) : {};
-    activeEvent.current = newReadingEvent({
+    const readingEvent = newReadingEvent({
       entryId: story.id,
       feedId: story.feed_id,
       title: story.title,
       source: story.source,
-      terms: extractLegacyRecommendationTerms(`${story.title} ${story.summary}`),
+      terms: extractRecommendationTerms(`${story.title} ${story.summary}`, 5),
+      termExtractionVersion: TERM_EXTRACTION_VERSION,
       origin: eventOrigin,
       readingTime: story.reading_time,
       listPosition: (() => { const i = visible.findIndex((s) => s.id === story.id); return i >= 0 ? i : undefined; })(),
       ...attribution,
     });
-    void putReadingEvent(activeEvent.current);
+    activeEvent.current = readingEvent;
+    setEvents((current) => [...current, readingEvent]);
+    void putReadingEvent(readingEvent);
     if (config && entryLabels.get(story.id)?.includes("updated")) {
       void removeEntryLabel(config, story.id, "updated");
       setEntryLabels((current) => {
@@ -1977,6 +1983,32 @@ export default function App() {
     }
   };
 
+  const toggleTopicInterest = async (term: string) => {
+    if (!selected) return;
+    if (!activeEvent.current || activeEvent.current.entryId !== selected.id) choose(selected);
+    if (!activeEvent.current) return;
+    const updatedAt = new Date().toISOString();
+    const operation = {
+      id: crypto.randomUUID(),
+      term,
+      interested: !selectedTopicTerms.has(term),
+      updatedAt,
+    };
+    const updatedEvent: ReadingEvent = {
+      ...activeEvent.current,
+      topicFeedback: [...(activeEvent.current.topicFeedback ?? []), operation],
+      updatedAt,
+    };
+    activeEvent.current = updatedEvent;
+    await putReadingEvent(updatedEvent);
+    setEvents((current) => {
+      const index = current.findIndex((event) => event.id === updatedEvent.id);
+      return index < 0 ? [...current, updatedEvent] : current.map((event, i) => i === index ? updatedEvent : event);
+    });
+    scheduleWebDavUpload();
+    notify(t(operation.interested ? "recommendation.topicSelected" : "recommendation.topicRemoved", { term }));
+  };
+
   const categorySources = useMemo(() => categories.map((category) => ({
     ...category,
     feeds: feeds.filter((feed) => feed.category?.id === category.id),
@@ -2170,6 +2202,13 @@ export default function App() {
                 onReadingTick={recordReadingTick}
                 t={t}
               />
+              {selectedCandidateTerms.length > 0 && <section className="topicPicker" aria-labelledby="topic-picker-title">
+                <div><strong id="topic-picker-title">{t("recommendation.candidateTopics")}</strong><small>{t("recommendation.candidateTopicsHint")}</small></div>
+                <div>{selectedCandidateTerms.map((term) => {
+                  const selectedTopic = selectedTopicTerms.has(term);
+                  return <button key={term} className={selectedTopic ? "selected" : ""} aria-pressed={selectedTopic} onClick={() => void toggleTopicInterest(term)}>{selectedTopic ? "✓ " : "+ "}{term}</button>;
+                })}</div>
+              </section>}
               <section className="reason">
                 <button className="reasonHead" onClick={() => setReasonOpen(!reasonOpen)}><span>{t("recommendation.reason")}</span><small>{reasonOpen ? t("recommendation.collapse") : t("recommendation.view")}</small></button>
                 {reasonOpen && <><p>{selected.reason}</p><div className="tags">{[selected.category, selected.source, ...(selected.tags ?? [])].slice(0, 4).map((tag) => <span key={tag}>{tag}</span>)}</div></>}
@@ -2202,7 +2241,6 @@ export default function App() {
         timeZoneSource={timeZoneSelection.source}
         sourceWeights={interest.sources}
         wordWeights={interest.words}
-        negativeWeights={interest.negatives}
         exposures={recommendationExposures}
         starredCount={savedCount}
         onClose={() => setSettingsOpen(false)}

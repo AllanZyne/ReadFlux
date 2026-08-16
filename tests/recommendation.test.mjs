@@ -4,7 +4,8 @@ import test from "node:test";
 import {
   createRankingExposure,
   deriveInterestProfile,
-  extractLegacyRecommendationTerms,
+  extractRecommendationTerms,
+  foldTopicFeedback,
   rankingAttribution,
   recommendationDiagnostics,
   recordBulkDismissal,
@@ -27,21 +28,38 @@ const event = (overrides = {}) => ({
   ...overrides,
 });
 
-test("observable v1 preserves legacy token extraction behavior", () => {
+test("candidate extraction removes obvious noise and preserves technical terms", () => {
   assert.deepEqual(
-    extractLegacyRecommendationTerms("The the LLVM https org C++ C# GPT-4 2025 LLVM"),
-    ["the", "the", "llvm", "https", "org", "c++", "gpt-4", "2025", "llvm"],
+    extractRecommendationTerms("The the LLVM https://llvm.org/slides/2025.pdf C++ C# GPT-4 2025 LLVM"),
+    ["llvm", "c++", "c#", "gpt-4"],
   );
 });
 
-test("observable v1 preserves repeated event term contributions", () => {
-  const profile = deriveInterestProfile([
-    event({ terms: ["llvm", "llvm"] }),
-  ], [], Date.parse("2026-08-14T00:00:00.000Z"));
-  assert.equal(profile.words.get("llvm"), 8);
+test("reading and saving never imply topic interest", () => {
+  const profile = deriveInterestProfile([event({ terms: ["llvm"] })], [
+    { feedId: 2, text: "LLVM" },
+  ], Date.parse("2026-08-14T00:00:00.000Z"));
+  assert.equal(profile.words.size, 0);
+  assert.ok((profile.sources.get(2) ?? 0) > 0);
 });
 
-test("score breakdown preserves the production v1 formula", () => {
+test("only the latest explicit per-article topic choice contributes", () => {
+  const selected = event({
+    topicFeedback: [
+      { id: "a", term: "LLVM", interested: true, updatedAt: "2026-08-14T00:00:00.000Z" },
+      { id: "b", term: "llvm", interested: false, updatedAt: "2026-08-14T01:00:00.000Z" },
+      { id: "c", term: "llvm", interested: true, updatedAt: "2026-08-14T02:00:00.000Z" },
+    ],
+  });
+  assert.deepEqual(foldTopicFeedback([selected]).map(({ term, interested }) => ({ term, interested })), [
+    { term: "llvm", interested: true },
+  ]);
+  const profile = deriveInterestProfile([selected], [], Date.parse("2026-08-14T02:00:00.000Z"));
+  assert.equal(profile.words.get("llvm"), 1);
+  assert.equal(profile.negatives.size, 0);
+});
+
+test("log-scaled scoring retains discrimination at high affinity", () => {
   const breakdown = scoreRecommendation({
     feedId: 2,
     text: "LLVM compiler internals",
@@ -49,25 +67,16 @@ test("score breakdown preserves the production v1 formula", () => {
     starred: false,
     now: Date.parse("2026-08-14T00:00:00.000Z"),
     profile: {
-      sources: new Map([[2, 10]]),
-      words: new Map([["llvm", 30]]),
+      sources: new Map([[2, 10_000]]),
+      words: new Map([["llvm", 10_000]]),
       negatives: new Map(),
     },
   });
-  assert.deepEqual({
-    sourceScore: breakdown.sourceScore,
-    termScore: breakdown.termScore,
-    freshnessScore: breakdown.freshnessScore,
-    unclampedScore: breakdown.unclampedScore,
-    score: breakdown.score,
-  }, {
-    sourceScore: 25,
-    termScore: 20,
-    freshnessScore: 12,
-    unclampedScore: 101,
-    score: 99,
-  });
-  assert.equal(RECOMMENDATION_ALGORITHM_VERSION, "heuristic-v1-observable");
+  assert.equal(breakdown.sourceScore, 20);
+  assert.ok(breakdown.termScore > 20 && breakdown.termScore < 24);
+  assert.ok(breakdown.unclampedScore < 99);
+  assert.equal(breakdown.score, Math.round(breakdown.unclampedScore));
+  assert.equal(RECOMMENDATION_ALGORITHM_VERSION, "heuristic-v2-explicit-topics");
 });
 
 test("exposure capture bounds ordered items and attribution uses a one-based rank", () => {
@@ -95,7 +104,7 @@ test("exposure capture bounds ordered items and attribution uses a one-based ran
   assert.deepEqual(rankingAttribution(exposure, 100), {
     rankingId: "ranking-1",
     exposedRank: 1,
-    algorithmVersion: "heuristic-v1-observable",
+    algorithmVersion: "heuristic-v2-explicit-topics",
   });
   assert.deepEqual(rankingAttribution(exposure, 999), {});
 });
@@ -127,7 +136,7 @@ test("diagnostics use matching exposure items rather than opens as their denomin
   const exposure = {
     id: "ranking-1",
     createdAt: "2026-08-14T00:00:00.000Z",
-    algorithmVersion: "heuristic-v1-observable",
+    algorithmVersion: "heuristic-v2-explicit-topics",
     schemaVersion: 1,
     surface: "today",
     candidateCount: 3,

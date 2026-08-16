@@ -47,6 +47,8 @@ export type ReadingEvent = {
   title: string;
   source: string;
   terms: string[];
+  termExtractionVersion?: string;
+  topicFeedback?: TopicFeedbackOperation[];
   openedAt: string;
   activeSeconds: number;
   scrollDepth: number;
@@ -62,6 +64,13 @@ export type ReadingEvent = {
   updatedAt: string;
   remoteClientId?: string;
   remoteClientName?: string;
+};
+
+export type TopicFeedbackOperation = {
+  id: string;
+  term: string;
+  interested: boolean;
+  updatedAt: string;
 };
 
 export type RankingExposureItem = {

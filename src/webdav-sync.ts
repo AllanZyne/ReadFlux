@@ -277,6 +277,12 @@ function validReadingEvent(value: unknown): value is ReadingEvent {
     && Number.isFinite(event.scrollDepth)
     && ["recommendation", "feed", "search", "saved"].includes(event.origin ?? "")
     && typeof event.updatedAt === "string"
+    && (event.termExtractionVersion === undefined || typeof event.termExtractionVersion === "string")
+    && (event.topicFeedback === undefined || (Array.isArray(event.topicFeedback)
+      && event.topicFeedback.every((operation) => typeof operation.id === "string"
+        && typeof operation.term === "string"
+        && typeof operation.interested === "boolean"
+        && typeof operation.updatedAt === "string")))
     && (event.rankingId === undefined || typeof event.rankingId === "string")
     && (event.exposedRank === undefined || Number.isSafeInteger(event.exposedRank))
     && (event.algorithmVersion === undefined || typeof event.algorithmVersion === "string")
