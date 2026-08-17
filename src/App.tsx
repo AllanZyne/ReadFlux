@@ -15,6 +15,13 @@ import {
 import { articleMediaURL, isExpiredWeiboMediaURL, isWeiboLivePhotoURL, youtubeEmbedURL } from "./article-content";
 import { runExclusive } from "./async-lock";
 import { incrementalChangedAfter, mergeSyncedEntries, newestChangedAt, syncIntervalElapsed } from "./entry-sync";
+import {
+  entryMutationPatches,
+  flushEntryMutationOutbox,
+  loadEntryMutationPatches,
+  protectPendingEntryMutations,
+  type EntryMutationPatch,
+} from "./entry-mutation-sync";
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { startOptionalMinifluxTimeZoneLoad } from "./miniflux-timezone.mjs";
 import { articleHash, articlePermalink, parseAppRoute, type AppRoute } from "./routes";
@@ -32,6 +39,8 @@ import {
   deleteReadingEvent,
   EntrySyncPhase,
   EntrySyncState,
+  type EntryMutation,
+  type StoredEntryMutation,
   getCachedEntries,
   getCachedFeedIcons,
   getConnection,
@@ -53,6 +62,7 @@ import {
   patchReadingEvent,
   putCachedEntries,
   putCachedFeedIcons,
+  queueEntryMutations,
   ProfileSettings,
   putRankingExposure,
   putReadingEvent,
@@ -1083,6 +1093,8 @@ export default function App() {
   const syncInFlight = useRef(false);
   const syncQueued = useRef<EntrySyncMode | null>(null);
   const syncStateRef = useRef<EntrySyncState | null>(null);
+  const pendingEntryMutationsRef = useRef<Map<number, EntryMutationPatch>>(new Map());
+  const pendingEntryMutationGeneration = useRef(0);
   const syncResetInProgress = useRef(false);
   const listSnapshotIds = useRef<Set<number>>(new Set());
   const visibleEmptyRef = useRef(true);
@@ -1105,6 +1117,37 @@ export default function App() {
     setToast(message);
     window.setTimeout(() => setToast(""), 2200);
   }, []);
+
+  const rememberQueuedEntryMutations = useCallback((mutations: StoredEntryMutation[]) => {
+    const queuedPatches = entryMutationPatches(mutations);
+    const next = new Map(pendingEntryMutationsRef.current);
+    queuedPatches.forEach((patch, entryId) => {
+      next.set(entryId, { ...next.get(entryId), ...patch });
+    });
+    pendingEntryMutationsRef.current = next;
+    pendingEntryMutationGeneration.current += 1;
+  }, []);
+
+  const flushPendingEntryMutations = useCallback(async () => {
+    if (!config) return 0;
+    try {
+      return await flushEntryMutationOutbox(config);
+    } finally {
+      try {
+        const generation = pendingEntryMutationGeneration.current;
+        const persistedPatches = await loadEntryMutationPatches(config);
+        if (syncInFlight.current || pendingEntryMutationGeneration.current !== generation) {
+          const protectedPatches = new Map(pendingEntryMutationsRef.current);
+          persistedPatches.forEach((patch, entryId) => {
+            protectedPatches.set(entryId, { ...protectedPatches.get(entryId), ...patch });
+          });
+          pendingEntryMutationsRef.current = protectedPatches;
+        } else {
+          pendingEntryMutationsRef.current = persistedPatches;
+        }
+      } catch { /* keep the in-memory protection until the outbox can be read again */ }
+    }
+  }, [config]);
 
   const runWebDavSync = useCallback(async (override?: WebDavConfig, pull = true) => {
     const activeConfig = override ?? webDavConfig;
@@ -1319,7 +1362,8 @@ export default function App() {
 
   const mergeEntryBatch = useCallback(async (batch: Entry[]) => {
     if (!config || !batch.length) return;
-    const { entries: mergedEntries, mergedBatch, updatedIds } = mergeSyncedEntries(entriesRef.current, batch);
+    const protectedBatch = protectPendingEntryMutations(batch, pendingEntryMutationsRef.current);
+    const { entries: mergedEntries, mergedBatch, updatedIds } = mergeSyncedEntries(entriesRef.current, protectedBatch);
     replaceEntries(mergedEntries);
     if (updatedIds.size) {
       try {
@@ -1338,7 +1382,7 @@ export default function App() {
       const currentMode = modeRef.current;
       const currentTopic = topicRef.current;
       const currentHideRead = hideReadRef.current;
-      const relevant = batch.filter((entry) => {
+      const relevant = protectedBatch.filter((entry) => {
         if (listSnapshotIds.current.has(entry.id)) return false;
         if (!currentTopic && !isEntryInSmartFeed(
           entry,
@@ -1354,7 +1398,7 @@ export default function App() {
         if (currentTopic?.kind === "feed" && entry.feed_id !== currentTopic.id) return false;
         return true;
       });
-      const updatedInList = batch.filter((entry) => {
+      const updatedInList = protectedBatch.filter((entry) => {
         if (!updatedIds.has(entry.id)) return false;
         if (!listSnapshotIds.current.has(entry.id)) return false;
         if (!currentTopic && !isEntryInSmartFeed(entry, currentMode, todayKeyRef.current, timeZoneRef.current)) return false;
@@ -1398,6 +1442,9 @@ export default function App() {
         () => minifluxFetch<MinifluxUser>(config, "/v1/me"),
         setMinifluxTimeZone,
       );
+      try {
+        await flushPendingEntryMutations();
+      } catch { /* pending local state remains protected while article refresh continues */ }
       const [cached, storedState, labels] = await Promise.all([
         getCachedEntries<Entry>(config),
         getEntrySyncState(config),
@@ -1532,13 +1579,25 @@ export default function App() {
       setLoading(false);
       setSyncProgress(null);
       syncInFlight.current = false;
+      const mutationGeneration = pendingEntryMutationGeneration.current;
+      void loadEntryMutationPatches(config).then((patches) => {
+        if (pendingEntryMutationGeneration.current === mutationGeneration) {
+          pendingEntryMutationsRef.current = patches;
+          return;
+        }
+        const protectedPatches = new Map(pendingEntryMutationsRef.current);
+        patches.forEach((patch, entryId) => {
+          protectedPatches.set(entryId, { ...protectedPatches.get(entryId), ...patch });
+        });
+        pendingEntryMutationsRef.current = protectedPatches;
+      }).catch(() => undefined);
       if (syncQueued.current) {
         const queuedMode = syncQueued.current;
         syncQueued.current = null;
         queueMicrotask(() => void loadRef.current({ background: true, mode: queuedMode }));
       }
     }
-  }, [config, mergeEntryBatch, replaceEntries, settings.fullSyncIntervalMinutes, settings.incrementalSyncIntervalMinutes]);
+  }, [config, flushPendingEntryMutations, mergeEntryBatch, replaceEntries, settings.fullSyncIntervalMinutes, settings.incrementalSyncIntervalMinutes]);
   useEffect(() => {
     loadRef.current = load;
   }, [load]);
@@ -1600,6 +1659,19 @@ export default function App() {
       document.removeEventListener("visibilitychange", runScheduledSync);
     };
   }, [config, settings.fullSyncIntervalMinutes, settings.incrementalSyncIntervalMinutes]);
+
+  useEffect(() => {
+    if (!config) return;
+    const retryPendingMutations = () => {
+      if (document.visibilityState === "visible") void flushPendingEntryMutations().catch(() => undefined);
+    };
+    const timer = window.setInterval(retryPendingMutations, 2 * 60_000);
+    document.addEventListener("visibilitychange", retryPendingMutations);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", retryPendingMutations);
+    };
+  }, [config, flushPendingEntryMutations]);
 
   useEffect(() => {
     if (!config || !feeds.length) return;
@@ -1818,17 +1890,31 @@ export default function App() {
     return () => { window.removeEventListener("pagehide", flush); commitActiveEvent(); void persistActive(); };
   }, [persistActive, commitActiveEvent]);
 
-  const updateEntry = async (id: number, patch: Partial<Entry>, request: () => Promise<unknown>, success: string) => {
-    const before = entries;
+  const updateEntry = async (id: number, patch: EntryMutationPatch, success: string) => {
+    if (!config) return false;
+    let mutation: EntryMutation;
+    if (patch.status !== undefined) mutation = { entryId: id, field: "status", value: patch.status };
+    else if (patch.starred !== undefined) mutation = { entryId: id, field: "starred", value: patch.starred };
+    else return false;
+    const before = entriesRef.current.find((entry) => entry.id === id);
+    if (!before) return false;
+    const updated = { ...before, ...patch };
     replaceEntries((all) => all.map((entry) => entry.id === id ? { ...entry, ...patch } : entry));
     try {
-      await request();
-      const cached = before.find((entry) => entry.id === id);
-      if (config && cached) await putCachedEntries(config, [{ ...cached, ...patch }]);
+      const queued = await queueEntryMutations(config, [updated], [mutation]);
+      rememberQueuedEntryMutations(queued);
+      void flushPendingEntryMutations().catch(() => undefined);
       notify(success);
       return true;
     } catch (cause) {
-      replaceEntries(before);
+      replaceEntries((all) => all.map((entry) => {
+        if (entry.id !== id) return entry;
+        return {
+          ...entry,
+          ...(patch.status !== undefined && entry.status === patch.status ? { status: before.status } : {}),
+          ...(patch.starred !== undefined && entry.starred === patch.starred ? { starred: before.starred } : {}),
+        };
+      }));
       notify(errorMessage(cause, t, "errors.sync"));
       return false;
     }
@@ -1841,7 +1927,6 @@ export default function App() {
     const saved = await updateEntry(
       story.id,
       { starred },
-      () => minifluxFetch(config, `/v1/entries/${story.id}/bookmark`, { method: "PUT" }),
       starred ? t("reader.saved") : t("reader.unsaved"),
     );
     if (!saved || !readingEvent) return;
@@ -1970,10 +2055,7 @@ export default function App() {
       });
     }
     if (story.status === "unread" && config) {
-      void updateEntry(story.id, { status: "read" }, () => minifluxFetch(config, "/v1/entries", {
-        method: "PUT",
-        body: JSON.stringify({ entry_ids: [story.id], status: "read" }),
-      }), t("reader.markedRead"));
+      void updateEntry(story.id, { status: "read" }, t("reader.markedRead"));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config, mode, query, visible, persistActive, commitActiveEvent, loadEntryContent, entryLabels, navigateToArticle, t]);
@@ -2012,10 +2094,7 @@ export default function App() {
   const toggleRead = useCallback((story: Story) => {
     if (!config) return;
     const status = story.status === "read" ? "unread" : "read";
-    void updateEntry(story.id, { status }, () => minifluxFetch(config, "/v1/entries", {
-      method: "PUT",
-      body: JSON.stringify({ entry_ids: [story.id], status }),
-    }), status === "read" ? t("reader.markedRead") : t("reader.markedUnread"));
+    void updateEntry(story.id, { status }, status === "read" ? t("reader.markedRead") : t("reader.markedUnread"));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config, entries, t]);
 
@@ -2023,17 +2102,20 @@ export default function App() {
     if (!config) return;
     const ids = visible.filter((story) => story.status === "unread").map((story) => story.id);
     if (!ids.length) return notify(t("feed.noUnread"));
+    const idSet = new Set(ids);
     const before = entries;
-    const after = entries.map((entry) => ids.includes(entry.id) ? { ...entry, status: "read" as const } : entry);
+    const after = entries.map((entry) => idSet.has(entry.id) ? { ...entry, status: "read" as const } : entry);
     replaceEntries(after);
     setVisibleIds([]);
     setListReadSnapshot(new Map(after.map((entry) => [entry.id, entry.status])));
     try {
-      await minifluxFetch(config, "/v1/entries", {
-        method: "PUT",
-        body: JSON.stringify({ entry_ids: ids, status: "read" }),
-      });
-      await putCachedEntries(config, after.filter((entry) => ids.includes(entry.id)));
+      const queued = await queueEntryMutations(
+        config,
+        after.filter((entry) => idSet.has(entry.id)),
+        ids.map((entryId) => ({ entryId, field: "status", value: "read" })),
+      );
+      rememberQueuedEntryMutations(queued);
+      void flushPendingEntryMutations().catch(() => undefined);
       const currentExposure = latestExposure.current;
       if (currentExposure) {
         const updatedExposure = recordBulkDismissal(currentExposure, ids, new Date().toISOString());
@@ -2052,7 +2134,7 @@ export default function App() {
       setListReadSnapshot(new Map(before.map((entry) => [entry.id, entry.status])));
       notify(errorMessage(cause, t, "errors.sync"));
     }
-  }, [config, entries, notify, replaceEntries, scheduleWebDavUpload, t, visible]);
+  }, [config, entries, flushPendingEntryMutations, notify, rememberQueuedEntryMutations, replaceEntries, scheduleWebDavUpload, t, visible]);
 
   const positionMarkAllRead = useCallback(() => {
     const trigger = markAllReadButtonRef.current;
