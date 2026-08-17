@@ -8,6 +8,35 @@ type SyncEntry = {
   changed_at?: string;
 };
 
+const CURSOR_OVERLAP_MS = 5_000;
+
+export function newestChangedAt(entries: SyncEntry[], fallback?: string) {
+  let newest = fallback && Number.isFinite(Date.parse(fallback)) ? fallback : undefined;
+  let newestTime = newest ? Date.parse(newest) : Number.NEGATIVE_INFINITY;
+  entries.forEach((entry) => {
+    if (!entry.changed_at) return;
+    const changedTime = Date.parse(entry.changed_at);
+    if (Number.isFinite(changedTime) && changedTime > newestTime) {
+      newest = entry.changed_at;
+      newestTime = changedTime;
+    }
+  });
+  return newest;
+}
+
+export function incrementalChangedAfter(cursor?: string) {
+  if (!cursor) return undefined;
+  const cursorTime = Date.parse(cursor);
+  if (!Number.isFinite(cursorTime)) return undefined;
+  return String(Math.max(0, Math.floor((cursorTime - CURSOR_OVERLAP_MS) / 1_000)));
+}
+
+export function syncIntervalElapsed(lastSyncAt: string | undefined, intervalMinutes: number, now = Date.now()) {
+  if (!intervalMinutes) return false;
+  const lastSyncTime = lastSyncAt ? Date.parse(lastSyncAt) : Number.NaN;
+  return !Number.isFinite(lastSyncTime) || now - lastSyncTime >= intervalMinutes * 60_000;
+}
+
 function articleContentChanged<T extends SyncEntry>(cached: T, entry: T) {
   return cached.title !== entry.title
     || cached.url !== entry.url
