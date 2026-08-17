@@ -1084,6 +1084,7 @@ export default function App() {
   const entriesRef = useRef<Entry[]>([]);
   const activeEvent = useRef<ReadingEvent | null>(null);
   const latestExposure = useRef<RankingExposure | null>(null);
+  const storyListRef = useRef<HTMLDivElement | null>(null);
   const readerRef = useRef<HTMLDivElement | null>(null);
   const markAllReadButtonRef = useRef<HTMLButtonElement | null>(null);
   const markAllReadConfirmRef = useRef<HTMLButtonElement | null>(null);
@@ -1778,12 +1779,17 @@ export default function App() {
     });
   }, []);
 
+  const resetRenderedStories = useCallback(() => {
+    setRenderedStoryCount(STORY_RENDER_BATCH_SIZE);
+    if (storyListRef.current) storyListRef.current.scrollTop = 0;
+  }, []);
+
   const refreshList = useCallback(() => {
     commitActiveEvent();
-    setRenderedStoryCount(STORY_RENDER_BATCH_SIZE);
+    resetRenderedStories();
     setListReadSnapshot(new Map(entriesRef.current.map((entry) => [entry.id, entry.status])));
     setPendingNew(0);
-  }, [commitActiveEvent]);
+  }, [commitActiveEvent, resetRenderedStories]);
 
   const switchListContext = useCallback((nextMode: ListMode, nextTopic: Topic) => {
     const currentTopic = topicRef.current;
@@ -1798,7 +1804,7 @@ export default function App() {
     navigateToList();
     setMobileView("list");
     setMarkAllReadOpen(false);
-    setRenderedStoryCount(STORY_RENDER_BATCH_SIZE);
+    resetRenderedStories();
     setListReadSnapshot(new Map(entriesRef.current.map((entry) => [entry.id, entry.status])));
     setPendingNew(0);
     modeRef.current = nextMode;
@@ -1806,7 +1812,7 @@ export default function App() {
     hideReadRef.current = nextMode !== "updated" && hideReadByMode[nextMode];
     setMode(nextMode);
     setTopic(nextTopic);
-  }, [commitActiveEvent, hideReadByMode, navigateToList, persistActive]);
+  }, [commitActiveEvent, hideReadByMode, navigateToList, persistActive, resetRenderedStories]);
 
   const frozenVisibleOrder = useMemo(() => {
     const hasQuery = !!query.trim();
@@ -2496,7 +2502,7 @@ export default function App() {
             <div className="feedTitleText"><h1>{topicTitle ? `${t(`sidebar.${mode}`)} · ${topicTitle}` : t(`sidebar.${mode}`)}</h1><small>{t(mode === "today" ? "feed.recommendedCount" : mode === "updated" ? "feed.updatedCount" : "feed.articleCount", { count: visible.length })}{error && entries.length ? ` · ${t("feed.offline")}` : ""}</small></div>
             <div className="feedTitleActions" role="group" aria-label={t("feed.listActions")}>
               <button ref={markAllReadButtonRef} type="button" className={markAllReadOpen ? "markAllReadSpotlight" : ""} onClick={requestMarkVisibleRead} disabled={!visibleUnreadCount} aria-label={t("feed.markAllRead")} title={t("feed.markAllRead")}><i className="bi bi-check2-all" aria-hidden="true" /></button>
-              <button type="button" className={hideRead ? "active" : ""} disabled={mode === "updated"} onClick={() => { if (mode === "updated") return; setRenderedStoryCount(STORY_RENDER_BATCH_SIZE); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideReadByMode((current) => ({ ...current, [mode]: !current[mode] })); }} aria-label={t("feed.unreadOnly")} title={t(mode === "updated" ? "feed.unreadOnly" : hideRead ? "feed.showAll" : "feed.unreadOnly")} aria-pressed={hideRead}><i className="bi bi-filter-circle" aria-hidden="true" /></button>
+              <button type="button" className={hideRead ? "active" : ""} disabled={mode === "updated"} onClick={() => { if (mode === "updated") return; resetRenderedStories(); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideReadByMode((current) => ({ ...current, [mode]: !current[mode] })); }} aria-label={t("feed.unreadOnly")} title={t(mode === "updated" ? "feed.unreadOnly" : hideRead ? "feed.showAll" : "feed.unreadOnly")} aria-pressed={hideRead}><i className="bi bi-filter-circle" aria-hidden="true" /></button>
             </div>
           </header>
           {markAllReadOpen && <>
@@ -2516,7 +2522,7 @@ export default function App() {
               <button ref={markAllReadConfirmRef} type="button" onClick={() => { setMarkAllReadOpen(false); void markVisibleRead(); }}>{t("common.confirm")}</button>
             </section>
           </>}
-          <div className="storyList" onScroll={loadMoreStoriesNearEnd}>
+          <div className="storyList" ref={storyListRef} onScroll={loadMoreStoriesNearEnd}>
             {pendingNew > 0 && <button className="newArticlesPill" onClick={refreshList}>{t("feed.newArticles", { count: pendingNew })}</button>}
             {loading && !entries.length ? <div className="empty"><b className="loadingMark">↻</b><h2>{t("feed.syncing")}</h2><p>{t("feed.syncingHint")}</p></div>
               : error && !entries.length ? <div className="empty errorState"><b>!</b><h2>{t("feed.connectionFailed")}</h2><p>{t(error.key, { status: error.status })}</p><button onClick={() => void load()}>{t("feed.reconnect")}</button></div>
@@ -2524,7 +2530,7 @@ export default function App() {
                 <div className="storySource"><SourceIcon src={feedIcons.get(story.feed_id)}>{story.mark}</SourceIcon><span>{story.source}</span><time>{formatZonedTime(story.published_at, activeTimeZone)}</time>{story.starred && <b>★</b>}</div>
                 <h2>{story.title}</h2><p>{story.summary}</p>
                 <footer><i /><span>{t(story.status === "unread" ? "feed.unread" : entryLabels.get(story.id)?.includes("updated") ? "feed.updated" : story.starred ? "feed.saved" : "feed.read")}</span><span>·</span><span>{t("feed.minutes", { count: story.reading_time || 1 })}</span></footer>
-              </article>)}{renderedStories.length < visible.length && <button className="storyListMore" type="button" onClick={revealMoreStories}>{t("feed.showMore", { count: visible.length - renderedStories.length })}</button>}</> : <div className="empty"><b>✓</b><h2>{t("feed.empty")}</h2><p>{t("feed.emptyHint")}</p><button onClick={() => { setQuery(""); setHideReadByMode((current) => ({ ...current, today: false })); switchListContext("today", null); }}>{t("common.reset")}</button></div>}
+              </article>)}{renderedStories.length < visible.length && <button className="storyListMore" type="button" onClick={revealMoreStories}>{t("feed.showMore", { count: Math.min(STORY_RENDER_BATCH_SIZE, visible.length - renderedStories.length) })}</button>}</> : <div className="empty"><b>✓</b><h2>{t("feed.empty")}</h2><p>{t("feed.emptyHint")}</p><button onClick={() => { setQuery(""); setHideReadByMode((current) => ({ ...current, today: false })); switchListContext("today", null); }}>{t("common.reset")}</button></div>}
           </div>
         </section>
         <div className="resizeHandle listHandle" onPointerDown={(event) => startResize("list", event)} onDoubleClick={() => setListWidth(430)} />

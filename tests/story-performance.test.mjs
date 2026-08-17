@@ -14,7 +14,10 @@ test("large article lists render in bounded progressive batches", () => {
   assert.equal(nextStoryRenderCount(820, 824), 824);
   assert.match(app, /const renderedStories = useMemo\([\s\S]*?visible\.slice\(0, renderedStoryCount\)/);
   assert.match(app, /onScroll=\{loadMoreStoriesNearEnd\}/);
+  assert.match(app, /ref=\{storyListRef\}/);
+  assert.match(app, /resetRenderedStories[\s\S]*?storyListRef\.current\.scrollTop = 0/);
   assert.match(app, /renderedStories\.map\(\(story\)/);
+  assert.match(app, /count: Math\.min\(STORY_RENDER_BATCH_SIZE, visible\.length - renderedStories\.length\)/);
   assert.doesNotMatch(app, /visible\.map\(\(story\) => <article/);
 });
 
