@@ -15,22 +15,27 @@ backend. The browser talks directly to Miniflux.
 
 The primary product contract is:
 
-- `Today` contains all Miniflux entries published on the current calendar
-  day in the reader timezone and sorts them by the locally derived
-  recommendation score.
-- `All unread` contains every unread Miniflux entry and sorts them newest first.
+- `Today` contains the complete synced Miniflux history, including read and
+  unread entries, and sorts it by the locally derived recommendation score.
+- `Updated` contains previously read entries whose content changed after they
+  were cached, and clears an entry's update label when it is reopened.
+- `Unread only` is a list filter, not a separate smart feed. It does not apply
+  to `Updated`, whose entries are already read by definition.
 - Recommendation scores affect ordering only and are not shown in the list.
 - Reading an entry updates its live state without removing it from the current
   list snapshot.
 - Rebuild read filters only when the user changes the list, toggles
-  `Hide read`, marks the current list read, or refreshes data.
+  `Unread only`, marks the current list read, or refreshes data. Midnight score
+  decay must not rebuild the captured list or its read-status snapshot.
 - `Saved` must be loaded from all paginated starred Miniflux results.
+- Category and feed selection filters the current smart feed. Selecting any
+  smart feed clears that source scope and closes the current article.
 - Day and night are the only themes.
 - Settings are an in-app dialog. Recommendation data is inspectable and raw
   events can be added, edited, or deleted.
-- Category names, feed names, `Today`, `All unread`, and `Saved` use the same
-  type size, weight, and row height. Hierarchy comes from disclosure controls,
-  icons, and indentation.
+- Category names, feed names, `Today`, `Updated`, and `Saved` use the same type
+  size, weight, and row height. Hierarchy comes from disclosure controls, icons,
+  and indentation.
 
 ## Architecture
 
@@ -134,7 +139,7 @@ Run lint, tests, and build before publishing.
 - Prefer small typed functions and existing browser APIs.
 - Keep state ownership in the narrowest component that needs it.
 - Preserve optimistic Miniflux updates with rollback on request failure.
-- Keep paginated entry loading for unread and starred views.
+- Keep paginated entry loading for the unread, starred, and read sync phases.
 - Sanitize feed HTML before using `dangerouslySetInnerHTML`.
 - Preserve keyboard and mobile behavior when changing desktop layout.
 - Use Miniflux category and feed IDs for identity; titles are display text only.

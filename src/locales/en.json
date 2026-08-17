@@ -253,6 +253,7 @@
     "subscriptions": "Subscriptions",
     "expand": "Expand subscriptions",
     "collapse": "Collapse subscriptions",
+    "resetSource": "Clear the source filter for {{title}}",
     "expandCategory": "Expand {{title}}",
     "collapseCategory": "Collapse {{title}}"
   },

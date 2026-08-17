@@ -253,6 +253,7 @@
     "subscriptions": "Abonnements",
     "expand": "Développer les abonnements",
     "collapse": "Réduire les abonnements",
+    "resetSource": "Effacer le filtre de source pour {{title}}",
     "expandCategory": "Développer {{title}}",
     "collapseCategory": "Réduire {{title}}"
   },

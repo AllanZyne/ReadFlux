@@ -16,7 +16,7 @@ test("sidebar icons are provided by the local Bootstrap Icons package", () => {
 
 test("primary sidebar navigation uses Bootstrap Icons", () => {
   assert.match(app, /\["today",\s*"bi-brightness-high-fill",\s*t\("sidebar\.today"\),\s*navCounts\.today\]/);
-  assert.match(app, /\["updated",\s*"bi-arrow-repeat",\s*t\("sidebar\.updated"\),\s*navCounts\.updated\]/);
+  assert.match(app, /\["updated",\s*"bi-bell",\s*t\("sidebar\.updated"\),\s*navCounts\.updated\]/);
   assert.match(app, /\["saved",\s*"bi-star-fill",\s*t\("sidebar\.saved"\),\s*navCounts\.saved\]/);
   assert.ok(app.indexOf('["today"') < app.indexOf('["updated"'));
   assert.ok(app.indexOf('["updated"') < app.indexOf('["saved"'));
@@ -81,8 +81,20 @@ test("the subscriptions heading toggles the whole persisted section", () => {
 
 test("scheme A resets the source scope through every smart feed", () => {
   assert.match(app, /onClick=\{\(\) => switchListContext\(key, null\)\}/);
-  assert.match(app, /mode === key && topic \? "↩" : count/);
+  assert.match(app, /const resetsSource = mode === key && topic !== null/);
+  assert.match(app, /resetsSource \? "↩" : count/);
+  assert.match(app, /sidebar\.resetSource/);
   assert.doesNotMatch(app, /allSubscriptions|所有订阅/);
+});
+
+test("midnight score decay does not rebuild the frozen list snapshot", () => {
+  const start = app.indexOf("const nextMidnight");
+  const end = app.indexOf("}, [todayClock, activeTimeZone]);", start);
+  const midnightEffect = app.slice(start, end);
+
+  assert.ok(start >= 0 && end > start);
+  assert.match(midnightEffect, /setTodayClock\(Date\.now\(\)\)/);
+  assert.doesNotMatch(midnightEffect, /setVisibleIds|setListReadSnapshot/);
 });
 
 test("changing smart feed, category, or feed closes the open article", () => {

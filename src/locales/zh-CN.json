@@ -253,6 +253,7 @@
     "subscriptions": "订阅",
     "expand": "展开订阅",
     "collapse": "折叠订阅",
+    "resetSource": "清除{{title}}的来源筛选",
     "expandCategory": "展开{{title}}",
     "collapseCategory": "折叠{{title}}"
   },

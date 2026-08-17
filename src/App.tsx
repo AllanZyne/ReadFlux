@@ -1249,10 +1249,6 @@ export default function App() {
     const nextMidnight = nextDayBoundary(now, activeTimeZone);
     const timer = window.setTimeout(() => {
       setTodayClock(Date.now());
-      if (modeRef.current === "today") {
-        setVisibleIds([]);
-        setListReadSnapshot(new Map(entriesRef.current.map((entry) => [entry.id, entry.status])));
-      }
     }, Math.max(1_000, nextMidnight.getTime() - now.getTime() + 100));
     return () => window.clearTimeout(timer);
   }, [todayClock, activeTimeZone]);
@@ -2389,7 +2385,7 @@ export default function App() {
 
   const nav = [
     ["today", "bi-brightness-high-fill", t("sidebar.today"), navCounts.today],
-    ["updated", "bi-arrow-repeat", t("sidebar.updated"), navCounts.updated],
+    ["updated", "bi-bell", t("sidebar.updated"), navCounts.updated],
     ["saved", "bi-star-fill", t("sidebar.saved"), navCounts.saved],
   ] as const;
 
@@ -2409,7 +2405,10 @@ export default function App() {
             <span className="sr-only" role="status">{refreshStatus}</span>
           </header>
           <div className="sidebarScroll" onKeyDown={handleSidebarKey}>
-            <nav>{nav.map(([key, icon, label, count]) => <button data-sidebar-row key={key} className={mode === key ? "active" : ""} onClick={() => switchListContext(key, null)}><i className={`bi ${icon}`} aria-hidden="true" /><span>{label}</span><em>{mode === key && topic ? "↩" : count}</em></button>)}</nav>
+            <nav>{nav.map(([key, icon, label, count]) => {
+              const resetsSource = mode === key && topic !== null;
+              return <button data-sidebar-row key={key} className={mode === key ? "active" : ""} onClick={() => switchListContext(key, null)} aria-label={resetsSource ? t("sidebar.resetSource", { title: label }) : undefined} title={resetsSource ? t("sidebar.resetSource", { title: label }) : undefined}><i className={`bi ${icon}`} aria-hidden="true" /><span>{label}</span><em>{resetsSource ? "↩" : count}</em></button>;
+            })}</nav>
             <div className="sideLabel"><span>{t("sidebar.subscriptions")}</span><button type="button" onClick={() => setSubscriptionsCollapsed((current) => !current)} title={t(subscriptionsCollapsed ? "sidebar.expand" : "sidebar.collapse")} aria-label={t(subscriptionsCollapsed ? "sidebar.expand" : "sidebar.collapse")} aria-expanded={!subscriptionsCollapsed}><i className={`bi ${subscriptionsCollapsed ? "bi-chevron-right" : "bi-chevron-down"}`} aria-hidden="true" /></button></div>
             {!subscriptionsCollapsed && visibleCategorySources.map((category) => {
               const collapsed = collapsedCategories.has(category.id);
