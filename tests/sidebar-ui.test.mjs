@@ -15,28 +15,26 @@ test("sidebar icons are provided by the local Bootstrap Icons package", () => {
 });
 
 test("primary sidebar navigation uses Bootstrap Icons", () => {
-  assert.match(app, /\["today",\s*"bi-brightness-high-fill",\s*t\("sidebar\.today"\),\s*todayCount\]/);
-  assert.match(app, /\["unread",\s*"bi-[^"]+",\s*t\("sidebar\.allUnread"\),\s*unreadCount\]/);
-  assert.match(app, /\["saved",\s*"bi-star-fill",\s*t\("sidebar\.saved"\),\s*savedCount\]/);
-  assert.ok(app.indexOf('["today"') < app.indexOf('["unread"'));
-  assert.ok(app.indexOf('["unread"') < app.indexOf('["saved"'));
+  assert.match(app, /\["today",\s*"bi-brightness-high-fill",\s*t\("sidebar\.today"\),\s*navCounts\.today\]/);
+  assert.match(app, /\["updated",\s*"bi-arrow-repeat",\s*t\("sidebar\.updated"\),\s*navCounts\.updated\]/);
+  assert.match(app, /\["saved",\s*"bi-star-fill",\s*t\("sidebar\.saved"\),\s*navCounts\.saved\]/);
+  assert.ok(app.indexOf('["today"') < app.indexOf('["updated"'));
+  assert.ok(app.indexOf('["updated"') < app.indexOf('["saved"'));
+  assert.doesNotMatch(app, /sidebar\.allUnread/);
   assert.match(app, /<i className=\{`bi \$\{icon\}`\} aria-hidden="true" \/>/);
   assert.doesNotMatch(app, /<b>\{icon\}<\/b>/);
   assert.match(styles, /\.sidebar nav button>i\s*\{/);
 });
 
-test("smart feed heading distinguishes Today, All unread, and Saved", () => {
-  assert.match(
-    app,
-    /mode === "today"\s*\?\s*"sidebar\.today"\s*:\s*mode === "unread"\s*\?\s*"sidebar\.allUnread"\s*:\s*"sidebar\.saved"/,
-  );
+test("smart feed heading combines the selected feed with its source scope", () => {
+  assert.match(app, /topicTitle\s*\?\s*`\$\{t\(`sidebar\.\$\{mode\}`\)\} · \$\{topicTitle\}`\s*:\s*t\(`sidebar\.\$\{mode\}`\)/);
 });
 
 test("article list actions live in the title bar as NetNewsWire-style icons", () => {
   const titleBar = app.match(/<header className="feedTitle">([\s\S]*?)<\/header>/)?.[1] ?? "";
 
   assert.match(titleBar, /aria-label=\{t\("feed\.markAllRead"\)\}[\s\S]*?bi-check2-all/);
-  assert.match(titleBar, /aria-label=\{t\("feed\.hideRead"\)\}[\s\S]*?aria-pressed=\{hideRead\}[\s\S]*?bi-filter-circle/);
+  assert.match(titleBar, /mode !== "updated"[\s\S]*?aria-label=\{t\("feed\.unreadOnly"\)\}[\s\S]*?aria-pressed=\{hideRead\}[\s\S]*?bi-filter-circle/);
   assert.match(titleBar, /setHideRead\(\(current\)\s*=>\s*!current\)/);
   assert.doesNotMatch(app, /className="feedTools"/);
   assert.match(styles, /\.feedTitleActions\s*\{/);
@@ -73,12 +71,30 @@ test("the subscriptions heading toggles the whole persisted section", () => {
   assert.match(app, /readflux\.sidebar\.subscriptions-collapsed/);
   assert.match(app, /subscriptionsCollapsed\s*\?\s*"bi-chevron-right"\s*:\s*"bi-chevron-down"/);
   assert.match(app, /aria-expanded=\{!subscriptionsCollapsed\}/);
-  assert.match(app, /\{!subscriptionsCollapsed\s*&&\s*categorySources\.map/);
+  assert.match(app, /\{!subscriptionsCollapsed\s*&&\s*visibleCategorySources\.map/);
 
   const heading = app.match(/<div className="sideLabel">([\s\S]*?)<\/div>/)?.[1] ?? "";
   assert.match(heading, /setSubscriptionsCollapsed/);
   assert.doesNotMatch(heading, /setCollapsedCategories/);
   assert.doesNotMatch(heading, />折叠<|>展开</);
+});
+
+test("scheme A resets the source scope through every smart feed", () => {
+  assert.match(app, /onClick=\{\(\) => switchListContext\(key, null\)\}/);
+  assert.match(app, /mode === key && topic \? "↩" : count/);
+  assert.doesNotMatch(app, /allSubscriptions|所有订阅/);
+});
+
+test("changing smart feed, category, or feed closes the open article", () => {
+  assert.match(app, /const switchListContext = useCallback\([\s\S]*?commitActiveEvent\(\);[\s\S]*?persistActive\(\);[\s\S]*?setSelectedId\(null\);[\s\S]*?navigateToList\(\);[\s\S]*?setMobileView\("list"\)/);
+  assert.match(app, /switchListContext\(mode, \{ kind: "category", id: category\.id \}\)/);
+  assert.match(app, /switchListContext\(mode, \{ kind: "feed", id: feed\.id \}\)/);
+});
+
+test("subscription counts follow the smart feed and unread-only filter", () => {
+  assert.match(app, /if \(!isEntryInSmartFeed\(entry, mode, entryLabels\)\) return;/);
+  assert.match(app, /mode !== "updated" && hideRead && entry\.status !== "unread"/);
+  assert.match(app, /const visibleCategorySources = useMemo/);
 });
 
 test("subscription collapse state survives unavailable browser storage", () => {
@@ -131,11 +147,10 @@ test("category rows share the smart-feed row grid and horizontal padding", () =>
   assert.match(styles, /\.groupHead\s*\{[^}]*padding:0;/);
 });
 
-test("sidebar icons use optical sizing for Today and All unread", () => {
+test("sidebar icons use optical sizing for Today", () => {
   assert.match(styles, /\.sidebar nav button>i\s*\{[^}]*font:500 15px\/1/);
   assert.match(styles, /\.disclosure\s*\{[^}]*font-size:15px;/);
   assert.match(styles, /\.sidebar nav button>i\.bi-brightness-high-fill\s*\{[^}]*font-size:17px;/);
-  assert.match(styles, /\.sidebar nav button>i\.bi-circle-fill\s*\{[^}]*font-size:12px;/);
 });
 
 test("the empty-state reset button uses a light surface in the day theme", () => {

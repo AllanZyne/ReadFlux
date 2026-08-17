@@ -1,9 +1,11 @@
-export type SmartFeedMode = "today" | "unread" | "saved";
+export type SmartFeedMode = "today" | "updated" | "saved";
 
 export type SmartFeedEntry = {
+  id: number;
   status: "read" | "unread" | "removed";
   starred: boolean;
   published_at: string;
+  changed_at?: string;
 };
 
 export type SortableSmartFeedEntry = SmartFeedEntry & { score: number };
@@ -11,6 +13,7 @@ export type SortableSmartFeedEntry = SmartFeedEntry & { score: number };
 export type SmartFeedCounts = {
   unreadCount: number;
   todayCount: number;
+  updatedCount: number;
   savedCount: number;
 };
 
@@ -33,8 +36,7 @@ export function nextDayBoundary(value: string | number | Date, timeZone?: string
 export function isEntryInSmartFeed(
   entry: SmartFeedEntry,
   mode: SmartFeedMode,
-  todayKey: string,
-  timeZone?: string,
+  labels?: Map<number, string[]>,
 ): boolean;
 export function compareSmartFeedEntries(
   a: SortableSmartFeedEntry & { id: number },
@@ -48,6 +50,5 @@ export function smartFeedStatusPriority(
 ): number;
 export function countSmartFeedEntries(
   entries: SmartFeedEntry[],
-  todayKey: string,
-  timeZone?: string,
+  labels?: Map<number, string[]>,
 ): SmartFeedCounts;

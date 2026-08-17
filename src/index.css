@@ -189,7 +189,6 @@ kbd{padding:2px 6px;border:1px solid #33423e;border-radius:4px;background:#1a252
   text-align:center;
 }
 .sidebar nav button>i.bi-brightness-high-fill{font-size:17px;}
-.sidebar nav button>i.bi-circle-fill{font-size:12px;}
 .sidebar nav button span,.groupHead>span,.sourceRow>span{
   overflow:hidden;
   text-overflow:ellipsis;

@@ -25,7 +25,7 @@ import {
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { startOptionalMinifluxTimeZoneLoad } from "./miniflux-timezone.mjs";
 import { articleHash, articlePermalink, parseAppRoute, type AppRoute } from "./routes";
-import { compareSmartFeedEntries, countSmartFeedEntries, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, localDayKey, nextDayBoundary, selectTimeZone, smartFeedStatusPriority, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
+import { compareSmartFeedEntries, countSmartFeedEntries, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, nextDayBoundary, selectTimeZone, smartFeedStatusPriority, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
 import {
   addEntryLabel,
   CachedFeedIcon,
@@ -123,7 +123,7 @@ type Story = Entry & {
   scoreBreakdown: RecommendationScoreBreakdown;
 };
 type EntryPage = { total: number; entries: Entry[] };
-type ListMode = "today" | "unread" | "saved";
+type ListMode = "today" | "updated" | "saved";
 type Topic = { kind: "category" | "feed"; id: number } | null;
 type SyncProgress = {
   kind: "full" | "incremental" | "search";
@@ -1034,10 +1034,6 @@ export default function App() {
     [minifluxTimeZone],
   );
   const activeTimeZone = timeZoneSelection.timeZone;
-  const todayKey = useMemo(
-    () => localDayKey(todayClock, activeTimeZone),
-    [todayClock, activeTimeZone],
-  );
   const [topic, setTopic] = useState<Topic>(null);
   const [query, setQuery] = useState("");
   const [hideRead, setHideRead] = useState(false);
@@ -1099,8 +1095,6 @@ export default function App() {
   const listSnapshotIds = useRef<Set<number>>(new Set());
   const visibleEmptyRef = useRef(true);
   const modeRef = useRef(mode);
-  const todayKeyRef = useRef(todayKey);
-  const timeZoneRef = useRef(activeTimeZone);
   const topicRef = useRef(topic);
   const feedsRef = useRef(feeds);
   const hideReadRef = useRef(hideRead);
@@ -1234,8 +1228,6 @@ export default function App() {
 
   useEffect(() => { listSnapshotIds.current = new Set(listReadSnapshot.keys()); }, [listReadSnapshot]);
   useEffect(() => { modeRef.current = mode; }, [mode]);
-  useEffect(() => { todayKeyRef.current = todayKey; }, [todayKey]);
-  useEffect(() => { timeZoneRef.current = activeTimeZone; }, [activeTimeZone]);
   useEffect(() => { topicRef.current = topic; }, [topic]);
   useEffect(() => { feedsRef.current = feeds; }, [feeds]);
   useEffect(() => { hideReadRef.current = hideRead; }, [hideRead]);
@@ -1257,13 +1249,13 @@ export default function App() {
     const nextMidnight = nextDayBoundary(now, activeTimeZone);
     const timer = window.setTimeout(() => {
       setTodayClock(Date.now());
-      if (modeRef.current === "today" && !topicRef.current) {
+      if (modeRef.current === "today") {
         setVisibleIds([]);
         setListReadSnapshot(new Map(entriesRef.current.map((entry) => [entry.id, entry.status])));
       }
     }, Math.max(1_000, nextMidnight.getTime() - now.getTime() + 100));
     return () => window.clearTimeout(timer);
-  }, [todayKey, activeTimeZone]);
+  }, [todayClock, activeTimeZone]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1381,15 +1373,13 @@ export default function App() {
     if (!queryRef.current.trim()) {
       const currentMode = modeRef.current;
       const currentTopic = topicRef.current;
-      const currentHideRead = hideReadRef.current;
+      const currentHideRead = hideReadRef.current && currentMode !== "updated";
+      const matchesCurrentMode = (entry: Entry) => (
+        currentMode === "updated" && updatedIds.has(entry.id)
+      ) || isEntryInSmartFeed(entry, currentMode, entryLabels);
       const relevant = protectedBatch.filter((entry) => {
         if (listSnapshotIds.current.has(entry.id)) return false;
-        if (!currentTopic && !isEntryInSmartFeed(
-          entry,
-          currentMode,
-          todayKeyRef.current,
-          timeZoneRef.current,
-        )) return false;
+        if (!matchesCurrentMode(entry)) return false;
         if (currentHideRead && entry.status === "read") return false;
         if (currentTopic?.kind === "category") {
           const feed = feedsRef.current.find((f) => f.id === entry.feed_id);
@@ -1401,7 +1391,7 @@ export default function App() {
       const updatedInList = protectedBatch.filter((entry) => {
         if (!updatedIds.has(entry.id)) return false;
         if (!listSnapshotIds.current.has(entry.id)) return false;
-        if (!currentTopic && !isEntryInSmartFeed(entry, currentMode, todayKeyRef.current, timeZoneRef.current)) return false;
+        if (!matchesCurrentMode(entry)) return false;
         if (currentHideRead && entry.status === "read") return false;
         if (currentTopic?.kind === "category") {
           const feed = feedsRef.current.find((f) => f.id === entry.feed_id);
@@ -1424,7 +1414,7 @@ export default function App() {
       }
     }
     await putCachedEntries(config, mergedBatch);
-  }, [config, replaceEntries]);
+  }, [config, entryLabels, replaceEntries]);
 
   const load = useCallback(async (options?: EntrySyncOptions) => {
     if (!config) return false;
@@ -1786,19 +1776,37 @@ export default function App() {
     setPendingNew(0);
   }, [commitActiveEvent]);
 
+  const switchListContext = useCallback((nextMode: ListMode, nextTopic: Topic) => {
+    commitActiveEvent();
+    void persistActive();
+    activeEvent.current = null;
+    setSelectedId(null);
+    navigateToList();
+    setMobileView("list");
+    setMarkAllReadOpen(false);
+    setVisibleIds([]);
+    setListReadSnapshot(new Map(entriesRef.current.map((entry) => [entry.id, entry.status])));
+    setPendingNew(0);
+    modeRef.current = nextMode;
+    topicRef.current = nextTopic;
+    setMode(nextMode);
+    setTopic(nextTopic);
+  }, [commitActiveEvent, navigateToList, persistActive]);
+
   const visible = useMemo(() => {
     const hasQuery = !!query.trim();
     const needle = hasQuery ? query.trim().toLowerCase() : "";
+    const preservedUpdatedIds = mode === "updated" ? new Set(visibleIds) : null;
     const filtered = stories.filter((story) => {
       if (!hasQuery && !listReadSnapshot.has(story.id)) return false;
       const statusWhenListed = listReadSnapshot.get(story.id) ?? story.status;
-      if (!topic && !isEntryInSmartFeed(
+      const remainsInUpdatedSnapshot = preservedUpdatedIds?.has(story.id) ?? false;
+      if (!remainsInUpdatedSnapshot && !isEntryInSmartFeed(
         { ...story, status: statusWhenListed },
         mode,
-        todayKey,
-        activeTimeZone,
+        entryLabels,
       )) return false;
-      if (hideRead && statusWhenListed === "read") return false;
+      if (mode !== "updated" && hideRead && statusWhenListed === "read") return false;
       if (topic?.kind === "category" && story.categoryId !== topic.id) return false;
       if (topic?.kind === "feed" && story.feed_id !== topic.id) return false;
       if (!hasQuery) return true;
@@ -1812,13 +1820,13 @@ export default function App() {
         if (ai !== undefined && bi !== undefined) return ai - bi;
         if (ai !== undefined) return -1;
         if (bi !== undefined) return 1;
-        return compareSmartFeedEntries(a, b, topic ? "unread" : mode, entryLabels);
+        return compareSmartFeedEntries(a, b, mode, entryLabels);
       });
     } else {
-      filtered.sort((a, b) => compareSmartFeedEntries(a, b, topic ? "unread" : mode, entryLabels));
+      filtered.sort((a, b) => compareSmartFeedEntries(a, b, mode, entryLabels));
     }
     return filtered;
-  }, [stories, mode, topic, query, hideRead, listReadSnapshot, visibleIds, todayKey, activeTimeZone, entryLabels]);
+  }, [stories, mode, topic, query, hideRead, listReadSnapshot, visibleIds, entryLabels]);
   const visibleUnreadCount = useMemo(
     () => visible.reduce((count, story) => count + (story.status === "unread" ? 1 : 0), 0),
     [visible],
@@ -1826,7 +1834,7 @@ export default function App() {
 
   useEffect(() => {
     if (visible.length && !visibleIds.length) {
-      if (mode === "today" && !topic && !query.trim()) {
+      if (mode === "today" && !query.trim()) {
         const exposure = createRankingExposure({
           id: crypto.randomUUID(),
           createdAt: new Date().toISOString(),
@@ -2277,13 +2285,25 @@ export default function App() {
     ...category,
     feeds: feeds.filter((feed) => feed.category?.id === category.id),
   })), [categories, feeds]);
-  const unreadByFeed = useMemo(() => {
+  const countByFeed = useMemo(() => {
     const counts = new Map<number, number>();
     entries.forEach((entry) => {
-      if (entry.status === "unread") counts.set(entry.feed_id, (counts.get(entry.feed_id) ?? 0) + 1);
+      if (!isEntryInSmartFeed(entry, mode, entryLabels)) return;
+      if (mode !== "updated" && hideRead && entry.status !== "unread") return;
+      counts.set(entry.feed_id, (counts.get(entry.feed_id) ?? 0) + 1);
     });
     return counts;
-  }, [entries]);
+  }, [entries, entryLabels, hideRead, mode]);
+  const visibleCategorySources = useMemo(() => categorySources.flatMap((category) => {
+    const visibleFeeds = category.feeds.filter((feed) =>
+      (countByFeed.get(feed.id) ?? 0) > 0
+      || topic?.kind === "feed" && topic.id === feed.id,
+    );
+    const selected = topic?.kind === "category" && topic.id === category.id;
+    return visibleFeeds.length || selected || syncProgress
+      ? [{ ...category, feeds: syncProgress ? category.feeds : visibleFeeds }]
+      : [];
+  }), [categorySources, countByFeed, syncProgress, topic]);
   const topicTitle = topic?.kind === "category"
     ? categories.find((category) => category.id === topic.id)?.title
     : topic?.kind === "feed"
@@ -2309,10 +2329,19 @@ export default function App() {
       rows[Math.max(0, Math.min(rows.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))]?.focus();
     }
   };
-  const { unreadCount, todayCount, savedCount } = useMemo(
-    () => countSmartFeedEntries(entries, todayKey, activeTimeZone),
-    [entries, todayKey, activeTimeZone],
+  const { unreadCount, todayCount, updatedCount, savedCount } = useMemo(
+    () => countSmartFeedEntries(entries, entryLabels),
+    [entries, entryLabels],
   );
+  const navCounts = useMemo(() => ({
+    today: hideRead ? unreadCount : todayCount,
+    updated: updatedCount,
+    saved: hideRead
+      ? entries.reduce((count, entry) => count + (
+        entry.status === "unread" && entry.starred ? 1 : 0
+      ), 0)
+      : savedCount,
+  }), [entries, hideRead, savedCount, todayCount, unreadCount, updatedCount]);
   const syncProgressLabel = syncProgress
     ? `${syncProgress.kind === "search"
       ? t("sync.searching")
@@ -2359,9 +2388,9 @@ export default function App() {
   };
 
   const nav = [
-    ["today", "bi-brightness-high-fill", t("sidebar.today"), todayCount],
-    ["unread", "bi-circle-fill", t("sidebar.allUnread"), unreadCount],
-    ["saved", "bi-star-fill", t("sidebar.saved"), savedCount],
+    ["today", "bi-brightness-high-fill", t("sidebar.today"), navCounts.today],
+    ["updated", "bi-arrow-repeat", t("sidebar.updated"), navCounts.updated],
+    ["saved", "bi-star-fill", t("sidebar.saved"), navCounts.saved],
   ] as const;
 
   return (
@@ -2380,12 +2409,12 @@ export default function App() {
             <span className="sr-only" role="status">{refreshStatus}</span>
           </header>
           <div className="sidebarScroll" onKeyDown={handleSidebarKey}>
-            <nav>{nav.map(([key, icon, label, count]) => <button data-sidebar-row key={key} className={mode === key && !topic ? "active" : ""} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setMode(key); setTopic(null); setMobileView("list"); }}><i className={`bi ${icon}`} aria-hidden="true" /><span>{label}</span><em>{count}</em></button>)}</nav>
+            <nav>{nav.map(([key, icon, label, count]) => <button data-sidebar-row key={key} className={mode === key ? "active" : ""} onClick={() => switchListContext(key, null)}><i className={`bi ${icon}`} aria-hidden="true" /><span>{label}</span><em>{mode === key && topic ? "↩" : count}</em></button>)}</nav>
             <div className="sideLabel"><span>{t("sidebar.subscriptions")}</span><button type="button" onClick={() => setSubscriptionsCollapsed((current) => !current)} title={t(subscriptionsCollapsed ? "sidebar.expand" : "sidebar.collapse")} aria-label={t(subscriptionsCollapsed ? "sidebar.expand" : "sidebar.collapse")} aria-expanded={!subscriptionsCollapsed}><i className={`bi ${subscriptionsCollapsed ? "bi-chevron-right" : "bi-chevron-down"}`} aria-hidden="true" /></button></div>
-            {!subscriptionsCollapsed && categorySources.map((category) => {
+            {!subscriptionsCollapsed && visibleCategorySources.map((category) => {
               const collapsed = collapsedCategories.has(category.id);
               const categorySelected = topic?.kind === "category" && topic.id === category.id;
-              const categoryUnread = category.feeds.reduce((sum, feed) => sum + (unreadByFeed.get(feed.id) ?? 0), 0);
+              const categoryCount = category.feeds.reduce((sum, feed) => sum + (countByFeed.get(feed.id) ?? 0), 0);
               return <section className="sourceGroup" key={category.id}>
                 <div className={`groupRow ${categorySelected ? "selected" : ""}`}>
                   <button className="disclosure" onClick={() => toggleCategory(category.id)} aria-label={t(collapsed ? "sidebar.expandCategory" : "sidebar.collapseCategory", { title: category.title })} aria-expanded={!collapsed}><i className={`bi ${collapsed ? "bi-folder-fill" : "bi-folder2-open"}`} aria-hidden="true" /></button>
@@ -2393,16 +2422,16 @@ export default function App() {
                     data-sidebar-row
                     className="groupHead"
                     aria-current={categorySelected ? "page" : undefined}
-                    onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setTopic({ kind: "category", id: category.id }); setMobileView("list"); }}
+                    onClick={() => switchListContext(mode, { kind: "category", id: category.id })}
                     onKeyDown={(event) => {
                       if (event.key === "ArrowLeft") { event.preventDefault(); event.stopPropagation(); toggleCategory(category.id, true); }
                       if (event.key === "ArrowRight") { event.preventDefault(); event.stopPropagation(); toggleCategory(category.id, false); }
                       if (event.key === " ") { event.preventDefault(); event.stopPropagation(); toggleCategory(category.id); }
                     }}
-                  ><span>{category.title}</span><em>{categoryUnread || ""}</em></button>
+                  ><span>{category.title}</span><em>{categoryCount || ""}</em></button>
                 </div>
                 {!collapsed && <div className="groupFeeds">
-                  {category.feeds.map((feed) => <button data-sidebar-row className={topic?.kind === "feed" && topic.id === feed.id ? "sourceRow selected" : "sourceRow"} key={feed.id} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setTopic({ kind: "feed", id: feed.id }); setMobileView("list"); }}><SourceIcon src={feedIcons.get(feed.id)}>{feed.title.slice(0, 1)}</SourceIcon><span>{feed.title}</span><em>{unreadByFeed.get(feed.id) || ""}</em></button>)}
+                  {category.feeds.map((feed) => <button data-sidebar-row className={topic?.kind === "feed" && topic.id === feed.id ? "sourceRow selected" : "sourceRow"} key={feed.id} onClick={() => switchListContext(mode, { kind: "feed", id: feed.id })}><SourceIcon src={feedIcons.get(feed.id)}>{feed.title.slice(0, 1)}</SourceIcon><span>{feed.title}</span><em>{countByFeed.get(feed.id) || ""}</em></button>)}
                 </div>}
               </section>;
             })}
@@ -2413,10 +2442,10 @@ export default function App() {
         <section className="feed">
           <header className="feedTitle">
             <button className="mobileBack" onClick={() => setMobileView("sources")}>‹ {t("sidebar.feeds")}</button>
-            <div className="feedTitleText"><h1>{topicTitle || t(mode === "today" ? "sidebar.today" : mode === "unread" ? "sidebar.allUnread" : "sidebar.saved")}</h1><small>{t("feed.articleCount", { count: visible.length })}{error && entries.length ? ` · ${t("feed.offline")}` : ""}</small></div>
+            <div className="feedTitleText"><h1>{topicTitle ? `${t(`sidebar.${mode}`)} · ${topicTitle}` : t(`sidebar.${mode}`)}</h1><small>{t(mode === "today" ? "feed.recommendedCount" : mode === "updated" ? "feed.updatedCount" : "feed.articleCount", { count: visible.length })}{error && entries.length ? ` · ${t("feed.offline")}` : ""}</small></div>
             <div className="feedTitleActions" role="group" aria-label={t("feed.listActions")}>
               <button ref={markAllReadButtonRef} type="button" className={markAllReadOpen ? "markAllReadSpotlight" : ""} onClick={requestMarkVisibleRead} disabled={!visibleUnreadCount} aria-label={t("feed.markAllRead")} title={t("feed.markAllRead")}><i className="bi bi-check2-all" aria-hidden="true" /></button>
-              <button type="button" className={hideRead ? "active" : ""} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead((current) => !current); }} aria-label={t("feed.hideRead")} title={t(hideRead ? "feed.showRead" : "feed.hideRead")} aria-pressed={hideRead}><i className="bi bi-filter-circle" aria-hidden="true" /></button>
+              {mode !== "updated" && <button type="button" className={hideRead ? "active" : ""} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead((current) => !current); }} aria-label={t("feed.unreadOnly")} title={t(hideRead ? "feed.showAll" : "feed.unreadOnly")} aria-pressed={hideRead}><i className="bi bi-filter-circle" aria-hidden="true" /></button>}
             </div>
           </header>
           {markAllReadOpen && <>
@@ -2444,7 +2473,7 @@ export default function App() {
                 <div className="storySource"><SourceIcon src={feedIcons.get(story.feed_id)}>{story.mark}</SourceIcon><span>{story.source}</span><time>{formatZonedTime(story.published_at, activeTimeZone)}</time>{story.starred && <b>★</b>}</div>
                 <h2>{story.title}</h2><p>{story.summary}</p>
                 <footer><i /><span>{t(story.status === "unread" ? "feed.unread" : entryLabels.get(story.id)?.includes("updated") ? "feed.updated" : story.starred ? "feed.saved" : "feed.read")}</span><span>·</span><span>{t("feed.minutes", { count: story.reading_time || 1 })}</span></footer>
-              </article>) : <div className="empty"><b>✓</b><h2>{t("feed.empty")}</h2><p>{t("feed.emptyHint")}</p><button onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setQuery(""); setTopic(null); setMode("today"); setHideRead(false); }}>{t("common.reset")}</button></div>}
+              </article>) : <div className="empty"><b>✓</b><h2>{t("feed.empty")}</h2><p>{t("feed.emptyHint")}</p><button onClick={() => { setQuery(""); setHideRead(false); switchListContext("today", null); }}>{t("common.reset")}</button></div>}
           </div>
         </section>
         <div className="resizeHandle listHandle" onPointerDown={(event) => startResize("list", event)} onDoubleClick={() => setListWidth(430)} />
