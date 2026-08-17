@@ -2,7 +2,6 @@ import {
   claimEntryMutations,
   completeEntryMutations,
   getEntryMutations,
-  MinifluxRequestError,
   minifluxFetch,
   retryEntryMutations,
   type ConnectionConfig,
@@ -53,26 +52,13 @@ export function groupEntryMutations(mutations: StoredEntryMutation[]) {
 
 async function sendMutationGroup(config: ConnectionConfig, mutations: StoredEntryMutation[]) {
   const mutation = mutations[0];
-  try {
-    await minifluxFetch(config, "/v1/entries", {
-      method: "PUT",
-      body: JSON.stringify({
-        entry_ids: mutations.map((item) => item.entryId),
-        [mutation.field]: mutation.value,
-      }),
-    });
-  } catch (cause) {
-    const canUseLegacyStarredAPI = mutation.field === "starred"
-      && cause instanceof MinifluxRequestError
-      && [400, 422].includes(cause.status);
-    if (!canUseLegacyStarredAPI) throw cause;
-    for (const item of mutations) {
-      const remote = await minifluxFetch<{ starred: boolean }>(config, `/v1/entries/${item.entryId}`);
-      if (remote.starred !== item.value) {
-        await minifluxFetch(config, `/v1/entries/${item.entryId}/bookmark`, { method: "PUT" });
-      }
-    }
-  }
+  await minifluxFetch(config, "/v1/entries", {
+    method: "PUT",
+    body: JSON.stringify({
+      entry_ids: mutations.map((item) => item.entryId),
+      [mutation.field]: mutation.value,
+    }),
+  });
 }
 
 async function flushClaimedMutations(config: ConnectionConfig) {

@@ -63,7 +63,7 @@ test("local mutations retry without blocking article refresh", () => {
   assert.match(app, /await flushPendingEntryMutations\(\);\s*\} catch \{ \/\* pending local state remains protected/);
   assert.match(app, /2 \* 60_000/);
   assert.doesNotMatch(app, /\/bookmark/);
-  assert.match(sync, /remote\.starred !== item\.value[\s\S]*?\/bookmark/);
+  assert.doesNotMatch(sync, /\/bookmark/);
 });
 
 test("read, starred, and bulk-read actions enter the durable outbox", () => {

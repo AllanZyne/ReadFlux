@@ -42,7 +42,7 @@ dedicated Miniflux API key for ReadFlux so it can be revoked independently.
 ## Requirements
 
 - Node.js 24 or later
-- A Miniflux instance accessible over HTTPS
+- Miniflux 2.3.2 or later, accessible over HTTPS
 - Miniflux, or its reverse proxy, configured to allow requests from the
   ReadFlux origin
 - CORS rules that allow `X-Auth-Token`, `Content-Type`, and the `GET`, `PUT`,
