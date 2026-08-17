@@ -47,6 +47,7 @@ test("outbox uploads are grouped by field and target value in chunks of 1000", (
   groups.forEach((group) => {
     assert.equal(new Set(group.map((item) => `${item.field}:${item.value}`)).size, 1);
   });
+  assert.doesNotMatch(sync, /groups\.set\(key,\s*\[\.\.\./);
 });
 
 test("entry cache and outbox mutations are persisted atomically with revision-safe completion", () => {
@@ -70,4 +71,5 @@ test("read, starred, and bulk-read actions enter the durable outbox", () => {
   assert.match(app, /queueEntryMutations\(config,\s*\[updated\],\s*\[mutation\]\)/);
   assert.match(app, /ids\.map\(\(entryId\) => \(\{ entryId, field: "status", value: "read" \}\)\)/);
   assert.match(sync, /\[mutation\.field\]:\s*mutation\.value/);
+  assert.match(app, /else if \(patch\.starred !== undefined\)[\s\S]*?else return false;/);
 });

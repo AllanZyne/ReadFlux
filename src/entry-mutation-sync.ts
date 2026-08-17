@@ -41,7 +41,9 @@ export function groupEntryMutations(mutations: StoredEntryMutation[]) {
   const groups = new Map<string, StoredEntryMutation[]>();
   mutations.forEach((mutation) => {
     const key = mutationGroupKey(mutation);
-    groups.set(key, [...(groups.get(key) ?? []), mutation]);
+    const group = groups.get(key);
+    if (group) group.push(mutation);
+    else groups.set(key, [mutation]);
   });
   return [...groups.values()].flatMap((group) => {
     const chunks: StoredEntryMutation[][] = [];

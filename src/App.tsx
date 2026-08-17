@@ -39,8 +39,8 @@ import {
   deleteReadingEvent,
   EntrySyncPhase,
   EntrySyncState,
-  EntryMutation,
-  StoredEntryMutation,
+  type EntryMutation,
+  type StoredEntryMutation,
   getCachedEntries,
   getCachedFeedIcons,
   getConnection,
@@ -1892,14 +1892,15 @@ export default function App() {
 
   const updateEntry = async (id: number, patch: EntryMutationPatch, success: string) => {
     if (!config) return false;
+    let mutation: EntryMutation;
+    if (patch.status !== undefined) mutation = { entryId: id, field: "status", value: patch.status };
+    else if (patch.starred !== undefined) mutation = { entryId: id, field: "starred", value: patch.starred };
+    else return false;
     const before = entriesRef.current.find((entry) => entry.id === id);
     if (!before) return false;
     const updated = { ...before, ...patch };
     replaceEntries((all) => all.map((entry) => entry.id === id ? { ...entry, ...patch } : entry));
     try {
-      const mutation: EntryMutation = patch.status !== undefined
-        ? { entryId: id, field: "status", value: patch.status }
-        : { entryId: id, field: "starred", value: patch.starred! };
       const queued = await queueEntryMutations(config, [updated], [mutation]);
       rememberQueuedEntryMutations(queued);
       void flushPendingEntryMutations().catch(() => undefined);
