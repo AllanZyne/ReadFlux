@@ -274,6 +274,8 @@
     "markAllReadConfirm_other": "将 {{count}} 篇文章标为已读？",
     "newArticles_one": "{{count}} 篇新文章 ↑",
     "newArticles_other": "{{count}} 篇新文章 ↑",
+    "showMore_one": "再显示 {{count}} 篇文章",
+    "showMore_other": "再显示 {{count}} 篇文章",
     "syncing": "正在同步文章",
     "syncingHint": "未读文章会优先显示，随后加载收藏和已读文章。",
     "connectionFailed": "连接失败",

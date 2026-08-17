@@ -274,6 +274,8 @@
     "markAllReadConfirm_other": "Mark {{count}} articles as read?",
     "newArticles_one": "{{count}} new article ↑",
     "newArticles_other": "{{count}} new articles ↑",
+    "showMore_one": "Show {{count}} more article",
+    "showMore_other": "Show {{count}} more articles",
     "syncing": "Syncing articles",
     "syncingHint": "Unread articles appear first, followed by saved and read articles.",
     "connectionFailed": "Connection failed",
