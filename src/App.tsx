@@ -1078,7 +1078,7 @@ export default function App() {
   const [pendingNew, setPendingNew] = useState(0);
   const [activeCandidates, setActiveCandidates] = useState<{ entryId: number; terms: string[]; loading: boolean } | null>(null);
   const [entryLabels, setEntryLabels] = useState<Map<number, string[]>>(new Map());
-  const [visibleIds, setVisibleIds] = useState<number[]>([]);
+  const [listOrderVersion, setListOrderVersion] = useState(0);
   const [renderedStoryCount, setRenderedStoryCount] = useState(STORY_RENDER_BATCH_SIZE);
   const [referrerScopeState, setReferrerScopeState] = useState({ url: "", scope: "" });
   const entriesRef = useRef<Entry[]>([]);
@@ -1106,6 +1106,7 @@ export default function App() {
   const routeRef = useRef(route);
   const webDavUploadTimer = useRef<number | undefined>(undefined);
   const termExtractorRequested = useRef(false);
+  const capturedVisibleOrder = useRef<number[] | null>(null);
   const recommendationEvents = useMemo(() => [...events, ...remoteEvents], [events, remoteEvents]);
   const recommendationExposures = useMemo(() => [...exposures, ...remoteExposures], [exposures, remoteExposures]);
 
@@ -1440,6 +1441,7 @@ export default function App() {
       ]);
       setEntryLabels(labels);
       replaceEntries(cached);
+      setListOrderVersion((version) => version + 1);
       syncStateRef.current = storedState;
       if (!listSnapshotIds.current.size || !cached.some((entry) => listSnapshotIds.current.has(entry.id))) {
         setListReadSnapshot(new Map(cached.map((entry) => [entry.id, entry.status])));
@@ -1778,7 +1780,6 @@ export default function App() {
 
   const refreshList = useCallback(() => {
     commitActiveEvent();
-    setVisibleIds([]);
     setRenderedStoryCount(STORY_RENDER_BATCH_SIZE);
     setListReadSnapshot(new Map(entriesRef.current.map((entry) => [entry.id, entry.status])));
     setPendingNew(0);
@@ -1797,7 +1798,6 @@ export default function App() {
     navigateToList();
     setMobileView("list");
     setMarkAllReadOpen(false);
-    setVisibleIds([]);
     setRenderedStoryCount(STORY_RENDER_BATCH_SIZE);
     setListReadSnapshot(new Map(entriesRef.current.map((entry) => [entry.id, entry.status])));
     setPendingNew(0);
@@ -1808,15 +1808,13 @@ export default function App() {
     setTopic(nextTopic);
   }, [commitActiveEvent, hideReadByMode, navigateToList, persistActive]);
 
-  const visible = useMemo(() => {
+  const frozenVisibleOrder = useMemo(() => {
     const hasQuery = !!query.trim();
     const needle = hasQuery ? query.trim().toLowerCase() : "";
-    const preservedUpdatedIds = mode === "updated" ? new Set(visibleIds) : null;
     const filtered = stories.filter((story) => {
       if (!hasQuery && !listReadSnapshot.has(story.id)) return false;
       const statusWhenListed = listReadSnapshot.get(story.id) ?? story.status;
-      const remainsInUpdatedSnapshot = preservedUpdatedIds?.has(story.id) ?? false;
-      if (!remainsInUpdatedSnapshot && !isEntryInSmartFeed(
+      if (!isEntryInSmartFeed(
         { ...story, status: statusWhenListed },
         mode,
         entryLabels,
@@ -1827,21 +1825,45 @@ export default function App() {
       if (!hasQuery) return true;
       return `${story.title} ${story.summary} ${story.source} ${story.author ?? ""}`.toLowerCase().includes(needle);
     });
-    if (visibleIds.length) {
-      const orderIndex = new Map(visibleIds.map((id, i) => [id, i]));
-      filtered.sort((a, b) => {
-        const ai = orderIndex.get(a.id);
-        const bi = orderIndex.get(b.id);
-        if (ai !== undefined && bi !== undefined) return ai - bi;
-        if (ai !== undefined) return -1;
-        if (bi !== undefined) return 1;
-        return compareSmartFeedEntries(a, b, mode, entryLabels);
-      });
-    } else {
-      filtered.sort((a, b) => compareSmartFeedEntries(a, b, mode, entryLabels));
-    }
-    return filtered;
-  }, [stories, mode, topic, query, hideRead, listReadSnapshot, visibleIds, entryLabels]);
+    filtered.sort((a, b) => compareSmartFeedEntries(a, b, mode, entryLabels));
+    return {
+      ids: filtered.map((story) => story.id),
+      initialEntries: stories,
+      initialLabels: entryLabels,
+      initialVisible: filtered,
+    };
+  // The snapshot and context deliberately define when list order is rebuilt.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hideRead, listOrderVersion, listReadSnapshot, mode, query, topic]);
+
+  const visible = useMemo(() => {
+    if (
+      frozenVisibleOrder.initialEntries === stories
+      && frozenVisibleOrder.initialLabels === entryLabels
+    ) return frozenVisibleOrder.initialVisible;
+
+    const hasQuery = !!query.trim();
+    const needle = hasQuery ? query.trim().toLowerCase() : "";
+    const storyById = new Map(stories.map((story) => [story.id, story]));
+    const preservedUpdatedIds = mode === "updated" ? new Set(frozenVisibleOrder.ids) : null;
+    return frozenVisibleOrder.ids.flatMap((id) => {
+      const story = storyById.get(id);
+      if (!story) return [];
+      if (!hasQuery && !listReadSnapshot.has(story.id)) return [];
+      const statusWhenListed = listReadSnapshot.get(story.id) ?? story.status;
+      const remainsInUpdatedSnapshot = preservedUpdatedIds?.has(story.id) ?? false;
+      if (!remainsInUpdatedSnapshot && !isEntryInSmartFeed(
+        { ...story, status: statusWhenListed },
+        mode,
+        entryLabels,
+      )) return [];
+      if (mode !== "updated" && hideRead && statusWhenListed === "read") return [];
+      if (topic?.kind === "category" && story.categoryId !== topic.id) return [];
+      if (topic?.kind === "feed" && story.feed_id !== topic.id) return [];
+      if (hasQuery && !`${story.title} ${story.summary} ${story.source} ${story.author ?? ""}`.toLowerCase().includes(needle)) return [];
+      return [story];
+    });
+  }, [stories, mode, topic, query, hideRead, listReadSnapshot, frozenVisibleOrder, entryLabels]);
   const visibleUnreadCount = useMemo(
     () => visible.reduce((count, story) => count + (story.status === "unread" ? 1 : 0), 0),
     [visible],
@@ -1859,30 +1881,28 @@ export default function App() {
   }, [revealMoreStories]);
 
   useEffect(() => {
-    if (visible.length && !visibleIds.length) {
-      if (mode === "today" && !query.trim()) {
-        const exposure = createRankingExposure({
-          id: crypto.randomUUID(),
-          createdAt: new Date().toISOString(),
-          candidateCount: visible.length,
-          candidates: visible.slice(0, 50).map((story) => ({
-            entryId: story.id,
-            breakdown: story.scoreBreakdown,
-            statusPriority: smartFeedStatusPriority(story, entryLabels),
-          })),
-        });
-        latestExposure.current = exposure;
-        void putRankingExposure(exposure).then(() => {
-          setExposures((current) => [...current, exposure]);
-          scheduleWebDavUpload();
-        }).catch(() => undefined);
-      } else {
-        latestExposure.current = null;
-      }
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- captures and freezes a fresh sorted order
-      setVisibleIds(visible.map((s) => s.id));
+    if (capturedVisibleOrder.current === frozenVisibleOrder.ids) return;
+    capturedVisibleOrder.current = frozenVisibleOrder.ids;
+    if (mode === "today" && !query.trim() && visible.length) {
+      const exposure = createRankingExposure({
+        id: crypto.randomUUID(),
+        createdAt: new Date().toISOString(),
+        candidateCount: visible.length,
+        candidates: visible.slice(0, 50).map((story) => ({
+          entryId: story.id,
+          breakdown: story.scoreBreakdown,
+          statusPriority: smartFeedStatusPriority(story, entryLabels),
+        })),
+      });
+      latestExposure.current = exposure;
+      void putRankingExposure(exposure).then(() => {
+        setExposures((current) => [...current, exposure]);
+        scheduleWebDavUpload();
+      }).catch(() => undefined);
+    } else {
+      latestExposure.current = null;
     }
-  }, [visible, visibleIds, mode, topic, query, entryLabels, scheduleWebDavUpload]);
+  }, [visible, frozenVisibleOrder, mode, query, entryLabels, scheduleWebDavUpload]);
 
   useEffect(() => { visibleEmptyRef.current = !visible.length; }, [visible]);
 
@@ -2144,7 +2164,6 @@ export default function App() {
     const before = entries;
     const after = entries.map((entry) => idSet.has(entry.id) ? { ...entry, status: "read" as const } : entry);
     replaceEntries(after);
-    setVisibleIds([]);
     setListReadSnapshot(new Map(after.map((entry) => [entry.id, entry.status])));
     try {
       const queued = await queueEntryMutations(
@@ -2168,7 +2187,6 @@ export default function App() {
       notify(t("feed.markedRead", { count: ids.length }));
     } catch (cause) {
       replaceEntries(before);
-      setVisibleIds([]);
       setListReadSnapshot(new Map(before.map((entry) => [entry.id, entry.status])));
       notify(errorMessage(cause, t, "errors.sync"));
     }
@@ -2478,7 +2496,7 @@ export default function App() {
             <div className="feedTitleText"><h1>{topicTitle ? `${t(`sidebar.${mode}`)} · ${topicTitle}` : t(`sidebar.${mode}`)}</h1><small>{t(mode === "today" ? "feed.recommendedCount" : mode === "updated" ? "feed.updatedCount" : "feed.articleCount", { count: visible.length })}{error && entries.length ? ` · ${t("feed.offline")}` : ""}</small></div>
             <div className="feedTitleActions" role="group" aria-label={t("feed.listActions")}>
               <button ref={markAllReadButtonRef} type="button" className={markAllReadOpen ? "markAllReadSpotlight" : ""} onClick={requestMarkVisibleRead} disabled={!visibleUnreadCount} aria-label={t("feed.markAllRead")} title={t("feed.markAllRead")}><i className="bi bi-check2-all" aria-hidden="true" /></button>
-              <button type="button" className={hideRead ? "active" : ""} disabled={mode === "updated"} onClick={() => { if (mode === "updated") return; setVisibleIds([]); setRenderedStoryCount(STORY_RENDER_BATCH_SIZE); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideReadByMode((current) => ({ ...current, [mode]: !current[mode] })); }} aria-label={t("feed.unreadOnly")} title={t(mode === "updated" ? "feed.unreadOnly" : hideRead ? "feed.showAll" : "feed.unreadOnly")} aria-pressed={hideRead}><i className="bi bi-filter-circle" aria-hidden="true" /></button>
+              <button type="button" className={hideRead ? "active" : ""} disabled={mode === "updated"} onClick={() => { if (mode === "updated") return; setRenderedStoryCount(STORY_RENDER_BATCH_SIZE); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideReadByMode((current) => ({ ...current, [mode]: !current[mode] })); }} aria-label={t("feed.unreadOnly")} title={t(mode === "updated" ? "feed.unreadOnly" : hideRead ? "feed.showAll" : "feed.unreadOnly")} aria-pressed={hideRead}><i className="bi bi-filter-circle" aria-hidden="true" /></button>
             </div>
           </header>
           {markAllReadOpen && <>

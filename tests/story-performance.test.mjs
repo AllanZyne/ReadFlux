@@ -37,3 +37,16 @@ test("story metadata and recommendation scoring have separate memoized stages", 
   assert.match(app, /const stories = useMemo<Story\[\]>/);
   assert.match(app, /text: story\.recommendationText/);
 });
+
+test("frozen list order does not require an effect-driven second render", () => {
+  assert.doesNotMatch(app, /\[visibleIds, setVisibleIds\]/);
+  assert.doesNotMatch(app, /setVisibleIds\(/);
+  assert.match(app, /const frozenVisibleOrder = useMemo\([\s\S]*?ids: filtered\.map\(\(story\) => story\.id\)/);
+  assert.match(app, /capturedVisibleOrder\.current === frozenVisibleOrder\.ids/);
+
+  const captureStart = app.indexOf("if (capturedVisibleOrder.current === frozenVisibleOrder.ids)");
+  const captureEnd = app.indexOf("}, [visible, frozenVisibleOrder", captureStart);
+  const captureEffect = app.slice(captureStart, captureEnd);
+  assert.ok(captureStart >= 0 && captureEnd > captureStart);
+  assert.doesNotMatch(captureEffect, /setVisible|setListOrderVersion/);
+});
