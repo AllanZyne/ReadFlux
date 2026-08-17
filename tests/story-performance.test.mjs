@@ -53,3 +53,9 @@ test("frozen list order does not require an effect-driven second render", () => 
   assert.ok(captureStart >= 0 && captureEnd > captureStart);
   assert.doesNotMatch(captureEffect, /setVisible|setListOrderVersion/);
 });
+
+test("background sync preserves the frozen list and sync reset restores the first batch", () => {
+  assert.match(app, /if \(!listSnapshotIds\.current\.size \|\| !cached\.some[\s\S]*?setListOrderVersion/);
+  assert.doesNotMatch(app, /replaceEntries\(cached\);\s*setListOrderVersion/);
+  assert.match(app, /onResetSync=\{async \(\) => \{\s*syncResetInProgress\.current = true;\s*resetRenderedStories\(\);/);
+});

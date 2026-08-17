@@ -1442,9 +1442,9 @@ export default function App() {
       ]);
       setEntryLabels(labels);
       replaceEntries(cached);
-      setListOrderVersion((version) => version + 1);
       syncStateRef.current = storedState;
       if (!listSnapshotIds.current.size || !cached.some((entry) => listSnapshotIds.current.has(entry.id))) {
+        setListOrderVersion((version) => version + 1);
         setListReadSnapshot(new Map(cached.map((entry) => [entry.id, entry.status])));
       }
       const [feedData, categoryData] = await Promise.all([
@@ -2632,6 +2632,7 @@ export default function App() {
         }}
         onResetSync={async () => {
           syncResetInProgress.current = true;
+          resetRenderedStories();
           try {
             while (syncInFlight.current) {
               await new Promise((resolve) => window.setTimeout(resolve, 50));
