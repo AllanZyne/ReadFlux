@@ -45,6 +45,18 @@ export type EntrySyncState = {
   updatedAt?: string;
 };
 
+export type EntryMutation =
+  | { entryId: number; field: "status"; value: "read" | "unread" }
+  | { entryId: number; field: "starred"; value: boolean };
+
+export type StoredEntryMutation = EntryMutation & {
+  key: string;
+  scope: string;
+  revision: string;
+  state: "pending" | "sending";
+  updatedAt: string;
+};
+
 export type CachedFeedIcon = {
   feedId: number;
   iconId: number;
@@ -125,12 +137,13 @@ export type WebDavConfig = {
 const LOCAL_CONFIG = "readflux.miniflux.local";
 const SESSION_CONFIG = "readflux.miniflux.session";
 const DB_NAME = "readflux-profile";
-const DB_VERSION = 7;
+const DB_VERSION = 8;
 const EVENTS = "reading-events";
 const SETTINGS = "settings";
 const ENTRY_CACHE = "entry-cache";
 const ENTRY_LABELS = "entry-labels";
 const FEED_ICONS = "feed-icons";
+const ENTRY_MUTATIONS = "entry-mutations";
 const REMOTE_EVENTS = "remote-reading-events";
 const RANKING_EXPOSURES = "ranking-exposures";
 const REMOTE_RANKING_EXPOSURES = "remote-ranking-exposures";
@@ -258,6 +271,10 @@ function openDb(): Promise<IDBDatabase> {
         const store = db.createObjectStore(FEED_ICONS, { keyPath: "key" });
         store.createIndex("scope", "scope");
       }
+      if (!db.objectStoreNames.contains(ENTRY_MUTATIONS)) {
+        const store = db.createObjectStore(ENTRY_MUTATIONS, { keyPath: "key" });
+        store.createIndex("scope", "scope");
+      }
       if (!db.objectStoreNames.contains(REMOTE_EVENTS)) {
         const store = db.createObjectStore(REMOTE_EVENTS, { keyPath: "key" });
         store.createIndex("sourceMonth", "sourceMonth");
@@ -312,6 +329,83 @@ export async function putCachedEntries<T extends CacheableEntry>(config: Connect
   });
   await transactionComplete(transaction);
   db.close();
+}
+
+export async function getEntryMutations(config: ConnectionConfig): Promise<StoredEntryMutation[]> {
+  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
+  const mutations = await requestResult(
+    db.transaction(ENTRY_MUTATIONS).objectStore(ENTRY_MUTATIONS).index("scope").getAll(scope),
+  ) as StoredEntryMutation[];
+  db.close();
+  return mutations;
+}
+
+export async function queueEntryMutations<T extends CacheableEntry>(
+  config: ConnectionConfig,
+  entries: T[],
+  mutations: EntryMutation[],
+) {
+  if (!mutations.length) return [];
+  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
+  const transaction = db.transaction([ENTRY_CACHE, ENTRY_MUTATIONS], "readwrite");
+  const entryStore = transaction.objectStore(ENTRY_CACHE);
+  entries.forEach((entry) => {
+    const record: EntryCacheRecord<T> = { key: `${scope}:${entry.id}`, scope, entry };
+    entryStore.put(record);
+  });
+  const now = new Date().toISOString();
+  const records = mutations.map((mutation): StoredEntryMutation => ({
+    ...mutation,
+    key: `${scope}:${mutation.entryId}:${mutation.field}`,
+    scope,
+    revision: crypto.randomUUID(),
+    state: "pending",
+    updatedAt: now,
+  }));
+  const mutationStore = transaction.objectStore(ENTRY_MUTATIONS);
+  records.forEach((record) => mutationStore.put(record));
+  await transactionComplete(transaction);
+  db.close();
+  return records;
+}
+
+export async function claimEntryMutations(config: ConnectionConfig): Promise<StoredEntryMutation[]> {
+  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
+  const transaction = db.transaction(ENTRY_MUTATIONS, "readwrite");
+  const store = transaction.objectStore(ENTRY_MUTATIONS);
+  const records = await requestResult(store.index("scope").getAll(scope)) as StoredEntryMutation[];
+  const claimed = records.map((record) => ({ ...record, state: "sending" as const }));
+  claimed.forEach((record) => store.put(record));
+  await transactionComplete(transaction);
+  db.close();
+  return claimed;
+}
+
+async function updateClaimedEntryMutations(
+  config: ConnectionConfig,
+  claimed: StoredEntryMutation[],
+  action: "complete" | "retry",
+) {
+  if (!claimed.length) return;
+  const db = await openDb();
+  const transaction = db.transaction(ENTRY_MUTATIONS, "readwrite");
+  const store = transaction.objectStore(ENTRY_MUTATIONS);
+  await Promise.all(claimed.map(async (mutation) => {
+    const current = await requestResult(store.get(mutation.key)) as StoredEntryMutation | undefined;
+    if (current?.revision !== mutation.revision) return;
+    if (action === "complete") store.delete(mutation.key);
+    else store.put({ ...current, state: "pending" });
+  }));
+  await transactionComplete(transaction);
+  db.close();
+}
+
+export async function completeEntryMutations(config: ConnectionConfig, claimed: StoredEntryMutation[]) {
+  await updateClaimedEntryMutations(config, claimed, "complete");
+}
+
+export async function retryEntryMutations(config: ConnectionConfig, claimed: StoredEntryMutation[]) {
+  await updateClaimedEntryMutations(config, claimed, "retry");
 }
 
 export async function getCachedFeedIcons(config: ConnectionConfig): Promise<CachedFeedIcon[]> {

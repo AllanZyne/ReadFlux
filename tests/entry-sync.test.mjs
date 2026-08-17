@@ -20,7 +20,7 @@ test("full entry sync loads the complete Miniflux history in resumable phases", 
 });
 
 test("entry cache is connection-scoped and records resumable sync state", () => {
-  assert.match(client, /DB_VERSION\s*=\s*7/);
+  assert.match(client, /DB_VERSION\s*=\s*8/);
   assert.match(client, /createIndex\("scope",\s*"scope"\)/);
   assert.match(client, /ENTRY_LABELS\s*=\s*"entry-labels"/);
   assert.match(client, /initialSyncComplete:\s*boolean/);
@@ -121,7 +121,7 @@ test("changed read entries are labeled before React state scheduling", () => {
 
   assert.deepEqual([...result.updatedIds], [7]);
   assert.equal(result.entries[0].content, "<p>Updated</p>");
-  assert.match(app, /mergeSyncedEntries\(entriesRef\.current,\s*batch\)/);
+  assert.match(app, /protectPendingEntryMutations\(batch,[\s\S]*?mergeSyncedEntries\(entriesRef\.current,\s*protectedBatch\)/);
   assert.doesNotMatch(app, /setEntries\(\(current\) => \{[\s\S]*?updatedIds\.add/);
 });
 
