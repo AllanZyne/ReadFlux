@@ -14,7 +14,7 @@ import {
 } from "./article-images";
 import { articleMediaURL, isExpiredWeiboMediaURL, isWeiboLivePhotoURL, youtubeEmbedURL } from "./article-content";
 import { runExclusive } from "./async-lock";
-import { mergeSyncedEntries } from "./entry-sync";
+import { incrementalChangedAfter, mergeSyncedEntries, newestChangedAt, syncIntervalElapsed } from "./entry-sync";
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { startOptionalMinifluxTimeZoneLoad } from "./miniflux-timezone.mjs";
 import { articleHash, articlePermalink, parseAppRoute, type AppRoute } from "./routes";
@@ -27,8 +27,11 @@ import {
   clearRemoteReadingEvents,
   clearWebDavConfig,
   ConnectionConfig,
+  DEFAULT_FULL_SYNC_INTERVAL,
+  DEFAULT_INCREMENTAL_SYNC_INTERVAL,
   deleteReadingEvent,
   EntrySyncPhase,
+  EntrySyncState,
   getCachedEntries,
   getCachedFeedIcons,
   getConnection,
@@ -41,6 +44,7 @@ import {
   getRemoteReadingEvents,
   getWebDavConfig,
   MinifluxRequestError,
+  MinifluxSyncInterval,
   minifluxFetch,
   newReadingEvent,
   markAllRankingExposureMonthsDirty,
@@ -112,11 +116,14 @@ type EntryPage = { total: number; entries: Entry[] };
 type ListMode = "today" | "unread" | "saved";
 type Topic = { kind: "category" | "feed"; id: number } | null;
 type SyncProgress = {
-  kind: "full" | "search";
+  kind: "full" | "incremental" | "search";
   phase?: EntrySyncPhase;
   loaded: number;
   total: number;
 };
+
+type EntrySyncMode = "auto" | "full" | "incremental";
+type EntrySyncOptions = { background?: boolean; mode?: EntrySyncMode };
 
 const ENTRY_PAGE_SIZE = 100;
 
@@ -434,6 +441,7 @@ function SettingsDialog({
   onSyncWebDav,
   onDisconnectWebDav,
   onDisconnect,
+  onSyncEntries,
   onResetSync,
   syncBusy,
   notify,
@@ -460,6 +468,7 @@ function SettingsDialog({
   onSyncWebDav: () => Promise<boolean>;
   onDisconnectWebDav: () => Promise<void>;
   onDisconnect: () => void;
+  onSyncEntries: () => Promise<void>;
   onResetSync: () => Promise<void>;
   syncBusy: boolean;
   notify: (message: string) => void;
@@ -525,6 +534,16 @@ function SettingsDialog({
       t("settings.languageSaveFailed"),
     );
     if (saved) await i18n.changeLanguage(language);
+  };
+
+  const setMinifluxSyncInterval = async (
+    field: "incrementalSyncIntervalMinutes" | "fullSyncIntervalMinutes",
+    interval: MinifluxSyncInterval,
+  ) => {
+    await saveProfileChange(
+      (current) => ({ ...current, [field]: interval, updatedAt: new Date().toISOString() }),
+      t("sync.intervalSaveFailed"),
+    );
   };
 
   const setDefaultImageMode = async (mode: ImageLoadingMode) => {
@@ -713,6 +732,28 @@ function SettingsDialog({
               <div className="settingsForm minifluxSettings">
                 <label><span>{t("sync.server")}</span><input value={config.url} readOnly /></label>
                 <label className="timeZoneSetting"><span>{t("sync.timeZone")}</span><input value={timeZone} readOnly /><small>{t(timeZoneSource === "miniflux" ? "sync.timeZoneMinifluxHint" : "sync.timeZoneBrowserHint")}</small></label>
+                <div>
+                  {(["incrementalSyncIntervalMinutes", "fullSyncIntervalMinutes"] as const).map((field) => (
+                    <label key={field}>
+                      <span>{t(field === "incrementalSyncIntervalMinutes" ? "sync.incrementalInterval" : "sync.fullInterval")}</span>
+                      <select
+                        disabled={profileSaving}
+                        value={settings[field]}
+                        onChange={(event) => void setMinifluxSyncInterval(field, Number(event.target.value) as MinifluxSyncInterval)}
+                      >
+                        <option value={0}>{t("sync.intervalManual")}</option>
+                        <option value={30}>{t("sync.intervalMinutes", { count: 30 })}</option>
+                        <option value={60}>{t("sync.intervalOneHour")}</option>
+                        <option value={120}>{t("sync.intervalHours", { count: 2 })}</option>
+                        <option value={240}>{t("sync.intervalHours", { count: 4 })}</option>
+                        <option value={480}>{t("sync.intervalHours", { count: 8 })}</option>
+                      </select>
+                    </label>
+                  ))}
+                </div>
+                <div className="settingsActions">
+                  <button className="primary" disabled={syncBusy} onClick={() => void onSyncEntries()}>{t("sync.fullNow")}</button>
+                </div>
                 <label className="syncSelectSetting imageDefaultMode">
                   <span>{t("settings.imageDefault")}</span>
                   <select
@@ -966,7 +1007,13 @@ export default function App() {
   const [remoteExposures, setRemoteExposures] = useState<RankingExposure[]>([]);
   const [webDavConfig, setWebDavConfig] = useState<WebDavConfig | null>(null);
   const [webDavStatus, setWebDavStatus] = useState<WebDavSyncStatus>({ state: "idle" });
-  const [settings, setSettings] = useState<ProfileSettings>({ theme: "day", imageLoadingPreferences: {}, updatedAt: new Date(0).toISOString() });
+  const [settings, setSettings] = useState<ProfileSettings>({
+    theme: "day",
+    imageLoadingPreferences: {},
+    incrementalSyncIntervalMinutes: DEFAULT_INCREMENTAL_SYNC_INTERVAL,
+    fullSyncIntervalMinutes: DEFAULT_FULL_SYNC_INTERVAL,
+    updatedAt: new Date(0).toISOString(),
+  });
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [route, setRoute] = useState<AppRoute>(() => parseAppRoute(window.location.hash));
   const [mode, setMode] = useState<ListMode>("today");
@@ -1034,7 +1081,8 @@ export default function App() {
   const markAllReadConfirmRef = useRef<HTMLButtonElement | null>(null);
   const refreshInFlight = useRef(false);
   const syncInFlight = useRef(false);
-  const syncQueued = useRef(false);
+  const syncQueued = useRef<EntrySyncMode | null>(null);
+  const syncStateRef = useRef<EntrySyncState | null>(null);
   const syncResetInProgress = useRef(false);
   const listSnapshotIds = useRef<Set<number>>(new Set());
   const visibleEmptyRef = useRef(true);
@@ -1045,7 +1093,7 @@ export default function App() {
   const feedsRef = useRef(feeds);
   const hideReadRef = useRef(hideRead);
   const queryRef = useRef(query);
-  const loadRef = useRef<(options?: { background?: boolean }) => Promise<boolean>>(async () => false);
+  const loadRef = useRef<(options?: EntrySyncOptions) => Promise<boolean>>(async () => false);
   const proxyRefreshKey = useRef("");
   const routeRef = useRef(route);
   const webDavUploadTimer = useRef<number | undefined>(undefined);
@@ -1334,17 +1382,17 @@ export default function App() {
     await putCachedEntries(config, mergedBatch);
   }, [config, replaceEntries]);
 
-  const load = useCallback(async (options?: { background?: boolean }) => {
+  const load = useCallback(async (options?: EntrySyncOptions) => {
     if (!config) return false;
     if (syncResetInProgress.current || syncInFlight.current) {
-      syncQueued.current = true;
+      const requestedMode = options?.mode ?? "auto";
+      if (requestedMode === "full" || !syncQueued.current) syncQueued.current = requestedMode;
       return false;
     }
     const background = options?.background ?? false;
     syncInFlight.current = true;
     setLoading(true);
     setError(null);
-    const syncStartedAt = new Date().toISOString();
     try {
       startOptionalMinifluxTimeZoneLoad(
         () => minifluxFetch<MinifluxUser>(config, "/v1/me"),
@@ -1357,6 +1405,7 @@ export default function App() {
       ]);
       setEntryLabels(labels);
       replaceEntries(cached);
+      syncStateRef.current = storedState;
       if (!listSnapshotIds.current.size || !cached.some((entry) => listSnapshotIds.current.has(entry.id))) {
         setListReadSnapshot(new Map(cached.map((entry) => [entry.id, entry.status])));
       }
@@ -1368,45 +1417,106 @@ export default function App() {
       setCategories(categoryData ?? []);
       setSelectedId((current) => current && cached.some((entry) => entry.id === current) ? current : null);
 
-      const phases: { id: EntrySyncPhase; filters: Record<string, string> }[] = [
-        { id: "unread", filters: { status: "unread" } },
-        { id: "starred", filters: { status: "read", starred: "true" } },
-        { id: "read", filters: { status: "read", starred: "false" } },
-      ];
-      const canResume = storedState?.initialSyncComplete === false;
-      const resumeIndex = canResume && storedState.phase
-        ? Math.max(0, phases.findIndex((phase) => phase.id === storedState.phase))
-        : 0;
-      for (let index = resumeIndex; index < phases.length; index += 1) {
-        const phase = phases[index];
-        const startOffset = index === resumeIndex
-          && canResume
-          && storedState?.phase === phase.id
-          ? storedState.offset ?? 0
-          : 0;
-        await loadEntryPages(config, phase.filters, async (batch, loaded, total, nextOffset) => {
-          setSyncProgress({ kind: "full", phase: phase.id, loaded, total });
-          await mergeEntryBatch(batch);
-          await saveEntrySyncState(config, {
-            initialSyncComplete: false,
-            phase: phase.id,
-            offset: nextOffset,
-          });
-        }, startOffset);
-        const nextPhase = phases[index + 1]?.id;
-        if (nextPhase) {
-          await saveEntrySyncState(config, {
-            initialSyncComplete: false,
-            phase: nextPhase,
-            offset: 0,
-          });
-        }
+      const requestedMode = options?.mode ?? "auto";
+      const initialSyncRequired = storedState?.initialSyncComplete !== true;
+      const lastFullSyncAt = storedState?.lastFullSyncAt ?? storedState?.updatedAt;
+      const fullSyncDue = syncIntervalElapsed(lastFullSyncAt, settings.fullSyncIntervalMinutes);
+      const incrementalSyncDue = syncIntervalElapsed(
+        storedState?.lastIncrementalSyncAt ?? lastFullSyncAt,
+        settings.incrementalSyncIntervalMinutes,
+      );
+      const syncMode: Exclude<EntrySyncMode, "auto"> | null = initialSyncRequired || requestedMode === "full"
+        ? "full"
+        : requestedMode === "incremental"
+          ? "incremental"
+          : fullSyncDue
+            ? "full"
+            : incrementalSyncDue
+              ? "incremental"
+              : null;
+
+      if (!syncMode) {
+        const lastSyncAt = storedState?.lastIncrementalSyncAt ?? lastFullSyncAt;
+        if (lastSyncAt) setSyncedAt(new Date(lastSyncAt));
+        return true;
       }
 
-      await saveEntrySyncState(config, {
-        initialSyncComplete: true,
-        updatedAt: syncStartedAt,
-      });
+      if (syncMode === "full") {
+        const phases: { id: EntrySyncPhase; filters: Record<string, string> }[] = [
+          { id: "unread", filters: { status: "unread" } },
+          { id: "starred", filters: { status: "read", starred: "true" } },
+          { id: "read", filters: { status: "read", starred: "false" } },
+        ];
+        const canResume = storedState?.initialSyncComplete === false;
+        const resumeIndex = canResume && storedState.phase
+          ? Math.max(0, phases.findIndex((phase) => phase.id === storedState.phase))
+          : 0;
+        for (let index = resumeIndex; index < phases.length; index += 1) {
+          const phase = phases[index];
+          const startOffset = index === resumeIndex
+            && canResume
+            && storedState?.phase === phase.id
+            ? storedState.offset ?? 0
+            : 0;
+          await loadEntryPages(config, phase.filters, async (batch, loaded, total, nextOffset) => {
+            setSyncProgress({ kind: "full", phase: phase.id, loaded, total });
+            await mergeEntryBatch(batch);
+            const nextState: EntrySyncState = {
+              ...storedState,
+              initialSyncComplete: false,
+              phase: phase.id,
+              offset: nextOffset,
+            };
+            await saveEntrySyncState(config, nextState);
+            syncStateRef.current = nextState;
+          }, startOffset);
+          const nextPhase = phases[index + 1]?.id;
+          if (nextPhase) {
+            const nextState: EntrySyncState = {
+              ...storedState,
+              initialSyncComplete: false,
+              phase: nextPhase,
+              offset: 0,
+            };
+            await saveEntrySyncState(config, nextState);
+            syncStateRef.current = nextState;
+          }
+        }
+
+        const completedAt = new Date().toISOString();
+        const completedState: EntrySyncState = {
+          initialSyncComplete: true,
+          incrementalCursor: newestChangedAt(entriesRef.current, storedState?.incrementalCursor),
+          lastIncrementalSyncAt: completedAt,
+          lastFullSyncAt: completedAt,
+          updatedAt: completedAt,
+        };
+        await saveEntrySyncState(config, completedState);
+        syncStateRef.current = completedState;
+      } else {
+        let incrementalCursor = storedState?.incrementalCursor ?? newestChangedAt(cached);
+        const changedAfter = incrementalChangedAfter(incrementalCursor);
+        await loadEntryPages(config, {
+          order: "changed_at",
+          direction: "asc",
+          ...(changedAfter ? { changed_after: changedAfter } : {}),
+        }, async (batch, loaded, total) => {
+          setSyncProgress({ kind: "incremental", loaded, total });
+          await mergeEntryBatch(batch);
+          incrementalCursor = newestChangedAt(batch, incrementalCursor);
+        });
+        const completedAt = new Date().toISOString();
+        const completedState: EntrySyncState = {
+          ...storedState,
+          initialSyncComplete: true,
+          incrementalCursor,
+          lastIncrementalSyncAt: completedAt,
+          phase: undefined,
+          offset: undefined,
+        };
+        await saveEntrySyncState(config, completedState);
+        syncStateRef.current = completedState;
+      }
       setSyncedAt(new Date());
       if (!background && !listSnapshotIds.current.size) {
         setListReadSnapshot(new Map(entriesRef.current.map((entry) => [entry.id, entry.status])));
@@ -1423,11 +1533,12 @@ export default function App() {
       setSyncProgress(null);
       syncInFlight.current = false;
       if (syncQueued.current) {
-        syncQueued.current = false;
-        queueMicrotask(() => void loadRef.current());
+        const queuedMode = syncQueued.current;
+        syncQueued.current = null;
+        queueMicrotask(() => void loadRef.current({ background: true, mode: queuedMode }));
       }
     }
-  }, [config, mergeEntryBatch, replaceEntries]);
+  }, [config, mergeEntryBatch, replaceEntries, settings.fullSyncIntervalMinutes, settings.incrementalSyncIntervalMinutes]);
   useEffect(() => {
     loadRef.current = load;
   }, [load]);
@@ -1467,11 +1578,28 @@ export default function App() {
 
   useEffect(() => {
     if (!config) return;
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible" && !refreshInFlight.current) void loadRef.current({ background: true });
-    }, 5 * 60_000);
-    return () => { window.clearInterval(timer); };
-  }, [config]);
+    const runScheduledSync = () => {
+      if (document.visibilityState !== "visible" || refreshInFlight.current) return;
+      const syncState = syncStateRef.current;
+      const mode = syncState?.initialSyncComplete !== true
+        ? "full"
+        : syncIntervalElapsed(syncState.lastFullSyncAt ?? syncState.updatedAt, settings.fullSyncIntervalMinutes)
+          ? "full"
+          : syncIntervalElapsed(
+              syncState.lastIncrementalSyncAt ?? syncState.lastFullSyncAt ?? syncState.updatedAt,
+              settings.incrementalSyncIntervalMinutes,
+            )
+            ? "incremental"
+            : null;
+      if (mode) void loadRef.current({ background: true, mode });
+    };
+    const timer = window.setInterval(runScheduledSync, 60_000);
+    document.addEventListener("visibilitychange", runScheduledSync);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", runScheduledSync);
+    };
+  }, [config, settings.fullSyncIntervalMinutes, settings.incrementalSyncIntervalMinutes]);
 
   useEffect(() => {
     if (!config || !feeds.length) return;
@@ -2106,7 +2234,9 @@ export default function App() {
   const syncProgressLabel = syncProgress
     ? `${syncProgress.kind === "search"
       ? t("sync.searching")
-      : t(syncProgress.phase === "unread" ? "sync.initialUnread" : syncProgress.phase === "starred" ? "sync.initialSaved" : "sync.initialRead")}${syncProgress.total ? ` ${syncProgress.loaded} / ${syncProgress.total}` : ""}`
+      : syncProgress.kind === "incremental"
+        ? t("sync.incrementalSyncing")
+        : t(syncProgress.phase === "unread" ? "sync.initialUnread" : syncProgress.phase === "starred" ? "sync.initialSaved" : "sync.initialRead")}${syncProgress.total ? ` ${syncProgress.loaded} / ${syncProgress.total}` : ""}`
     : "";
   if (!ready) return <main className="boot" data-theme="day"><span className="wave">▁▅█▃▇▂</span><p>{t("connect.booting")}</p></main>;
   if (!config) return <ConnectScreen onConnected={(nextConfig, nextSettings) => {
@@ -2130,7 +2260,7 @@ export default function App() {
     setRefreshing(true);
     setRefreshFailed(false);
     try {
-      const syncSucceeded = await load();
+      const syncSucceeded = await load({ mode: "full" });
       if (!syncSucceeded) {
         setRefreshFailed(true);
         return;
@@ -2323,6 +2453,15 @@ export default function App() {
           setSettingsOpen(false);
           setConfig(null);
         }}
+        onSyncEntries={async () => {
+          const succeeded = await load({ mode: "full" });
+          if (succeeded) {
+            refreshList();
+            notify(t("sync.refreshDone"));
+          } else {
+            notify(t("sync.refreshFailed"));
+          }
+        }}
         onResetSync={async () => {
           syncResetInProgress.current = true;
           try {
@@ -2330,6 +2469,7 @@ export default function App() {
               await new Promise((resolve) => window.setTimeout(resolve, 50));
             }
             await resetEntrySync(config);
+            syncStateRef.current = null;
             replaceEntries([]);
             setListReadSnapshot(new Map());
             setSelectedId(null);
@@ -2341,7 +2481,7 @@ export default function App() {
           } finally {
             syncResetInProgress.current = false;
           }
-          await load();
+          await load({ mode: "full" });
         }}
         syncBusy={loading}
         notify={notify}

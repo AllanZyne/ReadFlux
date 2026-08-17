@@ -187,7 +187,7 @@ test("the refresh button exposes sync state on hover and changes icon after fail
   assert.match(app, /refreshFailed \|\| error \? "bi-exclamation-triangle-fill" : "bi-arrow-clockwise"/);
   assert.match(app, /setRefreshFailed\(false\)[\s\S]*?setRefreshFailed\(true\)/);
   assert.match(app, /refreshInFlight\.current = true;[\s\S]*?setRefreshing\(true\)[\s\S]*?finally\s*\{\s*refreshInFlight\.current = false;[\s\S]*?setRefreshing\(false\)/);
-  assert.match(app, /const syncSucceeded = await load\(\);\s*if \(!syncSucceeded\)\s*\{[\s\S]*?setRefreshFailed\(true\);[\s\S]*?return;/);
+  assert.match(app, /const syncSucceeded = await load\(\{\s*mode:\s*"full"\s*\}\);\s*if \(!syncSucceeded\)\s*\{[\s\S]*?setRefreshFailed\(true\);[\s\S]*?return;/);
   assert.match(app, /setSyncedAt\(new Date\(\)\);[\s\S]*?return true;[\s\S]*?catch \(cause\)[\s\S]*?return false;/);
   assert.match(styles, /\.toolbarButton\.failed\s*\{[^}]*color:/);
   assert.match(styles, /\.toolbarButton\.spinning>i\s*\{[^}]*animation:spin/);

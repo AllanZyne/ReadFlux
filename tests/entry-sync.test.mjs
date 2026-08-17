@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { mergeSyncedEntries } from "../src/entry-sync.ts";
+import {
+  incrementalChangedAfter,
+  mergeSyncedEntries,
+  newestChangedAt,
+  syncIntervalElapsed,
+} from "../src/entry-sync.ts";
 
 const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
 const client = await readFile(new URL("../src/readflux-client.ts", import.meta.url), "utf8");
 
-test("every entry sync loads the full Miniflux history in resumable phases", () => {
-  assert.doesNotMatch(app, /DEFAULT_LOOKBACK_DAYS|LOOKBACK_OPTIONS|published_after|changed_after/);
+test("full entry sync loads the complete Miniflux history in resumable phases", () => {
+  assert.doesNotMatch(app, /DEFAULT_LOOKBACK_DAYS|LOOKBACK_OPTIONS|published_after/);
   assert.match(app, /\{\s*id:\s*"unread",\s*filters:\s*\{\s*status:\s*"unread"\s*\}\s*\}/);
   assert.match(app, /\{\s*id:\s*"starred",\s*filters:\s*\{\s*status:\s*"read",\s*starred:\s*"true"\s*\}\s*\}/);
   assert.match(app, /\{\s*id:\s*"read",\s*filters:\s*\{\s*status:\s*"read",\s*starred:\s*"false"\s*\}\s*\}/);
@@ -21,12 +26,43 @@ test("entry cache is connection-scoped and records resumable sync state", () => 
   assert.match(client, /initialSyncComplete:\s*boolean/);
   assert.match(client, /phase\?:\s*EntrySyncPhase/);
   assert.match(client, /offset\?:\s*number/);
+  assert.match(client, /incrementalCursor\?:\s*string/);
+  assert.match(client, /lastIncrementalSyncAt\?:\s*string/);
+  assert.match(client, /lastFullSyncAt\?:\s*string/);
 });
 
-test("visible background refreshes use the same full entry sync", () => {
-  assert.doesNotMatch(app, /changed_after|kind:\s*"incremental"/);
-  assert.match(app, /5\s*\*\s*60_000/);
-  assert.match(app, /loadRef\.current\(\{\s*background:\s*true\s*\}\)/);
+test("automatic sync independently schedules incremental and full modes", () => {
+  assert.match(app, /settings\.fullSyncIntervalMinutes/);
+  assert.match(app, /settings\.incrementalSyncIntervalMinutes/);
+  assert.match(app, /syncIntervalElapsed\(syncState\.lastFullSyncAt \?\? syncState\.updatedAt,[\s\S]*?fullSyncIntervalMinutes/);
+  assert.match(app, /lastIncrementalSyncAt \?\? syncState\.lastFullSyncAt \?\? syncState\.updatedAt,[\s\S]*?incrementalSyncIntervalMinutes/);
+  assert.match(app, /loadRef\.current\(\{\s*background:\s*true,\s*mode\s*\}\)/);
+  assert.match(app, /window\.setInterval\(runScheduledSync,\s*60_000\)/);
+  assert.match(app, /value=\{settings\[field\]\}/);
+  for (const interval of [0, 30, 60, 120, 240, 480]) {
+    assert.match(app, new RegExp(`<option value=\\{${interval}\\}>`));
+  }
+  assert.doesNotMatch(app, /onSyncEntries\("incremental"\)/);
+  assert.match(app, /onSyncEntries=\{async \(\) => \{\s*const succeeded = await load\(\{\s*mode:\s*"full"\s*\}\)/);
+});
+
+test("incremental sync uses a remote changed-at cursor with an overlap window", () => {
+  assert.equal(incrementalChangedAfter("2026-08-17T00:00:10.000Z"), "1786924805");
+  assert.equal(incrementalChangedAfter("invalid"), undefined);
+  assert.equal(newestChangedAt([
+    { id: 1, status: "read", content: "", changed_at: "2026-08-17T01:00:00Z" },
+    { id: 2, status: "read", content: "", changed_at: "2026-08-17T03:00:00Z" },
+  ]), "2026-08-17T03:00:00Z");
+  assert.match(app, /order:\s*"changed_at"/);
+  assert.match(app, /changed_after:\s*changedAfter/);
+  assert.match(app, /kind:\s*"incremental"/);
+});
+
+test("manual intervals never become due", () => {
+  assert.equal(syncIntervalElapsed(undefined, 0), false);
+  assert.equal(syncIntervalElapsed("2026-08-17T00:00:00Z", 0, Date.parse("2026-08-18T00:00:00Z")), false);
+  assert.equal(syncIntervalElapsed("2026-08-17T00:00:00Z", 30, Date.parse("2026-08-17T00:29:59Z")), false);
+  assert.equal(syncIntervalElapsed("2026-08-17T00:00:00Z", 30, Date.parse("2026-08-17T00:30:00Z")), true);
 });
 
 test("sync data can be reset without deleting profile data or credentials", () => {
@@ -62,8 +98,8 @@ test("article details are fetched only when cached content is empty", () => {
   assert.doesNotMatch(app, /loadEntryContent\(selectedId,\s*\{ background: true \}\)/);
 });
 
-test("manual refresh stays passive and uses the same entry sync as background refresh", () => {
-  assert.match(app, /const syncSucceeded = await load\(\)/);
+test("manual refresh stays passive and always requests a full entry sync", () => {
+  assert.match(app, /const syncSucceeded = await load\(\{\s*mode:\s*"full"\s*\}\)/);
   assert.doesNotMatch(app, /\/v1\/feeds\/refresh/);
 });
 

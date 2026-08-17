@@ -11,6 +11,8 @@ test("corrupted profile values do not trigger the legacy WebDAV migration", () =
   assert.deepEqual(settingsModule.normalizeProfileSettings("corrupted"), {
     theme: "day",
     imageLoadingPreferences: {},
+    incrementalSyncIntervalMinutes: 30,
+    fullSyncIntervalMinutes: 240,
     updatedAt: new Date(0).toISOString(),
   });
 });
@@ -30,6 +32,8 @@ test("legacy WebDAV credentials are removed when profile settings load", () => {
   assert.deepEqual(normalized, {
     theme: "night",
     imageLoadingPreferences: {},
+    incrementalSyncIntervalMinutes: 30,
+    fullSyncIntervalMinutes: 240,
     updatedAt: "2026-01-01T00:00:00.000Z",
   });
   assert.equal("webdav" in normalized, false);
@@ -78,4 +82,24 @@ test("invalid image loading preferences are discarded", () => {
       feedModes: { 3: "direct-origin" },
     },
   });
+});
+
+test("Miniflux sync intervals use supported values and requested defaults", () => {
+  const defaults = settingsModule.normalizeProfileSettings();
+  assert.equal(defaults.incrementalSyncIntervalMinutes, 30);
+  assert.equal(defaults.fullSyncIntervalMinutes, 240);
+
+  const manual = settingsModule.normalizeProfileSettings({
+    incrementalSyncIntervalMinutes: 0,
+    fullSyncIntervalMinutes: 480,
+  });
+  assert.equal(manual.incrementalSyncIntervalMinutes, 0);
+  assert.equal(manual.fullSyncIntervalMinutes, 480);
+
+  const invalid = settingsModule.normalizeProfileSettings({
+    incrementalSyncIntervalMinutes: 5,
+    fullSyncIntervalMinutes: 1440,
+  });
+  assert.equal(invalid.incrementalSyncIntervalMinutes, 30);
+  assert.equal(invalid.fullSyncIntervalMinutes, 240);
 });

@@ -13,10 +13,17 @@ export type ConnectionConfig = {
 
 export type ThemeName = "day" | "night";
 
+export type MinifluxSyncInterval = 0 | 30 | 60 | 120 | 240 | 480;
+
+export const DEFAULT_INCREMENTAL_SYNC_INTERVAL: MinifluxSyncInterval = 30;
+export const DEFAULT_FULL_SYNC_INTERVAL: MinifluxSyncInterval = 240;
+
 export type ProfileSettings = {
   theme: ThemeName;
   language?: SupportedLanguage;
   imageLoadingPreferences: ImageLoadingPreferences;
+  incrementalSyncIntervalMinutes: MinifluxSyncInterval;
+  fullSyncIntervalMinutes: MinifluxSyncInterval;
   updatedAt: string;
 };
 
@@ -31,6 +38,10 @@ export type EntrySyncState = {
   initialSyncComplete: boolean;
   phase?: EntrySyncPhase;
   offset?: number;
+  incrementalCursor?: string;
+  lastIncrementalSyncAt?: string;
+  lastFullSyncAt?: string;
+  /** Legacy full-sync completion timestamp. */
   updatedAt?: string;
 };
 
@@ -732,6 +743,12 @@ function migrateOriginReferrerFeeds(value: unknown): ImageLoadingPreferences {
   return migrated;
 }
 
+function normalizeMinifluxSyncInterval(value: unknown, fallback: MinifluxSyncInterval): MinifluxSyncInterval {
+  return ([0, 30, 60, 120, 240, 480] as unknown[]).includes(value)
+    ? value as MinifluxSyncInterval
+    : fallback;
+}
+
 export function normalizeProfileSettings(value?: unknown): ProfileSettings {
   const stored = storedProfileSettings(value);
   const language = stored?.language;
@@ -742,6 +759,14 @@ export function normalizeProfileSettings(value?: unknown): ProfileSettings {
     theme: stored?.theme === "night" ? "night" : "day",
     ...(isSupportedLanguage(language) ? { language } : {}),
     imageLoadingPreferences,
+    incrementalSyncIntervalMinutes: normalizeMinifluxSyncInterval(
+      stored?.incrementalSyncIntervalMinutes,
+      DEFAULT_INCREMENTAL_SYNC_INTERVAL,
+    ),
+    fullSyncIntervalMinutes: normalizeMinifluxSyncInterval(
+      stored?.fullSyncIntervalMinutes,
+      DEFAULT_FULL_SYNC_INTERVAL,
+    ),
     updatedAt: stored?.updatedAt ?? new Date(0).toISOString(),
   };
 }
