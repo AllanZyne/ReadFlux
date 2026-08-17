@@ -17,9 +17,11 @@ const TODAY = "2026-08-02";
 const localTimestamp = (day, hour = 12) => new Date(2026, 7, day, hour).toISOString();
 
 const entry = (overrides = {}) => ({
+  id: 1,
   status: "unread",
   starred: false,
   published_at: localTimestamp(2),
+  changed_at: localTimestamp(2),
   score: 0,
   ...overrides,
 });
@@ -65,15 +67,11 @@ test("reader timestamps are formatted in the Miniflux account timezone", () => {
   assert.equal(formatZonedDateTime(value, "Asia/Shanghai"), "2026/08/02 02:00:00");
 });
 
-test("invalid timestamps use stable display fallbacks and stay out of Today", () => {
+test("invalid timestamps use stable display fallbacks", () => {
   assert.equal(formatZonedTime("not-a-date", "Asia/Shanghai"), "--:--");
   assert.equal(formatZonedDateTime("", "Asia/Shanghai"), "—");
   assert.equal(toZonedDateTimeInput("not-a-date", "Asia/Shanghai"), "");
   assert.equal(localDayKey("not-a-date", "Asia/Shanghai"), "");
-  assert.equal(
-    isEntryInSmartFeed(entry({ published_at: "not-a-date" }), "today", TODAY, "Asia/Shanghai"),
-    false,
-  );
 });
 
 test("datetime-local values round-trip through the Miniflux account timezone", () => {
@@ -108,70 +106,63 @@ test("ambiguous daylight-saving input preserves the existing occurrence", () => 
   );
 });
 
-test("Today includes all entries published on the local day regardless of read status", () => {
-  assert.equal(isEntryInSmartFeed(entry(), "today", TODAY), true);
-  assert.equal(isEntryInSmartFeed(entry({ status: "read" }), "today", TODAY), true);
-  assert.equal(
-    isEntryInSmartFeed(entry({ published_at: localTimestamp(1) }), "today", TODAY),
-    false,
-  );
+test("Today recommends the full synced history regardless of date or read status", () => {
+  assert.equal(isEntryInSmartFeed(entry(), "today"), true);
+  assert.equal(isEntryInSmartFeed(entry({ status: "read" }), "today"), true);
+  assert.equal(isEntryInSmartFeed(entry({ published_at: "2020-01-01T00:00:00Z" }), "today"), true);
+  assert.equal(isEntryInSmartFeed(entry({ status: "removed" }), "today"), false);
 });
 
-test("Today uses the Miniflux account timezone for entry membership", () => {
-  const value = entry({ published_at: "2026-08-01T18:00:00.000Z" });
+test("Updated contains labeled entries until their update has been viewed", () => {
+  const labels = new Map([[1, ["updated"]]]);
 
-  assert.equal(isEntryInSmartFeed(value, "today", "2026-08-02", "Asia/Shanghai"), true);
-  assert.equal(
-    isEntryInSmartFeed(value, "today", "2026-08-02", "America/Los_Angeles"),
-    false,
-  );
-});
-
-test("All unread includes unread entries from any publication day", () => {
-  assert.equal(isEntryInSmartFeed(entry(), "unread", TODAY), true);
-  assert.equal(
-    isEntryInSmartFeed(
-      entry({ published_at: new Date(2020, 0, 1, 12).toISOString() }),
-      "unread",
-      TODAY,
-    ),
-    true,
-  );
-  assert.equal(isEntryInSmartFeed(entry({ status: "read" }), "unread", TODAY), false);
+  assert.equal(isEntryInSmartFeed(entry({ status: "read" }), "updated", labels), true);
+  assert.equal(isEntryInSmartFeed(entry({ id: 2, status: "read" }), "updated", labels), false);
+  assert.equal(isEntryInSmartFeed(entry({ status: "removed" }), "updated", labels), false);
 });
 
 test("Saved includes starred entries regardless of read status", () => {
-  assert.equal(isEntryInSmartFeed(entry({ status: "read", starred: true }), "saved", TODAY), true);
-  assert.equal(isEntryInSmartFeed(entry({ starred: false }), "saved", TODAY), false);
+  assert.equal(isEntryInSmartFeed(entry({ status: "read", starred: true }), "saved"), true);
+  assert.equal(isEntryInSmartFeed(entry({ starred: false }), "saved"), false);
 });
 
-test("Today sorts by recommendation while All unread sorts newest first", () => {
+test("Today sorts all statuses by recommendation without hard status tiers", () => {
   const olderRecommended = entry({ published_at: localTimestamp(2, 1), score: 10 });
-  const newer = entry({ published_at: localTimestamp(2, 8), score: 1 });
+  const newerUpdatedUnread = entry({ id: 2, published_at: localTimestamp(2, 8), score: 1 });
+  const labels = new Map([[2, ["updated"]]]);
 
-  assert.ok(compareSmartFeedEntries(olderRecommended, newer, "today") < 0);
-  assert.ok(compareSmartFeedEntries(olderRecommended, newer, "unread") > 0);
+  assert.ok(compareSmartFeedEntries(olderRecommended, newerUpdatedUnread, "today", labels) < 0);
 });
 
-test("smart feed counts are calculated together for the current local day", () => {
+test("Updated sorts by changed time while Saved sorts by publication time", () => {
+  const olderPublicationNewerChange = entry({
+    id: 1,
+    published_at: localTimestamp(1),
+    changed_at: localTimestamp(2, 9),
+  });
+  const newerPublicationOlderChange = entry({
+    id: 2,
+    published_at: localTimestamp(2),
+    changed_at: localTimestamp(2, 8),
+  });
+
+  assert.ok(compareSmartFeedEntries(olderPublicationNewerChange, newerPublicationOlderChange, "updated") < 0);
+  assert.ok(compareSmartFeedEntries(olderPublicationNewerChange, newerPublicationOlderChange, "saved") > 0);
+});
+
+test("smart feed counts cover all active entries and persisted updates", () => {
   const entries = [
     entry(),
-    entry({ published_at: localTimestamp(1) }),
-    entry({ status: "read", starred: true }),
+    entry({ id: 2, published_at: localTimestamp(1) }),
+    entry({ id: 3, status: "read", starred: true }),
+    entry({ id: 4, status: "removed", starred: true }),
   ];
+  const labels = new Map([[3, ["updated"]], [4, ["updated"]]]);
 
-  assert.deepEqual(countSmartFeedEntries(entries, TODAY), {
+  assert.deepEqual(countSmartFeedEntries(entries, labels), {
     unreadCount: 2,
-    todayCount: 2,
+    todayCount: 3,
+    updatedCount: 1,
     savedCount: 1,
   });
-});
-
-test("smart feed counts use the Miniflux account timezone", () => {
-  const entries = [entry({ published_at: "2026-08-01T18:00:00.000Z" })];
-
-  assert.equal(
-    countSmartFeedEntries(entries, "2026-08-02", "America/Los_Angeles").todayCount,
-    0,
-  );
 });

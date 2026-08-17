@@ -157,11 +157,10 @@ export function nextDayBoundary(value, timeZone) {
   return new Date(upperBound);
 }
 
-export function isEntryInSmartFeed(entry, mode, todayKey, timeZone) {
-  if (mode === "today") {
-    return localDayKey(entry.published_at, timeZone) === todayKey;
-  }
-  if (mode === "unread") return entry.status === "unread";
+export function isEntryInSmartFeed(entry, mode, labels) {
+  if (entry.status === "removed") return false;
+  if (mode === "today") return true;
+  if (mode === "updated") return labels?.get(entry.id)?.includes("updated") ?? false;
   return entry.starred;
 }
 
@@ -173,19 +172,23 @@ export function smartFeedStatusPriority(entry, labels) {
 
 export function compareSmartFeedEntries(a, b, mode, labels) {
   if (mode === "today") {
-    const sp = smartFeedStatusPriority(b, labels) - smartFeedStatusPriority(a, labels);
-    if (sp !== 0) return sp;
-    return b.score - a.score;
+    const recommendationOrder = b.score - a.score;
+    if (recommendationOrder !== 0) return recommendationOrder;
   }
-  return new Date(b.published_at).getTime() - new Date(a.published_at).getTime();
+  const sortField = mode === "updated" ? "changed_at" : "published_at";
+  const aTime = new Date(a[sortField] ?? a.published_at).getTime();
+  const bTime = new Date(b[sortField] ?? b.published_at).getTime();
+  return bTime - aTime || b.id - a.id;
 }
 
-export function countSmartFeedEntries(entries, todayKey, timeZone) {
-  const counts = { unreadCount: 0, todayCount: 0, savedCount: 0 };
+export function countSmartFeedEntries(entries, labels) {
+  const counts = { unreadCount: 0, todayCount: 0, updatedCount: 0, savedCount: 0 };
 
   for (const entry of entries) {
+    if (entry.status === "removed") continue;
     if (entry.status === "unread") counts.unreadCount += 1;
-    if (localDayKey(entry.published_at, timeZone) === todayKey) counts.todayCount += 1;
+    counts.todayCount += 1;
+    if (labels?.get(entry.id)?.includes("updated")) counts.updatedCount += 1;
     if (entry.starred) counts.savedCount += 1;
   }
 

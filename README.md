@@ -2,21 +2,24 @@
 
 ReadFlux is a static, local-first Miniflux client. It uses Miniflux as the
 source for feeds and articles, records real reading behavior in the browser,
-and ranks unread articles published today into a personalized **Today** view.
+and ranks the complete synced article history into a personalized **Today**
+view.
 
 ## Features
 
 - NetNewsWire-inspired three-column reading interface
-- **Today** contains unread articles published on the current local day, ranked
-  by local recommendations
-- **All unread** contains every unread article, sorted newest first
-- Saved articles, subscription groups, feed icons, and unread counts
+- **Today** contains read and unread articles from the complete synced history,
+  ranked by local recommendations
+- **Updated** tracks previously read articles whose content changed since they
+  were last opened
+- An **Unread only** list filter replaces a separate unread destination
+- Saved articles, source-scoped subscription groups, feed icons, and dynamic
+  counts
 - IndexedDB article cache, cache-first startup, and scheduled incremental sync
 - Initial sync prioritizes unread articles, then all saved articles, then read
   articles, with paginated progress
-- Ordinary articles load from the latest 30 days by default, with an adjustable
-  range during first connection and in Settings; saved articles are unlimited
-- Stable unread-list snapshots, so articles do not disappear while being read
+- Full article history is cached locally through resumable paginated sync
+- Stable list snapshots, so articles do not disappear while being read
 - GitHub Pages-safe article permalinks using `#/article/:entryId`
 - Day and night themes
 - English, Simplified Chinese, and French interfaces selectable in Settings
