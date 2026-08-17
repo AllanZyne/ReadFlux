@@ -1092,6 +1092,7 @@ export default function App() {
   const syncInFlight = useRef(false);
   const syncQueued = useRef<EntrySyncMode | null>(null);
   const syncStateRef = useRef<EntrySyncState | null>(null);
+  const hydratedConnectionRef = useRef<ConnectionConfig | null>(null);
   const pendingEntryMutationsRef = useRef<Map<number, EntryMutationPatch>>(new Map());
   const pendingEntryMutationGeneration = useRef(0);
   const syncResetInProgress = useRef(false);
@@ -1443,8 +1444,14 @@ export default function App() {
       setEntryLabels(labels);
       replaceEntries(cached);
       syncStateRef.current = storedState;
-      if (!listSnapshotIds.current.size || !cached.some((entry) => listSnapshotIds.current.has(entry.id))) {
+      const initialCacheHydration = hydratedConnectionRef.current !== config;
+      hydratedConnectionRef.current = config;
+      const snapshotMissesCache = !listSnapshotIds.current.size
+        || !cached.some((entry) => listSnapshotIds.current.has(entry.id));
+      if (initialCacheHydration || snapshotMissesCache) {
         setListOrderVersion((version) => version + 1);
+      }
+      if (snapshotMissesCache) {
         setListReadSnapshot(new Map(cached.map((entry) => [entry.id, entry.status])));
       }
       const [feedData, categoryData] = await Promise.all([

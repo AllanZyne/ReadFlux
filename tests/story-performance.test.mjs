@@ -55,7 +55,8 @@ test("frozen list order does not require an effect-driven second render", () => 
 });
 
 test("background sync preserves the frozen list and sync reset restores the first batch", () => {
-  assert.match(app, /if \(!listSnapshotIds\.current\.size \|\| !cached\.some[\s\S]*?setListOrderVersion/);
+  assert.match(app, /const initialCacheHydration = hydratedConnectionRef\.current !== config;[\s\S]*?if \(initialCacheHydration \|\| snapshotMissesCache\) \{\s*setListOrderVersion/);
+  assert.match(app, /if \(snapshotMissesCache\) \{\s*setListReadSnapshot/);
   assert.doesNotMatch(app, /replaceEntries\(cached\);\s*setListOrderVersion/);
   assert.match(app, /onResetSync=\{async \(\) => \{\s*syncResetInProgress\.current = true;\s*resetRenderedStories\(\);/);
 });
