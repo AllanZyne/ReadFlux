@@ -274,6 +274,8 @@
     "markAllReadConfirm_other": "Marquer {{count}} articles comme lus ?",
     "newArticles_one": "{{count}} nouvel article ↑",
     "newArticles_other": "{{count}} nouveaux articles ↑",
+    "showMore_one": "Afficher {{count}} article de plus",
+    "showMore_other": "Afficher {{count}} articles de plus",
     "syncing": "Synchronisation des articles",
     "syncingHint": "Les articles non lus apparaissent d’abord, suivis des favoris et des articles lus.",
     "connectionFailed": "Échec de la connexion",

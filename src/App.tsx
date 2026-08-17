@@ -26,6 +26,8 @@ import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { startOptionalMinifluxTimeZoneLoad } from "./miniflux-timezone.mjs";
 import { articleHash, articlePermalink, parseAppRoute, type AppRoute } from "./routes";
 import { compareSmartFeedEntries, countSmartFeedEntries, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, nextDayBoundary, selectTimeZone, smartFeedStatusPriority, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
+import { nextStoryRenderCount, STORY_RENDER_BATCH_SIZE } from "./story-list";
+import { storyTextForEntry } from "./story-text";
 import {
   addEntryLabel,
   CachedFeedIcon,
@@ -122,6 +124,9 @@ type Story = Entry & {
   reason: string;
   scoreBreakdown: RecommendationScoreBreakdown;
 };
+type BaseStory = Entry & Omit<Story, keyof Entry | "score" | "reason" | "scoreBreakdown"> & {
+  recommendationText: string;
+};
 type EntryPage = { total: number; entries: Entry[] };
 type ListMode = "today" | "updated" | "saved";
 type Topic = { kind: "category" | "feed"; id: number } | null;
@@ -157,15 +162,6 @@ function readStoredBoolean(key: string) {
     return false;
   }
 }
-
-const toText = (html: string) => html
-  .replace(/<[^>]*>/g, " ")
-  .replace(/&nbsp;/g, " ")
-  .replace(/&amp;/g, "&")
-  .replace(/&#39;/g, "'")
-  .replace(/&quot;/g, "\"")
-  .replace(/\s+/g, " ")
-  .trim();
 
 async function loadEntryPages(
   config: ConnectionConfig,
@@ -1036,7 +1032,12 @@ export default function App() {
   const activeTimeZone = timeZoneSelection.timeZone;
   const [topic, setTopic] = useState<Topic>(null);
   const [query, setQuery] = useState("");
-  const [hideRead, setHideRead] = useState(false);
+  const [hideReadByMode, setHideReadByMode] = useState<Record<ListMode, boolean>>({
+    today: false,
+    updated: false,
+    saved: false,
+  });
+  const hideRead = mode !== "updated" && hideReadByMode[mode];
   const [listReadSnapshot, setListReadSnapshot] = useState<Map<number, Entry["status"]>>(() => {
     try {
       const stored = localStorage.getItem("readflux.listSnapshot");
@@ -1077,11 +1078,13 @@ export default function App() {
   const [pendingNew, setPendingNew] = useState(0);
   const [activeCandidates, setActiveCandidates] = useState<{ entryId: number; terms: string[]; loading: boolean } | null>(null);
   const [entryLabels, setEntryLabels] = useState<Map<number, string[]>>(new Map());
-  const [visibleIds, setVisibleIds] = useState<number[]>([]);
+  const [listOrderVersion, setListOrderVersion] = useState(0);
+  const [renderedStoryCount, setRenderedStoryCount] = useState(STORY_RENDER_BATCH_SIZE);
   const [referrerScopeState, setReferrerScopeState] = useState({ url: "", scope: "" });
   const entriesRef = useRef<Entry[]>([]);
   const activeEvent = useRef<ReadingEvent | null>(null);
   const latestExposure = useRef<RankingExposure | null>(null);
+  const storyListRef = useRef<HTMLDivElement | null>(null);
   const readerRef = useRef<HTMLDivElement | null>(null);
   const markAllReadButtonRef = useRef<HTMLButtonElement | null>(null);
   const markAllReadConfirmRef = useRef<HTMLButtonElement | null>(null);
@@ -1089,6 +1092,7 @@ export default function App() {
   const syncInFlight = useRef(false);
   const syncQueued = useRef<EntrySyncMode | null>(null);
   const syncStateRef = useRef<EntrySyncState | null>(null);
+  const hydratedConnectionRef = useRef<ConnectionConfig | null>(null);
   const pendingEntryMutationsRef = useRef<Map<number, EntryMutationPatch>>(new Map());
   const pendingEntryMutationGeneration = useRef(0);
   const syncResetInProgress = useRef(false);
@@ -1104,6 +1108,7 @@ export default function App() {
   const routeRef = useRef(route);
   const webDavUploadTimer = useRef<number | undefined>(undefined);
   const termExtractorRequested = useRef(false);
+  const capturedVisibleOrder = useRef<number[] | null>(null);
   const recommendationEvents = useMemo(() => [...events, ...remoteEvents], [events, remoteEvents]);
   const recommendationExposures = useMemo(() => [...exposures, ...remoteExposures], [exposures, remoteExposures]);
 
@@ -1439,7 +1444,14 @@ export default function App() {
       setEntryLabels(labels);
       replaceEntries(cached);
       syncStateRef.current = storedState;
-      if (!listSnapshotIds.current.size || !cached.some((entry) => listSnapshotIds.current.has(entry.id))) {
+      const initialCacheHydration = hydratedConnectionRef.current !== config;
+      hydratedConnectionRef.current = config;
+      const snapshotMissesCache = !listSnapshotIds.current.size
+        || !cached.some((entry) => listSnapshotIds.current.has(entry.id));
+      if (initialCacheHydration || snapshotMissesCache) {
+        setListOrderVersion((version) => version + 1);
+      }
+      if (snapshotMissesCache) {
         setListReadSnapshot(new Map(cached.map((entry) => [entry.id, entry.status])));
       }
       const [feedData, categoryData] = await Promise.all([
@@ -1708,44 +1720,53 @@ export default function App() {
     syncedAt?.getTime() ?? todayClock,
   ), [recommendationEvents, entries, syncedAt, todayClock]);
 
-  const stories = useMemo<Story[]>(() => {
+  const baseStories = useMemo<BaseStory[]>(() => {
     return entries.map((entry) => {
       const feed = entry.feed ?? feedMap.get(entry.feed_id);
       const source = feed?.title ?? t("feed.unknownSource");
       const category = feed?.category?.title ?? t("settings.uncategorized");
-      const sourceAffinity = interest.sources.get(entry.feed_id) ?? 0;
-      const scoreBreakdown = scoreRecommendation({
-        feedId: entry.feed_id,
-        text: `${entry.title} ${toText(entry.content).slice(0, 240)}`,
-        publishedAt: entry.published_at,
-        starred: entry.starred,
-        now: syncedAt?.getTime() ?? todayClock,
-        profile: interest,
-      });
-      const terms = scoreBreakdown.matchedTerms.slice(0, 2).join(", ");
-      const reason = sourceAffinity >= 2
-        ? t("recommendation.reasonSource", { source, interest: scoreBreakdown.matchedTerms[0] ? t("recommendation.reasonSourceInterest", { terms }) : "" })
-        : scoreBreakdown.matchedTerms[0]
-          ? t("recommendation.reasonTerms", { terms })
-          : entry.starred
-            ? t("recommendation.reasonSaved")
-            : recommendationEvents.length
-              ? t("recommendation.reasonCategory", { category })
-              : t("recommendation.reasonNew");
-      const summary = toText(entry.content).slice(0, 160);
+      const text = storyTextForEntry(entry);
       return {
         ...entry,
         source,
         category,
         categoryId: feed?.category?.id,
         mark: source.trim().slice(0, 1).toUpperCase() || "·",
-        summary: summary ? `${summary}${summary.length >= 160 ? "…" : ""}` : t("feed.noSummary"),
+        summary: text.summary ? `${text.summary}${text.summary.length >= 160 ? "…" : ""}` : t("feed.noSummary"),
+        recommendationText: text.recommendationText,
+      };
+    });
+  }, [entries, feedMap, t]);
+
+  const stories = useMemo<Story[]>(() => {
+    return baseStories.map((story) => {
+      const sourceAffinity = interest.sources.get(story.feed_id) ?? 0;
+      const scoreBreakdown = scoreRecommendation({
+        feedId: story.feed_id,
+        text: story.recommendationText,
+        publishedAt: story.published_at,
+        starred: story.starred,
+        now: syncedAt?.getTime() ?? todayClock,
+        profile: interest,
+      });
+      const terms = scoreBreakdown.matchedTerms.slice(0, 2).join(", ");
+      const reason = sourceAffinity >= 2
+        ? t("recommendation.reasonSource", { source: story.source, interest: scoreBreakdown.matchedTerms[0] ? t("recommendation.reasonSourceInterest", { terms }) : "" })
+        : scoreBreakdown.matchedTerms[0]
+          ? t("recommendation.reasonTerms", { terms })
+          : story.starred
+            ? t("recommendation.reasonSaved")
+            : recommendationEvents.length
+              ? t("recommendation.reasonCategory", { category: story.category })
+              : t("recommendation.reasonNew");
+      return {
+        ...story,
         score: scoreBreakdown.score,
         scoreBreakdown,
         reason,
       };
     });
-  }, [entries, recommendationEvents.length, feedMap, interest, syncedAt, todayClock, t]);
+  }, [baseStories, recommendationEvents.length, interest, syncedAt, todayClock, t]);
 
   const persistActive = useCallback(async () => {
     if (!activeEvent.current) return;
@@ -1765,14 +1786,24 @@ export default function App() {
     });
   }, []);
 
+  const resetRenderedStories = useCallback(() => {
+    setRenderedStoryCount(STORY_RENDER_BATCH_SIZE);
+    if (storyListRef.current) storyListRef.current.scrollTop = 0;
+  }, []);
+
   const refreshList = useCallback(() => {
     commitActiveEvent();
-    setVisibleIds([]);
+    resetRenderedStories();
     setListReadSnapshot(new Map(entriesRef.current.map((entry) => [entry.id, entry.status])));
     setPendingNew(0);
-  }, [commitActiveEvent]);
+  }, [commitActiveEvent, resetRenderedStories]);
 
   const switchListContext = useCallback((nextMode: ListMode, nextTopic: Topic) => {
+    const currentTopic = topicRef.current;
+    const sameTopic = (
+      currentTopic?.kind === nextTopic?.kind && currentTopic?.id === nextTopic?.id
+    ) || (currentTopic === null && nextTopic === null);
+    if (modeRef.current === nextMode && sameTopic && routeRef.current.kind === "list") return;
     commitActiveEvent();
     void persistActive();
     activeEvent.current = null;
@@ -1780,24 +1811,23 @@ export default function App() {
     navigateToList();
     setMobileView("list");
     setMarkAllReadOpen(false);
-    setVisibleIds([]);
+    resetRenderedStories();
     setListReadSnapshot(new Map(entriesRef.current.map((entry) => [entry.id, entry.status])));
     setPendingNew(0);
     modeRef.current = nextMode;
     topicRef.current = nextTopic;
+    hideReadRef.current = nextMode !== "updated" && hideReadByMode[nextMode];
     setMode(nextMode);
     setTopic(nextTopic);
-  }, [commitActiveEvent, navigateToList, persistActive]);
+  }, [commitActiveEvent, hideReadByMode, navigateToList, persistActive, resetRenderedStories]);
 
-  const visible = useMemo(() => {
+  const frozenVisibleOrder = useMemo(() => {
     const hasQuery = !!query.trim();
     const needle = hasQuery ? query.trim().toLowerCase() : "";
-    const preservedUpdatedIds = mode === "updated" ? new Set(visibleIds) : null;
     const filtered = stories.filter((story) => {
       if (!hasQuery && !listReadSnapshot.has(story.id)) return false;
       const statusWhenListed = listReadSnapshot.get(story.id) ?? story.status;
-      const remainsInUpdatedSnapshot = preservedUpdatedIds?.has(story.id) ?? false;
-      if (!remainsInUpdatedSnapshot && !isEntryInSmartFeed(
+      if (!isEntryInSmartFeed(
         { ...story, status: statusWhenListed },
         mode,
         entryLabels,
@@ -1808,51 +1838,84 @@ export default function App() {
       if (!hasQuery) return true;
       return `${story.title} ${story.summary} ${story.source} ${story.author ?? ""}`.toLowerCase().includes(needle);
     });
-    if (visibleIds.length) {
-      const orderIndex = new Map(visibleIds.map((id, i) => [id, i]));
-      filtered.sort((a, b) => {
-        const ai = orderIndex.get(a.id);
-        const bi = orderIndex.get(b.id);
-        if (ai !== undefined && bi !== undefined) return ai - bi;
-        if (ai !== undefined) return -1;
-        if (bi !== undefined) return 1;
-        return compareSmartFeedEntries(a, b, mode, entryLabels);
-      });
-    } else {
-      filtered.sort((a, b) => compareSmartFeedEntries(a, b, mode, entryLabels));
-    }
-    return filtered;
-  }, [stories, mode, topic, query, hideRead, listReadSnapshot, visibleIds, entryLabels]);
+    filtered.sort((a, b) => compareSmartFeedEntries(a, b, mode, entryLabels));
+    return {
+      ids: filtered.map((story) => story.id),
+      initialEntries: stories,
+      initialLabels: entryLabels,
+      initialVisible: filtered,
+    };
+  // The snapshot and context deliberately define when list order is rebuilt.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hideRead, listOrderVersion, listReadSnapshot, mode, query, topic]);
+
+  const visible = useMemo(() => {
+    if (
+      frozenVisibleOrder.initialEntries === stories
+      && frozenVisibleOrder.initialLabels === entryLabels
+    ) return frozenVisibleOrder.initialVisible;
+
+    const hasQuery = !!query.trim();
+    const needle = hasQuery ? query.trim().toLowerCase() : "";
+    const storyById = new Map(stories.map((story) => [story.id, story]));
+    const preservedUpdatedIds = mode === "updated" ? new Set(frozenVisibleOrder.ids) : null;
+    return frozenVisibleOrder.ids.flatMap((id) => {
+      const story = storyById.get(id);
+      if (!story) return [];
+      if (!hasQuery && !listReadSnapshot.has(story.id)) return [];
+      const statusWhenListed = listReadSnapshot.get(story.id) ?? story.status;
+      const remainsInUpdatedSnapshot = preservedUpdatedIds?.has(story.id) ?? false;
+      if (!remainsInUpdatedSnapshot && !isEntryInSmartFeed(
+        { ...story, status: statusWhenListed },
+        mode,
+        entryLabels,
+      )) return [];
+      if (mode !== "updated" && hideRead && statusWhenListed === "read") return [];
+      if (topic?.kind === "category" && story.categoryId !== topic.id) return [];
+      if (topic?.kind === "feed" && story.feed_id !== topic.id) return [];
+      if (hasQuery && !`${story.title} ${story.summary} ${story.source} ${story.author ?? ""}`.toLowerCase().includes(needle)) return [];
+      return [story];
+    });
+  }, [stories, mode, topic, query, hideRead, listReadSnapshot, frozenVisibleOrder, entryLabels]);
   const visibleUnreadCount = useMemo(
     () => visible.reduce((count, story) => count + (story.status === "unread" ? 1 : 0), 0),
     [visible],
   );
+  const renderedStories = useMemo(
+    () => visible.slice(0, renderedStoryCount),
+    [renderedStoryCount, visible],
+  );
+  const revealMoreStories = useCallback(() => {
+    setRenderedStoryCount((current) => nextStoryRenderCount(current, visible.length));
+  }, [visible.length]);
+  const loadMoreStoriesNearEnd = useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    const list = event.currentTarget;
+    if (list.scrollHeight - list.scrollTop - list.clientHeight < 800) revealMoreStories();
+  }, [revealMoreStories]);
 
   useEffect(() => {
-    if (visible.length && !visibleIds.length) {
-      if (mode === "today" && !query.trim()) {
-        const exposure = createRankingExposure({
-          id: crypto.randomUUID(),
-          createdAt: new Date().toISOString(),
-          candidateCount: visible.length,
-          candidates: visible.map((story) => ({
-            entryId: story.id,
-            breakdown: story.scoreBreakdown,
-            statusPriority: smartFeedStatusPriority(story, entryLabels),
-          })),
-        });
-        latestExposure.current = exposure;
-        void putRankingExposure(exposure).then(() => {
-          setExposures((current) => [...current, exposure]);
-          scheduleWebDavUpload();
-        }).catch(() => undefined);
-      } else {
-        latestExposure.current = null;
-      }
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- captures and freezes a fresh sorted order
-      setVisibleIds(visible.map((s) => s.id));
+    if (capturedVisibleOrder.current === frozenVisibleOrder.ids) return;
+    capturedVisibleOrder.current = frozenVisibleOrder.ids;
+    if (mode === "today" && !query.trim() && visible.length) {
+      const exposure = createRankingExposure({
+        id: crypto.randomUUID(),
+        createdAt: new Date().toISOString(),
+        candidateCount: visible.length,
+        candidates: visible.slice(0, 50).map((story) => ({
+          entryId: story.id,
+          breakdown: story.scoreBreakdown,
+          statusPriority: smartFeedStatusPriority(story, entryLabels),
+        })),
+      });
+      latestExposure.current = exposure;
+      void putRankingExposure(exposure).then(() => {
+        setExposures((current) => [...current, exposure]);
+        scheduleWebDavUpload();
+      }).catch(() => undefined);
+    } else {
+      latestExposure.current = null;
     }
-  }, [visible, visibleIds, mode, topic, query, entryLabels, scheduleWebDavUpload]);
+  }, [visible, frozenVisibleOrder, mode, query, entryLabels, scheduleWebDavUpload]);
 
   useEffect(() => { visibleEmptyRef.current = !visible.length; }, [visible]);
 
@@ -2092,8 +2155,12 @@ export default function App() {
   const move = useCallback((delta: number) => {
     if (!visible.length) return;
     const current = visible.findIndex((story) => story.id === selectedId);
-    choose(visible[Math.max(0, Math.min(visible.length - 1, Math.max(0, current) + delta))]);
-  }, [visible, selectedId, choose]);
+    const nextIndex = Math.max(0, Math.min(visible.length - 1, Math.max(0, current) + delta));
+    if (nextIndex >= renderedStoryCount) {
+      setRenderedStoryCount((count) => nextStoryRenderCount(count, visible.length));
+    }
+    choose(visible[nextIndex]);
+  }, [visible, selectedId, choose, renderedStoryCount]);
 
   const toggleRead = useCallback((story: Story) => {
     if (!config) return;
@@ -2110,7 +2177,6 @@ export default function App() {
     const before = entries;
     const after = entries.map((entry) => idSet.has(entry.id) ? { ...entry, status: "read" as const } : entry);
     replaceEntries(after);
-    setVisibleIds([]);
     setListReadSnapshot(new Map(after.map((entry) => [entry.id, entry.status])));
     try {
       const queued = await queueEntryMutations(
@@ -2134,7 +2200,6 @@ export default function App() {
       notify(t("feed.markedRead", { count: ids.length }));
     } catch (cause) {
       replaceEntries(before);
-      setVisibleIds([]);
       setListReadSnapshot(new Map(before.map((entry) => [entry.id, entry.status])));
       notify(errorMessage(cause, t, "errors.sync"));
     }
@@ -2330,14 +2395,14 @@ export default function App() {
     [entries, entryLabels],
   );
   const navCounts = useMemo(() => ({
-    today: hideRead ? unreadCount : todayCount,
+    today: hideReadByMode.today ? unreadCount : todayCount,
     updated: updatedCount,
-    saved: hideRead
+    saved: hideReadByMode.saved
       ? entries.reduce((count, entry) => count + (
         entry.status === "unread" && entry.starred ? 1 : 0
       ), 0)
       : savedCount,
-  }), [entries, hideRead, savedCount, todayCount, unreadCount, updatedCount]);
+  }), [entries, hideReadByMode, savedCount, todayCount, unreadCount, updatedCount]);
   const syncProgressLabel = syncProgress
     ? `${syncProgress.kind === "search"
       ? t("sync.searching")
@@ -2444,7 +2509,7 @@ export default function App() {
             <div className="feedTitleText"><h1>{topicTitle ? `${t(`sidebar.${mode}`)} · ${topicTitle}` : t(`sidebar.${mode}`)}</h1><small>{t(mode === "today" ? "feed.recommendedCount" : mode === "updated" ? "feed.updatedCount" : "feed.articleCount", { count: visible.length })}{error && entries.length ? ` · ${t("feed.offline")}` : ""}</small></div>
             <div className="feedTitleActions" role="group" aria-label={t("feed.listActions")}>
               <button ref={markAllReadButtonRef} type="button" className={markAllReadOpen ? "markAllReadSpotlight" : ""} onClick={requestMarkVisibleRead} disabled={!visibleUnreadCount} aria-label={t("feed.markAllRead")} title={t("feed.markAllRead")}><i className="bi bi-check2-all" aria-hidden="true" /></button>
-              {mode !== "updated" && <button type="button" className={hideRead ? "active" : ""} onClick={() => { setVisibleIds([]); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideRead((current) => !current); }} aria-label={t("feed.unreadOnly")} title={t(hideRead ? "feed.showAll" : "feed.unreadOnly")} aria-pressed={hideRead}><i className="bi bi-filter-circle" aria-hidden="true" /></button>}
+              <button type="button" className={hideRead ? "active" : ""} disabled={mode === "updated"} onClick={() => { if (mode === "updated") return; resetRenderedStories(); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideReadByMode((current) => ({ ...current, [mode]: !current[mode] })); }} aria-label={t("feed.unreadOnly")} title={t(mode === "updated" ? "feed.unreadOnly" : hideRead ? "feed.showAll" : "feed.unreadOnly")} aria-pressed={hideRead}><i className="bi bi-filter-circle" aria-hidden="true" /></button>
             </div>
           </header>
           {markAllReadOpen && <>
@@ -2464,15 +2529,15 @@ export default function App() {
               <button ref={markAllReadConfirmRef} type="button" onClick={() => { setMarkAllReadOpen(false); void markVisibleRead(); }}>{t("common.confirm")}</button>
             </section>
           </>}
-          <div className="storyList">
+          <div className="storyList" ref={storyListRef} onScroll={loadMoreStoriesNearEnd}>
             {pendingNew > 0 && <button className="newArticlesPill" onClick={refreshList}>{t("feed.newArticles", { count: pendingNew })}</button>}
             {loading && !entries.length ? <div className="empty"><b className="loadingMark">↻</b><h2>{t("feed.syncing")}</h2><p>{t("feed.syncingHint")}</p></div>
               : error && !entries.length ? <div className="empty errorState"><b>!</b><h2>{t("feed.connectionFailed")}</h2><p>{t(error.key, { status: error.status })}</p><button onClick={() => void load()}>{t("feed.reconnect")}</button></div>
-              : visible.length ? visible.map((story) => <article key={story.id} tabIndex={0} className={`story ${selected?.id === story.id ? "selected" : ""} ${story.status === "read" ? "read" : ""} ${entryLabels.has(story.id) && entryLabels.get(story.id)!.includes("updated") ? "updated" : ""}`} onClick={() => { choose(story); setMobileView("reader"); }} onKeyDown={(event) => { if (event.key === "Enter") { choose(story); setMobileView("reader"); } }}>
+              : visible.length ? <>{renderedStories.map((story) => <article key={story.id} tabIndex={0} className={`story ${selected?.id === story.id ? "selected" : ""} ${story.status === "read" ? "read" : ""} ${entryLabels.has(story.id) && entryLabels.get(story.id)!.includes("updated") ? "updated" : ""}`} onClick={() => { choose(story); setMobileView("reader"); }} onKeyDown={(event) => { if (event.key === "Enter") { choose(story); setMobileView("reader"); } }}>
                 <div className="storySource"><SourceIcon src={feedIcons.get(story.feed_id)}>{story.mark}</SourceIcon><span>{story.source}</span><time>{formatZonedTime(story.published_at, activeTimeZone)}</time>{story.starred && <b>★</b>}</div>
                 <h2>{story.title}</h2><p>{story.summary}</p>
                 <footer><i /><span>{t(story.status === "unread" ? "feed.unread" : entryLabels.get(story.id)?.includes("updated") ? "feed.updated" : story.starred ? "feed.saved" : "feed.read")}</span><span>·</span><span>{t("feed.minutes", { count: story.reading_time || 1 })}</span></footer>
-              </article>) : <div className="empty"><b>✓</b><h2>{t("feed.empty")}</h2><p>{t("feed.emptyHint")}</p><button onClick={() => { setQuery(""); setHideRead(false); switchListContext("today", null); }}>{t("common.reset")}</button></div>}
+              </article>)}{renderedStories.length < visible.length && <button className="storyListMore" type="button" onClick={revealMoreStories}>{t("feed.showMore", { count: Math.min(STORY_RENDER_BATCH_SIZE, visible.length - renderedStories.length) })}</button>}</> : <div className="empty"><b>✓</b><h2>{t("feed.empty")}</h2><p>{t("feed.emptyHint")}</p><button onClick={() => { setQuery(""); setHideReadByMode((current) => ({ ...current, today: false })); switchListContext("today", null); }}>{t("common.reset")}</button></div>}
           </div>
         </section>
         <div className="resizeHandle listHandle" onPointerDown={(event) => startResize("list", event)} onDoubleClick={() => setListWidth(430)} />
@@ -2574,6 +2639,7 @@ export default function App() {
         }}
         onResetSync={async () => {
           syncResetInProgress.current = true;
+          resetRenderedStories();
           try {
             while (syncInFlight.current) {
               await new Promise((resolve) => window.setTimeout(resolve, 50));

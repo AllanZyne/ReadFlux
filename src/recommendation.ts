@@ -20,6 +20,14 @@ export type RecommendationScoreBreakdown = {
   matchedTerms: string[];
 };
 
+type WeightedTermMatcher = {
+  term: string;
+  weight: number;
+  matches: (text: string) => boolean;
+};
+
+const profileTermMatchers = new WeakMap<InterestProfile, WeightedTermMatcher[]>();
+
 export type RankingCandidate = {
   entryId: number;
   breakdown: RecommendationScoreBreakdown;
@@ -113,12 +121,11 @@ export function scoreRecommendation(input: {
   profile: InterestProfile;
 }): RecommendationScoreBreakdown {
   const normalizedText = normalizeRecommendationTerm(input.text);
-  const hits = [...input.profile.words.entries()]
-    .filter(([term, weight]) => weight > 0 && recommendationTextContainsTerm(normalizedText, term))
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const hits = termMatchersForProfile(input.profile)
+    .filter(({ matches }) => matches(normalizedText));
   const sourceAffinity = input.profile.sources.get(input.feedId) ?? 0;
   const sourceScore = round(Math.min(20, 20 * Math.log1p(sourceAffinity) / Math.log(201)));
-  const termSignal = hits.reduce((sum, [, weight]) => sum + Math.log1p(weight), 0);
+  const termSignal = hits.reduce((sum, { weight }) => sum + Math.log1p(weight), 0);
   const termScore = round(Math.min(24, 9 * Math.log1p(termSignal)));
   const publishedAt = new Date(input.publishedAt).getTime();
   const ageDays = Number.isFinite(publishedAt) ? Math.max(0, (input.now - publishedAt) / 86_400_000) : 12;
@@ -134,16 +141,30 @@ export function scoreRecommendation(input: {
     freshnessScore,
     savedBonus,
     negativePenalty,
-    matchedTerms: hits.slice(0, 3).map(([term]) => term),
+    matchedTerms: hits.slice(0, 3).map(({ term }) => term),
   };
 }
 
-function recommendationTextContainsTerm(text: string, termValue: string) {
-  const term = normalizeRecommendationTerm(termValue);
-  if (!term) return false;
-  if (/\p{Script=Han}/u.test(term)) return text.includes(term);
-  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, "u").test(text);
+function termMatchersForProfile(profile: InterestProfile) {
+  const cached = profileTermMatchers.get(profile);
+  if (cached) return cached;
+
+  const matchers = [...profile.words.entries()]
+    .filter(([, weight]) => weight > 0)
+    .map(([termValue, weight]) => {
+      const term = normalizeRecommendationTerm(termValue);
+      if (!term) return null;
+      if (/\p{Script=Han}/u.test(term)) {
+        return { term, weight, matches: (text: string) => text.includes(term) };
+      }
+      const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const pattern = new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, "u");
+      return { term, weight, matches: (text: string) => pattern.test(text) };
+    })
+    .filter((matcher): matcher is WeightedTermMatcher => matcher !== null)
+    .sort((a, b) => b.weight - a.weight || a.term.localeCompare(b.term));
+  profileTermMatchers.set(profile, matchers);
+  return matchers;
 }
 
 export function createRankingExposure(input: {

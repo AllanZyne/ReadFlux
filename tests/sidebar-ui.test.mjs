@@ -34,10 +34,19 @@ test("article list actions live in the title bar as NetNewsWire-style icons", ()
   const titleBar = app.match(/<header className="feedTitle">([\s\S]*?)<\/header>/)?.[1] ?? "";
 
   assert.match(titleBar, /aria-label=\{t\("feed\.markAllRead"\)\}[\s\S]*?bi-check2-all/);
-  assert.match(titleBar, /mode !== "updated"[\s\S]*?aria-label=\{t\("feed\.unreadOnly"\)\}[\s\S]*?aria-pressed=\{hideRead\}[\s\S]*?bi-filter-circle/);
-  assert.match(titleBar, /setHideRead\(\(current\)\s*=>\s*!current\)/);
+  assert.match(titleBar, /disabled=\{mode === "updated"\}[\s\S]*?aria-label=\{t\("feed\.unreadOnly"\)\}[\s\S]*?aria-pressed=\{hideRead\}[\s\S]*?bi-filter-circle/);
+  assert.match(titleBar, /setHideReadByMode\(\(current\) => \(\{ \.\.\.current, \[mode\]: !current\[mode\] \}\)\)/);
   assert.doesNotMatch(app, /className="feedTools"/);
   assert.match(styles, /\.feedTitleActions\s*\{/);
+  assert.match(styles, /\.feedTitleActions button:disabled\s*\{/);
+});
+
+test("unread-only state is isolated per smart feed", () => {
+  assert.match(app, /useState<Record<ListMode, boolean>>\(\{[\s\S]*?today: false,[\s\S]*?updated: false,[\s\S]*?saved: false/);
+  assert.match(app, /const hideRead = mode !== "updated" && hideReadByMode\[mode\]/);
+  assert.match(app, /hideReadRef\.current = nextMode !== "updated" && hideReadByMode\[nextMode\]/);
+  assert.match(app, /today: hideReadByMode\.today \? unreadCount : todayCount/);
+  assert.match(app, /saved: hideReadByMode\.saved[\s\S]*?entry\.status === "unread" && entry\.starred/);
 });
 
 test("mark all as read requires the selected anchored confirmation", () => {
