@@ -52,6 +52,7 @@ export function compareSmartFeedEntries(
   context?: {
     now?: string | number | Date;
     timeZone?: string;
+    timeBuckets?: ReadonlyMap<number, 0 | 1 | 2 | 3 | 4 | 5>;
   },
 ): number;
 export function smartFeedStatusPriority(

@@ -159,12 +159,13 @@ export function nextDayBoundary(value, timeZone) {
 
 export function isEntryInSmartFeed(entry, mode, labels) {
   if (entry.status === "removed") return false;
+  const updated = entry.status === "read"
+    && (labels?.get(entry.id)?.includes("updated") ?? false);
   if (mode === "today") {
-    return entry.status === "unread"
-      || (labels?.get(entry.id)?.includes("updated") ?? false);
+    return entry.status === "unread" || updated;
   }
   if (mode === "all") return true;
-  if (mode === "updated") return labels?.get(entry.id)?.includes("updated") ?? false;
+  if (mode === "updated") return updated;
   return entry.starred;
 }
 
@@ -199,15 +200,17 @@ export function smartFeedTimeBucket(value, now = Date.now(), timeZone) {
 
 export function compareSmartFeedEntries(a, b, mode, labels, context = {}) {
   if (mode === "today") {
-    const bucketOrder = smartFeedTimeBucket(
+    const aBucket = context.timeBuckets?.get(a.id) ?? smartFeedTimeBucket(
       a.published_at,
       context.now,
       context.timeZone,
-    ) - smartFeedTimeBucket(
+    );
+    const bBucket = context.timeBuckets?.get(b.id) ?? smartFeedTimeBucket(
       b.published_at,
       context.now,
       context.timeZone,
     );
+    const bucketOrder = aBucket - bBucket;
     if (bucketOrder !== 0) return bucketOrder;
 
     const unreadOrder = Number(b.status === "unread") - Number(a.status === "unread");
@@ -234,7 +237,8 @@ export function countSmartFeedEntries(entries, labels) {
   for (const entry of entries) {
     if (entry.status === "removed") continue;
     const unread = entry.status === "unread";
-    const updated = labels?.get(entry.id)?.includes("updated") ?? false;
+    const updated = entry.status === "read"
+      && (labels?.get(entry.id)?.includes("updated") ?? false);
     if (unread) counts.unreadCount += 1;
     if (unread || updated) counts.todayCount += 1;
     counts.allCount += 1;

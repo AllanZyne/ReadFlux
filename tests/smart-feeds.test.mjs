@@ -133,10 +133,11 @@ test("All contains the complete active history", () => {
 });
 
 test("Updated contains labeled entries until their update has been viewed", () => {
-  const labels = new Map([[1, ["updated"]]]);
+  const labels = new Map([[1, ["updated"]], [3, ["updated"]]]);
 
   assert.equal(isEntryInSmartFeed(entry({ status: "read" }), "updated", labels), true);
   assert.equal(isEntryInSmartFeed(entry({ id: 2, status: "read" }), "updated", labels), false);
+  assert.equal(isEntryInSmartFeed(entry({ id: 3 }), "updated", labels), false);
   assert.equal(isEntryInSmartFeed(entry({ status: "removed" }), "updated", labels), false);
 });
 
@@ -217,6 +218,25 @@ test("Today sorting uses recommendation then publication time within a status ti
   assert.ok(compareSmartFeedEntries(olderRecommended, newerEqualScore, "today", undefined, context) > 0);
 });
 
+test("Today sorting can reuse precomputed time buckets", () => {
+  const newer = entry({
+    published_at: "2026-08-19T02:00:00Z",
+    score: 1,
+  });
+  const older = entry({
+    id: 2,
+    published_at: "2026-08-18T02:00:00Z",
+    score: 100,
+  });
+  const context = {
+    now: "2026-08-19T12:00:00+08:00",
+    timeZone: "Asia/Shanghai",
+    timeBuckets: new Map([[newer.id, 1], [older.id, 0]]),
+  };
+
+  assert.ok(compareSmartFeedEntries(newer, older, "today", undefined, context) > 0);
+});
+
 test("Today time tiers use the configured timezone", () => {
   const now = "2026-08-19T08:30:00Z";
   const published = "2026-08-18T23:30:00Z";
@@ -249,7 +269,7 @@ test("smart feed counts cover all active entries and persisted updates", () => {
     entry({ id: 3, status: "read", starred: true }),
     entry({ id: 4, status: "removed", starred: true }),
   ];
-  const labels = new Map([[3, ["updated"]], [4, ["updated"]]]);
+  const labels = new Map([[1, ["updated"]], [3, ["updated"]], [4, ["updated"]]]);
 
   assert.deepEqual(countSmartFeedEntries(entries, labels), {
     unreadCount: 2,

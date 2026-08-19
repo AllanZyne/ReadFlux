@@ -25,7 +25,7 @@ import {
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { startOptionalMinifluxTimeZoneLoad } from "./miniflux-timezone.mjs";
 import { articleHash, articlePermalink, parseAppRoute, type AppRoute } from "./routes";
-import { compareSmartFeedEntries, countSmartFeedEntries, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, nextDayBoundary, selectTimeZone, smartFeedStatusPriority, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
+import { compareSmartFeedEntries, countSmartFeedEntries, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, nextDayBoundary, selectTimeZone, smartFeedStatusPriority, smartFeedTimeBucket, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
 import { nextStoryRenderCount, STORY_RENDER_BATCH_SIZE } from "./story-list";
 import { storyTextForEntry } from "./story-text";
 import {
@@ -1377,7 +1377,7 @@ export default function App() {
       const currentTopic = topicRef.current;
       const currentHideRead = hideReadRef.current && currentMode !== "updated";
       const matchesCurrentMode = (entry: Entry) => (
-        currentMode === "updated" && updatedIds.has(entry.id)
+        currentMode === "updated" && entry.status === "read" && updatedIds.has(entry.id)
       ) || isEntryInSmartFeed(entry, currentMode, entryLabels);
       const relevant = protectedBatch.filter((entry) => {
         if (listSnapshotIds.current.has(entry.id)) return false;
@@ -1839,9 +1839,16 @@ export default function App() {
       if (!hasQuery) return true;
       return `${story.title} ${story.summary} ${story.source} ${story.author ?? ""}`.toLowerCase().includes(needle);
     });
+    const timeBuckets = mode === "today"
+      ? new Map(filtered.map((story) => [
+        story.id,
+        smartFeedTimeBucket(story.published_at, todayClock, activeTimeZone),
+      ]))
+      : undefined;
     filtered.sort((a, b) => compareSmartFeedEntries(a, b, mode, entryLabels, {
       now: todayClock,
       timeZone: activeTimeZone,
+      timeBuckets,
     }));
     return {
       ids: filtered.map((story) => story.id),
@@ -2539,7 +2546,16 @@ export default function App() {
             {pendingNew > 0 && <button className="newArticlesPill" onClick={refreshList}>{t("feed.newArticles", { count: pendingNew })}</button>}
             {loading && !entries.length ? <div className="empty"><b className="loadingMark">↻</b><h2>{t("feed.syncing")}</h2><p>{t("feed.syncingHint")}</p></div>
               : error && !entries.length ? <div className="empty errorState"><b>!</b><h2>{t("feed.connectionFailed")}</h2><p>{t(error.key, { status: error.status })}</p><button onClick={() => void load()}>{t("feed.reconnect")}</button></div>
-              : visible.length ? <>{renderedStories.map((story) => <article key={story.id} tabIndex={0} className={`story ${selected?.id === story.id ? "selected" : ""} ${story.status === "read" ? "read" : ""} ${entryLabels.has(story.id) && entryLabels.get(story.id)!.includes("updated") ? "updated" : ""} ${story.starred ? "starred" : ""}`} onClick={() => { choose(story); setMobileView("reader"); }} onKeyDown={(event) => { if (event.key === "Enter") { choose(story); setMobileView("reader"); } }}>
+              : visible.length ? <>{renderedStories.map((story) => {
+                const updated = story.status === "read" && (entryLabels.get(story.id)?.includes("updated") ?? false);
+                const statusKey = story.starred
+                  ? "feed.saved"
+                  : story.status === "unread"
+                    ? "feed.unread"
+                    : updated
+                      ? "feed.updated"
+                      : "feed.read";
+                return <article key={story.id} tabIndex={0} className={`story ${selected?.id === story.id ? "selected" : ""} ${story.status === "read" ? "read" : ""} ${updated ? "updated" : ""} ${story.starred ? "starred" : ""}`} onClick={() => { choose(story); setMobileView("reader"); }} onKeyDown={(event) => { if (event.key === "Enter") { choose(story); setMobileView("reader"); } }}>
                 <div className="storyMain">
                   <div className="storySource"><SourceIcon src={feedIcons.get(story.feed_id)}>{story.mark}</SourceIcon><span>{story.source}</span></div>
                   <h2>{story.title}</h2>
@@ -2548,9 +2564,10 @@ export default function App() {
                 <div className="storyStatus">
                   <time>{formatZonedTime(story.published_at, activeTimeZone)}</time>
                   <i aria-hidden="true" />
-                  <span className="sr-only">{t(story.starred ? "feed.saved" : entryLabels.get(story.id)?.includes("updated") ? "feed.updated" : story.status === "unread" ? "feed.unread" : "feed.read")}</span>
+                  <span className="sr-only">{t(statusKey)}</span>
                 </div>
-              </article>)}{renderedStories.length < visible.length && <button className="storyListMore" type="button" onClick={revealMoreStories}>{t("feed.showMore", { count: Math.min(STORY_RENDER_BATCH_SIZE, visible.length - renderedStories.length) })}</button>}</> : <div className="empty"><b>✓</b><h2>{t("feed.empty")}</h2><p>{t("feed.emptyHint")}</p><button onClick={() => { setQuery(""); setHideReadByMode((current) => ({ ...current, today: false })); switchListContext("today", null); }}>{t("common.reset")}</button></div>}
+              </article>;
+              })}{renderedStories.length < visible.length && <button className="storyListMore" type="button" onClick={revealMoreStories}>{t("feed.showMore", { count: Math.min(STORY_RENDER_BATCH_SIZE, visible.length - renderedStories.length) })}</button>}</> : <div className="empty"><b>✓</b><h2>{t("feed.empty")}</h2><p>{t("feed.emptyHint")}</p><button onClick={() => { setQuery(""); setHideReadByMode((current) => ({ ...current, today: false })); switchListContext("today", null); }}>{t("common.reset")}</button></div>}
           </div>
         </section>
         <div className="resizeHandle listHandle" onPointerDown={(event) => startResize("list", event)} onDoubleClick={() => setListWidth(430)} />
