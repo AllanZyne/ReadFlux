@@ -128,7 +128,7 @@ type BaseStory = Entry & Omit<Story, keyof Entry | "score" | "reason" | "scoreBr
   recommendationText: string;
 };
 type EntryPage = { total: number; entries: Entry[] };
-type ListMode = "today" | "updated" | "saved";
+type ListMode = "today" | "all" | "updated" | "saved";
 type Topic = { kind: "category" | "feed"; id: number } | null;
 type SyncProgress = {
   kind: "full" | "incremental" | "search";
@@ -1034,6 +1034,7 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [hideReadByMode, setHideReadByMode] = useState<Record<ListMode, boolean>>({
     today: false,
+    all: false,
     updated: false,
     saved: false,
   });
@@ -1838,7 +1839,10 @@ export default function App() {
       if (!hasQuery) return true;
       return `${story.title} ${story.summary} ${story.source} ${story.author ?? ""}`.toLowerCase().includes(needle);
     });
-    filtered.sort((a, b) => compareSmartFeedEntries(a, b, mode, entryLabels));
+    filtered.sort((a, b) => compareSmartFeedEntries(a, b, mode, entryLabels, {
+      now: todayClock,
+      timeZone: activeTimeZone,
+    }));
     return {
       ids: filtered.map((story) => story.id),
       initialEntries: stories,
@@ -1847,7 +1851,7 @@ export default function App() {
     };
   // The snapshot and context deliberately define when list order is rebuilt.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hideRead, listOrderVersion, listReadSnapshot, mode, query, topic]);
+  }, [activeTimeZone, hideRead, listOrderVersion, listReadSnapshot, mode, query, topic]);
 
   const visible = useMemo(() => {
     if (
@@ -2390,19 +2394,20 @@ export default function App() {
       rows[Math.max(0, Math.min(rows.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))]?.focus();
     }
   };
-  const { unreadCount, todayCount, updatedCount, savedCount } = useMemo(
+  const { unreadCount, todayCount, allCount, updatedCount, savedCount } = useMemo(
     () => countSmartFeedEntries(entries, entryLabels),
     [entries, entryLabels],
   );
   const navCounts = useMemo(() => ({
     today: hideReadByMode.today ? unreadCount : todayCount,
+    all: hideReadByMode.all ? unreadCount : allCount,
     updated: updatedCount,
     saved: hideReadByMode.saved
       ? entries.reduce((count, entry) => count + (
         entry.status === "unread" && entry.starred ? 1 : 0
       ), 0)
       : savedCount,
-  }), [entries, hideReadByMode, savedCount, todayCount, unreadCount, updatedCount]);
+  }), [allCount, entries, hideReadByMode, savedCount, todayCount, unreadCount, updatedCount]);
   const syncProgressLabel = syncProgress
     ? `${syncProgress.kind === "search"
       ? t("sync.searching")
@@ -2450,6 +2455,7 @@ export default function App() {
 
   const nav = [
     ["today", "bi-brightness-high-fill", t("sidebar.today"), navCounts.today],
+    ["all", "bi-inbox", t("sidebar.all"), navCounts.all],
     ["updated", "bi-bell", t("sidebar.updated"), navCounts.updated],
     ["saved", "bi-star-fill", t("sidebar.saved"), navCounts.saved],
   ] as const;

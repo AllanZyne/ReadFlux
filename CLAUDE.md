@@ -15,13 +15,18 @@ backend. The browser talks directly to Miniflux.
 
 The primary product contract is:
 
-- `Today` contains the complete synced Miniflux history, including read and
-  unread entries, and sorts it by the locally derived recommendation score.
+- `Today` contains unread entries plus previously read entries carrying the
+  `updated` label. It sorts by publication-time tier (`today`, `yesterday`,
+  `this week`, `this month`, `this year`, then older), then unread status,
+  local recommendation score, and publication time.
+- `All` contains the complete synced Miniflux history and sorts strictly by
+  publication time, newest first.
 - `Updated` contains previously read entries whose content changed after they
   were cached, and clears an entry's update label when it is reopened.
 - `Unread only` is a list filter, not a separate smart feed. It does not apply
   to `Updated`, whose entries are already read by definition.
-- Recommendation scores affect ordering only and are not shown in the list.
+- Recommendation scores affect ordering within each `Today` time and read-status
+  tier only, and are not shown in the list.
 - Reading an entry updates its live state without removing it from the current
   list snapshot.
 - Rebuild read filters only when the user changes the list, toggles
@@ -33,7 +38,7 @@ The primary product contract is:
 - Day and night are the only themes.
 - Settings are an in-app dialog. Recommendation data is inspectable and raw
   events can be added, edited, or deleted.
-- Category names, feed names, `Today`, `Updated`, and `Saved` use the same type
+- Category names, feed names, `Today`, `All`, `Updated`, and `Saved` use the same type
   size, weight, and row height. Hierarchy comes from disclosure controls, icons,
   and indentation.
 

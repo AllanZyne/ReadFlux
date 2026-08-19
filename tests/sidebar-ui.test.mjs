@@ -16,9 +16,11 @@ test("sidebar icons are provided by the local Bootstrap Icons package", () => {
 
 test("primary sidebar navigation uses Bootstrap Icons", () => {
   assert.match(app, /\["today",\s*"bi-brightness-high-fill",\s*t\("sidebar\.today"\),\s*navCounts\.today\]/);
+  assert.match(app, /\["all",\s*"bi-inbox",\s*t\("sidebar\.all"\),\s*navCounts\.all\]/);
   assert.match(app, /\["updated",\s*"bi-bell",\s*t\("sidebar\.updated"\),\s*navCounts\.updated\]/);
   assert.match(app, /\["saved",\s*"bi-star-fill",\s*t\("sidebar\.saved"\),\s*navCounts\.saved\]/);
-  assert.ok(app.indexOf('["today"') < app.indexOf('["updated"'));
+  assert.ok(app.indexOf('["today"') < app.indexOf('["all"'));
+  assert.ok(app.indexOf('["all"') < app.indexOf('["updated"'));
   assert.ok(app.indexOf('["updated"') < app.indexOf('["saved"'));
   assert.doesNotMatch(app, /sidebar\.allUnread/);
   assert.match(app, /<i className=\{`bi \$\{icon\}`\} aria-hidden="true" \/>/);
@@ -42,10 +44,11 @@ test("article list actions live in the title bar as NetNewsWire-style icons", ()
 });
 
 test("unread-only state is isolated per smart feed", () => {
-  assert.match(app, /useState<Record<ListMode, boolean>>\(\{[\s\S]*?today: false,[\s\S]*?updated: false,[\s\S]*?saved: false/);
+  assert.match(app, /useState<Record<ListMode, boolean>>\(\{[\s\S]*?today: false,[\s\S]*?all: false,[\s\S]*?updated: false,[\s\S]*?saved: false/);
   assert.match(app, /const hideRead = mode !== "updated" && hideReadByMode\[mode\]/);
   assert.match(app, /hideReadRef\.current = nextMode !== "updated" && hideReadByMode\[nextMode\]/);
   assert.match(app, /today: hideReadByMode\.today \? unreadCount : todayCount/);
+  assert.match(app, /all: hideReadByMode\.all \? unreadCount : allCount/);
   assert.match(app, /saved: hideReadByMode\.saved[\s\S]*?entry\.status === "unread" && entry\.starred/);
 });
 
