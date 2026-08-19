@@ -1136,6 +1136,7 @@ export default function App() {
   const autoReadFrame = useRef<number | undefined>(undefined);
   const autoReadPendingIds = useRef<Set<number>>(new Set());
   const previousStoryListScrollTop = useRef(0);
+  const sourceSnapshotInitialized = useRef(false);
   const refreshInFlight = useRef(false);
   const syncInFlight = useRef(false);
   const syncQueued = useRef<EntrySyncMode | null>(null);
@@ -1267,11 +1268,17 @@ export default function App() {
   }, []);
 
   const captureSourceSnapshot = useCallback((snapshotEntries: Entry[], labels: Map<number, string[]>) => {
+    sourceSnapshotInitialized.current = true;
     setSourceSnapshot({
       statuses: new Map(snapshotEntries.map((entry) => [entry.id, entry.status])),
       labels: new Map(labels),
     });
   }, []);
+
+  useEffect(() => {
+    if (loading || sourceSnapshotInitialized.current || !entries.length) return;
+    captureSourceSnapshot(entries, entryLabels);
+  }, [captureSourceSnapshot, entries, entryLabels, loading]);
 
   const navigateToArticle = useCallback((entryId: number) => {
     const hash = articleHash(entryId);
@@ -1507,7 +1514,9 @@ export default function App() {
         setListOrderVersion((version) => version + 1);
       }
       if (initialCacheHydration) {
-        captureSourceSnapshot(cached, labels);
+        sourceSnapshotInitialized.current = false;
+        if (cached.length) captureSourceSnapshot(cached, labels);
+        else setSourceSnapshot({ statuses: new Map(), labels: new Map() });
       }
       if (snapshotMissesCache) {
         setListReadSnapshot(new Map(cached.map((entry) => [entry.id, entry.status])));
@@ -1968,9 +1977,13 @@ export default function App() {
 
   const markEntriesReadFromScroll = useCallback(async (candidateIds: number[]) => {
     if (!config) return;
-    const unreadIds = candidateIds.filter((id) => (
-      entriesRef.current.find((entry) => entry.id === id)?.status === "unread"
-      && !autoReadPendingIds.current.has(id)
+    const candidateIdSet = new Set(candidateIds);
+    const unreadIds = entriesRef.current.flatMap((entry) => (
+      candidateIdSet.has(entry.id)
+      && entry.status === "unread"
+      && !autoReadPendingIds.current.has(entry.id)
+        ? [entry.id]
+        : []
     ));
     if (!unreadIds.length) return;
 
@@ -2831,6 +2844,8 @@ export default function App() {
             }
             await resetEntrySync(config);
             syncStateRef.current = null;
+            sourceSnapshotInitialized.current = false;
+            setSourceSnapshot({ statuses: new Map(), labels: new Map() });
             replaceEntries([]);
             setListReadSnapshot(new Map());
             setSelectedId(null);

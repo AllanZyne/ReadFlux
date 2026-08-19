@@ -34,6 +34,9 @@ test("scroll-to-read selects only stories that fully passed the list boundary", 
   assert.deepEqual(storyIdsPassedByScroll([
     { id: 1, offsetTop: 0, offsetHeight: 80 },
   ], 79), []);
+  assert.match(app, /const candidateIdSet = new Set\(candidateIds\);/);
+  assert.match(app, /const unreadIds = entriesRef\.current\.flatMap/);
+  assert.doesNotMatch(app, /candidateIds\.filter\([\s\S]{0,180}entriesRef\.current\.find/);
 });
 
 test("article text extraction is reused until title or content changes", () => {

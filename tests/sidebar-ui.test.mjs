@@ -202,7 +202,8 @@ test("category and feed buttons keep their smart-feed snapshot until reset or mo
   assert.match(app, /const returningToSmartFeed = !changingSmartFeed && currentTopic !== null && nextTopic === null/);
   assert.match(app, /if \(changingSmartFeed \|\| returningToSmartFeed\) \{\s*captureSourceSnapshot\(entriesRef\.current, entryLabels\);/);
   assert.match(app, /const refreshList = useCallback\([\s\S]*?captureSourceSnapshot\(entriesRef\.current, entryLabels\)/);
-  assert.match(app, /if \(initialCacheHydration\) \{\s*captureSourceSnapshot\(cached, labels\);/);
+  assert.match(app, /if \(initialCacheHydration\) \{[\s\S]*?if \(cached\.length\) captureSourceSnapshot\(cached, labels\);/);
+  assert.match(app, /if \(loading \|\| sourceSnapshotInitialized\.current \|\| !entries\.length\) return;[\s\S]*?captureSourceSnapshot\(entries, entryLabels\);/);
 });
 
 test("subscription collapse state survives unavailable browser storage", () => {
