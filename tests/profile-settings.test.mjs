@@ -10,6 +10,8 @@ test("corrupted profile values do not trigger the legacy WebDAV migration", () =
   assert.equal(settingsModule.hasLegacyWebDavSettings({ webdav: {} }), true);
   assert.deepEqual(settingsModule.normalizeProfileSettings("corrupted"), {
     theme: "day",
+    showFeedArticleCount: false,
+    markReadOnScroll: true,
     imageLoadingPreferences: {},
     incrementalSyncIntervalMinutes: 30,
     fullSyncIntervalMinutes: 240,
@@ -31,6 +33,8 @@ test("legacy WebDAV credentials are removed when profile settings load", () => {
   });
   assert.deepEqual(normalized, {
     theme: "night",
+    showFeedArticleCount: false,
+    markReadOnScroll: true,
     imageLoadingPreferences: {},
     incrementalSyncIntervalMinutes: 30,
     fullSyncIntervalMinutes: 240,
@@ -46,6 +50,20 @@ test("profile settings preserve only supported interface languages", () => {
   assert.equal(settingsModule.normalizeProfileSettings({ language: "en" }).language, "en");
   assert.equal(settingsModule.normalizeProfileSettings({ language: "de" }).language, undefined);
   assert.equal("entryLookbackDays" in settingsModule.normalizeProfileSettings({ entryLookbackDays: 7 }), false);
+});
+
+test("feed article counts are hidden by default and accept only an explicit true value", () => {
+  assert.equal(settingsModule.normalizeProfileSettings().showFeedArticleCount, false);
+  assert.equal(settingsModule.normalizeProfileSettings({ showFeedArticleCount: true }).showFeedArticleCount, true);
+  assert.equal(settingsModule.normalizeProfileSettings({ showFeedArticleCount: false }).showFeedArticleCount, false);
+  assert.equal(settingsModule.normalizeProfileSettings({ showFeedArticleCount: "true" }).showFeedArticleCount, false);
+});
+
+test("scroll-to-read is enabled by default and disabled only by an explicit false value", () => {
+  assert.equal(settingsModule.normalizeProfileSettings().markReadOnScroll, true);
+  assert.equal(settingsModule.normalizeProfileSettings({ markReadOnScroll: true }).markReadOnScroll, true);
+  assert.equal(settingsModule.normalizeProfileSettings({ markReadOnScroll: false }).markReadOnScroll, false);
+  assert.equal(settingsModule.normalizeProfileSettings({ markReadOnScroll: 0 }).markReadOnScroll, true);
 });
 
 test("legacy origin-referrer feeds migrate to direct-origin overrides", () => {

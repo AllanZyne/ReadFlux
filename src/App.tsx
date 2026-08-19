@@ -26,7 +26,7 @@ import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { startOptionalMinifluxTimeZoneLoad } from "./miniflux-timezone.mjs";
 import { articleHash, articlePermalink, parseAppRoute, type AppRoute } from "./routes";
 import { compareSmartFeedEntries, countSmartFeedEntries, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, nextDayBoundary, selectTimeZone, smartFeedStatusPriority, smartFeedTimeBucket, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
-import { nextStoryRenderCount, STORY_RENDER_BATCH_SIZE } from "./story-list";
+import { nextStoryRenderCount, STORY_RENDER_BATCH_SIZE, storyIdsPassedByScroll } from "./story-list";
 import { storyTextForEntry } from "./story-text";
 import {
   addEntryLabel,
@@ -542,6 +542,20 @@ function SettingsDialog({
     if (saved) await i18n.changeLanguage(language);
   };
 
+  const setShowFeedArticleCount = async (showFeedArticleCount: boolean) => {
+    await saveProfileChange(
+      (current) => ({ ...current, showFeedArticleCount, updatedAt: new Date().toISOString() }),
+      t("settings.feedArticleCountSaveFailed"),
+    );
+  };
+
+  const setMarkReadOnScroll = async (markReadOnScroll: boolean) => {
+    await saveProfileChange(
+      (current) => ({ ...current, markReadOnScroll, updatedAt: new Date().toISOString() }),
+      t("settings.markReadOnScrollSaveFailed"),
+    );
+  };
+
   const setMinifluxSyncInterval = async (
     field: "incrementalSyncIntervalMinutes" | "fullSyncIntervalMinutes",
     interval: MinifluxSyncInterval,
@@ -722,6 +736,30 @@ function SettingsDialog({
                   </select>
                 </label>
               </div>
+            </section>
+            <section>
+              <label className="settingToggle">
+                <span><strong>{t("settings.feedArticleCount")}</strong><small>{t("settings.feedArticleCountHint")}</small></span>
+                <input
+                  type="checkbox"
+                  checked={settings.showFeedArticleCount}
+                  disabled={profileSaving}
+                  onChange={(event) => void setShowFeedArticleCount(event.target.checked)}
+                />
+                <i aria-hidden="true" />
+              </label>
+            </section>
+            <section>
+              <label className="settingToggle">
+                <span><strong>{t("settings.markReadOnScroll")}</strong><small>{t("settings.markReadOnScrollHint")}</small></span>
+                <input
+                  type="checkbox"
+                  checked={settings.markReadOnScroll}
+                  disabled={profileSaving}
+                  onChange={(event) => void setMarkReadOnScroll(event.target.checked)}
+                />
+                <i aria-hidden="true" />
+              </label>
             </section>
             <section className="privacyBox">
               <strong>{t("settings.localBoundary")}</strong>
@@ -1015,6 +1053,8 @@ export default function App() {
   const [webDavStatus, setWebDavStatus] = useState<WebDavSyncStatus>({ state: "idle" });
   const [settings, setSettings] = useState<ProfileSettings>({
     theme: "day",
+    showFeedArticleCount: false,
+    markReadOnScroll: true,
     imageLoadingPreferences: {},
     incrementalSyncIntervalMinutes: DEFAULT_INCREMENTAL_SYNC_INTERVAL,
     fullSyncIntervalMinutes: DEFAULT_FULL_SYNC_INTERVAL,
@@ -1089,6 +1129,9 @@ export default function App() {
   const readerRef = useRef<HTMLDivElement | null>(null);
   const markAllReadButtonRef = useRef<HTMLButtonElement | null>(null);
   const markAllReadConfirmRef = useRef<HTMLButtonElement | null>(null);
+  const autoReadFrame = useRef<number | undefined>(undefined);
+  const autoReadPendingIds = useRef<Set<number>>(new Set());
+  const previousStoryListScrollTop = useRef(0);
   const refreshInFlight = useRef(false);
   const syncInFlight = useRef(false);
   const syncQueued = useRef<EntrySyncMode | null>(null);
@@ -1789,6 +1832,7 @@ export default function App() {
 
   const resetRenderedStories = useCallback(() => {
     setRenderedStoryCount(STORY_RENDER_BATCH_SIZE);
+    previousStoryListScrollTop.current = 0;
     if (storyListRef.current) storyListRef.current.scrollTop = 0;
   }, []);
 
@@ -1869,14 +1913,14 @@ export default function App() {
     const hasQuery = !!query.trim();
     const needle = hasQuery ? query.trim().toLowerCase() : "";
     const storyById = new Map(stories.map((story) => [story.id, story]));
-    const preservedUpdatedIds = mode === "updated" ? new Set(frozenVisibleOrder.ids) : null;
     return frozenVisibleOrder.ids.flatMap((id) => {
       const story = storyById.get(id);
       if (!story) return [];
       if (!hasQuery && !listReadSnapshot.has(story.id)) return [];
       const statusWhenListed = listReadSnapshot.get(story.id) ?? story.status;
-      const remainsInUpdatedSnapshot = preservedUpdatedIds?.has(story.id) ?? false;
-      if (!remainsInUpdatedSnapshot && !isEntryInSmartFeed(
+      const wasUpdatedWhenListed = (mode === "today" || mode === "updated")
+        && (frozenVisibleOrder.initialLabels.get(story.id)?.includes("updated") ?? false);
+      if (!wasUpdatedWhenListed && !isEntryInSmartFeed(
         { ...story, status: statusWhenListed },
         mode,
         entryLabels,
@@ -1888,9 +1932,11 @@ export default function App() {
       return [story];
     });
   }, [stories, mode, topic, query, hideRead, listReadSnapshot, frozenVisibleOrder, entryLabels]);
-  const visibleUnreadCount = useMemo(
-    () => visible.reduce((count, story) => count + (story.status === "unread" ? 1 : 0), 0),
-    [visible],
+  const visibleMarkReadCount = useMemo(
+    () => visible.reduce((count, story) => count + (
+      story.status === "unread" || entryLabels.get(story.id)?.includes("updated") ? 1 : 0
+    ), 0),
+    [entryLabels, visible],
   );
   const renderedStories = useMemo(
     () => visible.slice(0, renderedStoryCount),
@@ -1899,10 +1945,68 @@ export default function App() {
   const revealMoreStories = useCallback(() => {
     setRenderedStoryCount((current) => nextStoryRenderCount(current, visible.length));
   }, [visible.length]);
-  const loadMoreStoriesNearEnd = useCallback((event: React.UIEvent<HTMLDivElement>) => {
+
+  const markEntriesReadFromScroll = useCallback(async (candidateIds: number[]) => {
+    if (!config) return;
+    const unreadIds = candidateIds.filter((id) => (
+      entriesRef.current.find((entry) => entry.id === id)?.status === "unread"
+      && !autoReadPendingIds.current.has(id)
+    ));
+    if (!unreadIds.length) return;
+
+    unreadIds.forEach((id) => autoReadPendingIds.current.add(id));
+    const idSet = new Set(unreadIds);
+    const after = replaceEntries((current) => current.map((entry) => (
+      idSet.has(entry.id) && entry.status === "unread"
+        ? { ...entry, status: "read" as const }
+        : entry
+    )));
+    try {
+      const queued = await queueEntryMutations(
+        config,
+        after.filter((entry) => idSet.has(entry.id)),
+        unreadIds.map((entryId) => ({ entryId, field: "status", value: "read" })),
+      );
+      rememberQueuedEntryMutations(queued);
+      void flushPendingEntryMutations().catch(() => undefined);
+    } catch (cause) {
+      replaceEntries((current) => current.map((entry) => (
+        idSet.has(entry.id) && entry.status === "read"
+          ? { ...entry, status: "unread" as const }
+          : entry
+      )));
+      notify(errorMessage(cause, t, "errors.sync"));
+    } finally {
+      unreadIds.forEach((id) => autoReadPendingIds.current.delete(id));
+    }
+  }, [config, flushPendingEntryMutations, notify, rememberQueuedEntryMutations, replaceEntries, t]);
+
+  const handleStoryListScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
     const list = event.currentTarget;
     if (list.scrollHeight - list.scrollTop - list.clientHeight < 800) revealMoreStories();
-  }, [revealMoreStories]);
+    const previousScrollTop = previousStoryListScrollTop.current;
+    previousStoryListScrollTop.current = list.scrollTop;
+    if (!settings.markReadOnScroll || list.scrollTop <= previousScrollTop) return;
+
+    if (autoReadFrame.current !== undefined) window.cancelAnimationFrame(autoReadFrame.current);
+    autoReadFrame.current = window.requestAnimationFrame(() => {
+      autoReadFrame.current = undefined;
+      if (!list.isConnected) return;
+      const passedIds = storyIdsPassedByScroll(
+        [...list.querySelectorAll<HTMLElement>(".story[data-entry-id]")].map((story) => ({
+          id: Number(story.dataset.entryId),
+          offsetTop: story.offsetTop,
+          offsetHeight: story.offsetHeight,
+        })).filter((story) => Number.isSafeInteger(story.id)),
+        list.scrollTop,
+      );
+      void markEntriesReadFromScroll(passedIds);
+    });
+  }, [markEntriesReadFromScroll, revealMoreStories, settings.markReadOnScroll]);
+
+  useEffect(() => () => {
+    if (autoReadFrame.current !== undefined) window.cancelAnimationFrame(autoReadFrame.current);
+  }, []);
 
   useEffect(() => {
     if (capturedVisibleOrder.current === frozenVisibleOrder.ids) return;
@@ -2183,22 +2287,37 @@ export default function App() {
   const markVisibleRead = useCallback(async () => {
     if (!config) return;
     const ids = visible.filter((story) => story.status === "unread").map((story) => story.id);
-    if (!ids.length) return notify(t("feed.noUnread"));
+    const updatedIds = visible
+      .filter((story) => entryLabels.get(story.id)?.includes("updated"))
+      .map((story) => story.id);
+    const affectedIds = new Set([...ids, ...updatedIds]);
+    if (!affectedIds.size) return notify(t("feed.noUnread"));
     const idSet = new Set(ids);
     const before = entries;
+    const labelsBefore = entryLabels;
     const after = entries.map((entry) => idSet.has(entry.id) ? { ...entry, status: "read" as const } : entry);
+    const labelsAfter = new Map(entryLabels);
+    updatedIds.forEach((id) => {
+      const labels = (labelsAfter.get(id) ?? []).filter((label) => label !== "updated");
+      if (labels.length) labelsAfter.set(id, labels);
+      else labelsAfter.delete(id);
+    });
     replaceEntries(after);
+    setEntryLabels(labelsAfter);
     setListReadSnapshot(new Map(after.map((entry) => [entry.id, entry.status])));
     try {
-      const queued = await queueEntryMutations(
-        config,
-        after.filter((entry) => idSet.has(entry.id)),
-        ids.map((entryId) => ({ entryId, field: "status", value: "read" })),
-      );
-      rememberQueuedEntryMutations(queued);
-      void flushPendingEntryMutations().catch(() => undefined);
+      await Promise.all(updatedIds.map((id) => removeEntryLabel(config, id, "updated")));
+      if (ids.length) {
+        const queued = await queueEntryMutations(
+          config,
+          after.filter((entry) => idSet.has(entry.id)),
+          ids.map((entryId) => ({ entryId, field: "status", value: "read" })),
+        );
+        rememberQueuedEntryMutations(queued);
+        void flushPendingEntryMutations().catch(() => undefined);
+      }
       const currentExposure = latestExposure.current;
-      if (currentExposure) {
+      if (currentExposure && ids.length) {
         const updatedExposure = recordBulkDismissal(currentExposure, ids, new Date().toISOString());
         if (updatedExposure !== currentExposure) {
           latestExposure.current = updatedExposure;
@@ -2208,13 +2327,15 @@ export default function App() {
           }).catch(() => undefined);
         }
       }
-      notify(t("feed.markedRead", { count: ids.length }));
+      notify(t("feed.markedRead", { count: affectedIds.size }));
     } catch (cause) {
+      await Promise.all(updatedIds.map((id) => addEntryLabel(config, id, "updated"))).catch(() => undefined);
       replaceEntries(before);
+      setEntryLabels(labelsBefore);
       setListReadSnapshot(new Map(before.map((entry) => [entry.id, entry.status])));
       notify(errorMessage(cause, t, "errors.sync"));
     }
-  }, [config, entries, flushPendingEntryMutations, notify, rememberQueuedEntryMutations, replaceEntries, scheduleWebDavUpload, t, visible]);
+  }, [config, entries, entryLabels, flushPendingEntryMutations, notify, rememberQueuedEntryMutations, replaceEntries, scheduleWebDavUpload, t, visible]);
 
   const positionMarkAllRead = useCallback(() => {
     const trigger = markAllReadButtonRef.current;
@@ -2231,10 +2352,10 @@ export default function App() {
   }, []);
 
   const requestMarkVisibleRead = useCallback(() => {
-    if (!visibleUnreadCount) return notify(t("feed.noUnread"));
+    if (!visibleMarkReadCount) return notify(t("feed.noUnread"));
     positionMarkAllRead();
     setMarkAllReadOpen(true);
-  }, [notify, positionMarkAllRead, t, visibleUnreadCount]);
+  }, [notify, positionMarkAllRead, t, visibleMarkReadCount]);
 
   const dismissMarkAllRead = useCallback(() => {
     setMarkAllReadOpen(false);
@@ -2485,7 +2606,7 @@ export default function App() {
           <div className="sidebarScroll" onKeyDown={handleSidebarKey}>
             <nav>{nav.map(([key, icon, label, count]) => {
               const resetsSource = mode === key && topic !== null;
-              return <button data-sidebar-row key={key} className={mode === key ? "active" : ""} onClick={() => switchListContext(key, null)} aria-label={resetsSource ? t("sidebar.resetSource", { title: label }) : undefined} title={resetsSource ? t("sidebar.resetSource", { title: label }) : undefined}><i className={`bi ${icon}`} aria-hidden="true" /><span>{label}</span><em>{resetsSource ? "↩" : count}</em></button>;
+              return <button data-sidebar-row key={key} className={mode === key ? "active" : ""} onClick={() => switchListContext(key, null)} aria-label={resetsSource ? t("sidebar.resetSource", { title: label }) : undefined} title={resetsSource ? t("sidebar.resetSource", { title: label }) : undefined}><i className={`bi ${icon}`} aria-hidden="true" /><span>{label}</span><em>{resetsSource ? "↩" : settings.showFeedArticleCount ? count : ""}</em></button>;
             })}</nav>
             <div className="sideLabel"><span>{t("sidebar.subscriptions")}</span><button type="button" onClick={() => setSubscriptionsCollapsed((current) => !current)} title={t(subscriptionsCollapsed ? "sidebar.expand" : "sidebar.collapse")} aria-label={t(subscriptionsCollapsed ? "sidebar.expand" : "sidebar.collapse")} aria-expanded={!subscriptionsCollapsed}><i className={`bi ${subscriptionsCollapsed ? "bi-chevron-right" : "bi-chevron-down"}`} aria-hidden="true" /></button></div>
             {!subscriptionsCollapsed && visibleCategorySources.map((category) => {
@@ -2505,10 +2626,10 @@ export default function App() {
                       if (event.key === "ArrowRight") { event.preventDefault(); event.stopPropagation(); toggleCategory(category.id, false); }
                       if (event.key === " ") { event.preventDefault(); event.stopPropagation(); toggleCategory(category.id); }
                     }}
-                  ><span>{category.title}</span><em>{categoryCount || ""}</em></button>
+                  ><span>{category.title}</span><em>{settings.showFeedArticleCount ? categoryCount || "" : ""}</em></button>
                 </div>
                 {!collapsed && <div className="groupFeeds">
-                  {category.feeds.map((feed) => <button data-sidebar-row className={topic?.kind === "feed" && topic.id === feed.id ? "sourceRow selected" : "sourceRow"} key={feed.id} onClick={() => switchListContext(mode, { kind: "feed", id: feed.id })}><SourceIcon src={feedIcons.get(feed.id)}>{feed.title.slice(0, 1)}</SourceIcon><span>{feed.title}</span><em>{countByFeed.get(feed.id) || ""}</em></button>)}
+                  {category.feeds.map((feed) => <button data-sidebar-row className={topic?.kind === "feed" && topic.id === feed.id ? "sourceRow selected" : "sourceRow"} key={feed.id} onClick={() => switchListContext(mode, { kind: "feed", id: feed.id })}><SourceIcon src={feedIcons.get(feed.id)}>{feed.title.slice(0, 1)}</SourceIcon><span>{feed.title}</span><em>{settings.showFeedArticleCount ? countByFeed.get(feed.id) || "" : ""}</em></button>)}
                 </div>}
               </section>;
             })}
@@ -2519,9 +2640,18 @@ export default function App() {
         <section className="feed">
           <header className="feedTitle">
             <button className="mobileBack" onClick={() => setMobileView("sources")}>‹ {t("sidebar.feeds")}</button>
-            <div className="feedTitleText"><h1>{topicTitle ? `${t(`sidebar.${mode}`)} · ${topicTitle}` : t(`sidebar.${mode}`)}</h1><small>{t(mode === "today" ? "feed.recommendedCount" : mode === "updated" ? "feed.updatedCount" : "feed.articleCount", { count: visible.length })}{error && entries.length ? ` · ${t("feed.offline")}` : ""}</small></div>
+            <div className="feedTitleText">
+              <h1>{topicTitle ? `${t(`sidebar.${mode}`)} · ${topicTitle}` : t(`sidebar.${mode}`)}</h1>
+              {(settings.showFeedArticleCount || error && entries.length > 0) && <small>
+                {settings.showFeedArticleCount
+                  ? t(mode === "today" ? "feed.recommendedCount" : mode === "updated" ? "feed.updatedCount" : "feed.articleCount", { count: visible.length })
+                  : ""}
+                {settings.showFeedArticleCount && error && entries.length ? " · " : ""}
+                {error && entries.length ? t("feed.offline") : ""}
+              </small>}
+            </div>
             <div className="feedTitleActions" role="group" aria-label={t("feed.listActions")}>
-              <button ref={markAllReadButtonRef} type="button" className={markAllReadOpen ? "markAllReadSpotlight" : ""} onClick={requestMarkVisibleRead} disabled={!visibleUnreadCount} aria-label={t("feed.markAllRead")} title={t("feed.markAllRead")}><i className="bi bi-check2-all" aria-hidden="true" /></button>
+              <button ref={markAllReadButtonRef} type="button" className={markAllReadOpen ? "markAllReadSpotlight" : ""} onClick={requestMarkVisibleRead} disabled={!visibleMarkReadCount} aria-label={t("feed.markAllRead")} title={t("feed.markAllRead")}><i className="bi bi-check2-all" aria-hidden="true" /></button>
               <button type="button" className={hideRead ? "active" : ""} disabled={mode === "updated"} onClick={() => { if (mode === "updated") return; resetRenderedStories(); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideReadByMode((current) => ({ ...current, [mode]: !current[mode] })); }} aria-label={t("feed.unreadOnly")} title={t(mode === "updated" ? "feed.unreadOnly" : hideRead ? "feed.showAll" : "feed.unreadOnly")} aria-pressed={hideRead}><i className="bi bi-filter-circle" aria-hidden="true" /></button>
             </div>
           </header>
@@ -2538,11 +2668,11 @@ export default function App() {
                 "--mark-all-arrow-left": `${markAllReadPosition.arrowLeft}px`,
               } as CSSProperties}
             >
-              <h2 id="mark-all-read-title">{t("feed.markAllReadConfirm", { count: visibleUnreadCount })}</h2>
+              <h2 id="mark-all-read-title">{t("feed.markAllReadConfirm", { count: visibleMarkReadCount })}</h2>
               <button ref={markAllReadConfirmRef} type="button" onClick={() => { setMarkAllReadOpen(false); void markVisibleRead(); }}>{t("common.confirm")}</button>
             </section>
           </>}
-          <div className="storyList" ref={storyListRef} onScroll={loadMoreStoriesNearEnd}>
+          <div className="storyList" ref={storyListRef} onScroll={handleStoryListScroll}>
             {pendingNew > 0 && <button className="newArticlesPill" onClick={refreshList}>{t("feed.newArticles", { count: pendingNew })}</button>}
             {loading && !entries.length ? <div className="empty"><b className="loadingMark">↻</b><h2>{t("feed.syncing")}</h2><p>{t("feed.syncingHint")}</p></div>
               : error && !entries.length ? <div className="empty errorState"><b>!</b><h2>{t("feed.connectionFailed")}</h2><p>{t(error.key, { status: error.status })}</p><button onClick={() => void load()}>{t("feed.reconnect")}</button></div>
@@ -2555,7 +2685,7 @@ export default function App() {
                     : updated
                       ? "feed.updated"
                       : "feed.read";
-                return <article key={story.id} tabIndex={0} className={`story ${selected?.id === story.id ? "selected" : ""} ${story.status === "read" ? "read" : ""} ${updated ? "updated" : ""} ${story.starred ? "starred" : ""}`} onClick={() => { choose(story); setMobileView("reader"); }} onKeyDown={(event) => { if (event.key === "Enter") { choose(story); setMobileView("reader"); } }}>
+                return <article key={story.id} data-entry-id={story.id} tabIndex={0} className={`story ${selected?.id === story.id ? "selected" : ""} ${story.status === "read" ? "read" : ""} ${updated ? "updated" : ""} ${story.starred ? "starred" : ""}`} onClick={() => { choose(story); setMobileView("reader"); }} onKeyDown={(event) => { if (event.key === "Enter") { choose(story); setMobileView("reader"); } }}>
                 <div className="storyMain">
                   <div className="storySource"><SourceIcon src={feedIcons.get(story.feed_id)}>{story.mark}</SourceIcon><span>{story.source}</span></div>
                   <h2>{story.title}</h2>

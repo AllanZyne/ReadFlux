@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { nextStoryRenderCount, STORY_RENDER_BATCH_SIZE } from "../src/story-list.ts";
+import {
+  nextStoryRenderCount,
+  STORY_RENDER_BATCH_SIZE,
+  storyIdsPassedByScroll,
+} from "../src/story-list.ts";
 import { storyTextForEntry } from "../src/story-text.ts";
 
 const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
@@ -13,12 +17,23 @@ test("large article lists render in bounded progressive batches", () => {
   assert.equal(nextStoryRenderCount(60, 824), 120);
   assert.equal(nextStoryRenderCount(820, 824), 824);
   assert.match(app, /const renderedStories = useMemo\([\s\S]*?visible\.slice\(0, renderedStoryCount\)/);
-  assert.match(app, /onScroll=\{loadMoreStoriesNearEnd\}/);
+  assert.match(app, /onScroll=\{handleStoryListScroll\}/);
   assert.match(app, /ref=\{storyListRef\}/);
-  assert.match(app, /resetRenderedStories[\s\S]*?storyListRef\.current\.scrollTop = 0/);
+  assert.match(app, /resetRenderedStories[\s\S]*?previousStoryListScrollTop\.current = 0;[\s\S]*?storyListRef\.current\.scrollTop = 0/);
   assert.match(app, /renderedStories\.map\(\(story\)/);
   assert.match(app, /count: Math\.min\(STORY_RENDER_BATCH_SIZE, visible\.length - renderedStories\.length\)/);
   assert.doesNotMatch(app, /visible\.map\(\(story\) => <article/);
+});
+
+test("scroll-to-read selects only stories that fully passed the list boundary", () => {
+  assert.deepEqual(storyIdsPassedByScroll([
+    { id: 1, offsetTop: 0, offsetHeight: 80 },
+    { id: 2, offsetTop: 80, offsetHeight: 100 },
+    { id: 3, offsetTop: 180, offsetHeight: 100 },
+  ], 180), [1, 2]);
+  assert.deepEqual(storyIdsPassedByScroll([
+    { id: 1, offsetTop: 0, offsetHeight: 80 },
+  ], 79), []);
 });
 
 test("article text extraction is reused until title or content changes", () => {
