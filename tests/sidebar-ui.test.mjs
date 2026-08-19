@@ -249,6 +249,9 @@ test("the refresh button exposes sync state on hover and changes icon after fail
 
 test("the three-column workspace fills the viewport without a global banner", () => {
   assert.match(styles, /\.workspace\s*\{[^}]*height:100vh;/);
+  assert.match(styles, /grid-template-columns:minmax\(190px,min\(var\(--sidebar-width,250px\),24vw\)\) 5px minmax\(300px,min\(var\(--list-width,430px\),38vw\)\) 5px minmax\(0,1fr\)/);
+  assert.match(styles, /grid-template-columns:minmax\(160px,min\(var\(--sidebar-width,250px\),22vw\)\) 5px minmax\(280px,min\(var\(--list-width,430px\),38vw\)\) 5px minmax\(0,1fr\)/);
+  assert.match(styles, /\.sidebar\{\s*display:flex;[\s\S]*?scrollbar-gutter:auto;\s*\}/);
   assert.match(styles, /\.sidebarHeader\s*\{[^}]*height:72px;/);
   assert.doesNotMatch(styles, /\.topbar\s*\{/);
 });

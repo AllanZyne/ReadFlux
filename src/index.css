@@ -73,7 +73,7 @@ kbd{padding:2px 6px;border:1px solid #33423e;border-radius:4px;background:#1a252
 
 /* NetNewsWire-inspired reading layout */
 .toolbarButton,.settingsButton{width:34px;height:34px;display:grid;place-items:center;padding:0;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:18px;line-height:1;cursor:pointer}.toolbarButton>i,.settingsButton>i{display:block;line-height:1}.toolbarButton:hover,.settingsButton:hover{background:color-mix(in srgb,var(--text) 7%,transparent);color:var(--text)}
-.workspace{height:100vh;grid-template-columns:var(--sidebar-width,250px) 5px var(--list-width,430px) 5px minmax(420px,1fr)}
+.workspace{height:100vh;grid-template-columns:minmax(190px,min(var(--sidebar-width,250px),24vw)) 5px minmax(300px,min(var(--list-width,430px),38vw)) 5px minmax(0,1fr)}
 .resizeHandle{position:relative;z-index:4;cursor:col-resize;background:transparent}.resizeHandle:after{content:"";position:absolute;inset:0 2px;background:var(--line)}.resizeHandle:hover:after{background:var(--mint)}
 .sidebar{padding-top:12px;background:var(--panel);border-right:0}
 .sidebar nav button{height:34px;font-size:13px}.sidebar nav button>i{font-size:13px}.sidebar nav button.active{background:color-mix(in srgb,var(--mint) 18%,transparent);color:var(--mint);box-shadow:none}.sideLabel{margin-top:18px}
@@ -154,6 +154,7 @@ kbd{padding:2px 6px;border:1px solid #33423e;border-radius:4px;background:#1a252
   flex-direction:column;
   overflow:hidden;
   padding:0;
+  scrollbar-gutter:auto;
 }
 .sidebarHeader{height:72px;position:relative;display:flex;flex:none;align-items:center;justify-content:space-between;gap:8px;padding:0 10px 0 17px;border-bottom:1px solid var(--line);background:var(--panel)}
 .sidebarBrand{min-width:0;display:grid;gap:3px}.sidebarBrand strong{overflow:hidden;color:var(--text);font:700 20px/1 var(--font-geist-sans);letter-spacing:-.03em;text-overflow:ellipsis;white-space:nowrap}.sidebarHeaderActions{display:flex;flex:none;gap:2px}
@@ -297,7 +298,7 @@ kbd{padding:2px 6px;border:1px solid #33423e;border-radius:4px;background:#1a252
 .sourceIcon.hasImage{border-color:transparent;background:transparent}
 .sourceIcon img{width:100%;height:100%;display:block;object-fit:cover}
 @media (min-width:701px) and (max-width:900px){
-  .workspace{grid-template-columns:var(--sidebar-width,250px) 5px minmax(330px,42vw) 5px 1fr}
+  .workspace{grid-template-columns:minmax(160px,min(var(--sidebar-width,250px),22vw)) 5px minmax(280px,min(var(--list-width,430px),38vw)) 5px minmax(0,1fr)}
   .sidebar nav button{grid-template-columns:24px minmax(0,1fr) auto;justify-items:stretch}
   .sidebar nav button span,.sidebar nav button em,.sideLabel,.sourceGroup{display:flex}
   .sidebar nav button{display:grid}
