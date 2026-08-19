@@ -26,6 +26,8 @@ test("primary sidebar navigation uses Bootstrap Icons", () => {
   assert.match(app, /<i className=\{`bi \$\{icon\}`\} aria-hidden="true" \/>/);
   assert.doesNotMatch(app, /<b>\{icon\}<\/b>/);
   assert.match(styles, /\.sidebar nav button>i\s*\{/);
+  assert.match(styles, /\.shell\[data-theme="day"\] \.sidebar nav button\.active\{background:#3568d4;color:#fff;box-shadow:none\}/);
+  assert.match(styles, /\.shell\[data-theme="night"\] \.sidebar nav button\.active\{background:#315da8;color:#fff;box-shadow:none\}/);
 });
 
 test("smart feed heading combines the selected feed with its source scope", () => {
@@ -55,7 +57,15 @@ test("article rows use a right-aligned time and status rail without summaries", 
   assert.match(styles, /\.story:not\(\.read\) \.storyStatus>i\{background:var\(--mint\)\}/);
   assert.match(styles, /\.story\.updated:not\(\.starred\) \.storyStatus>i\{background:#10b981\}/);
   assert.match(styles, /\.story\.starred \.storyStatus>i\{background:var\(--yellow\)\}/);
+  assert.match(styles, /\.shell\[data-theme="day"\] \.story\.starred \.storyStatus>i\{background:#eab308\}/);
+  assert.match(styles, /\.shell\[data-theme="night"\] \.story\.starred \.storyStatus>i\{background:#facc15\}/);
   assert.doesNotMatch(styles, /pulseRing/);
+});
+
+test("the reader does not reserve a persistent previous-next footer", () => {
+  assert.doesNotMatch(app, /className="readerFoot"/);
+  assert.match(styles, /\.readerScroll\{padding-top:0;padding-bottom:32px\}/);
+  assert.match(styles, /\.toast\{position:fixed;right:25px;bottom:20px;/);
 });
 
 test("unread-only state is isolated per smart feed", () => {
@@ -197,6 +207,8 @@ test("the empty-state reset button uses a light surface in the day theme", () =>
     styles,
     /\.shell\[data-theme="day"\] \.empty button\s*\{[^}]*border-color:#afc1df;[^}]*background:#fff;[^}]*color:#2559c2;/,
   );
+  assert.match(styles, /\.shell\[data-theme="day"\] \.readerEmpty h2\{color:#26364b\}/);
+  assert.match(styles, /\.shell\[data-theme="day"\] \.readerEmpty p\{color:#64748a\}/);
 });
 
 test("long category titles are truncated within their row", () => {

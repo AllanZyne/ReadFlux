@@ -2594,7 +2594,6 @@ export default function App() {
                   : <ArticleBody content={selected.content} minifluxURL={config.url} imageMode={selectedImageMode} />}
               <div className="feedback"><span>{t("recommendation.feedbackQuestion")}</span><button onClick={() => void setFeedback("helpful")}>{t("recommendation.helpful")}</button><button onClick={() => void setFeedback("not_interested")}>{t("recommendation.notInterested")}</button></div>
             </div>
-            <footer className="readerFoot"><span><kbd>J</kbd><kbd>K</kbd> {t("reader.shortcuts")}　<kbd>S</kbd> {t("reader.save")}　<kbd>U</kbd> {t("feed.read")}</span><div><button onClick={() => move(-1)}>{t("reader.previous")}</button><button onClick={() => move(1)}>{t("reader.next")}</button></div></footer>
           </> : route.kind === "article" ? <div className={`empty readerEmpty ${contentError?.id === route.entryId ? "errorState" : ""}`}>
             <b className={contentError?.id === route.entryId ? "" : "loadingMark"}>{contentError?.id === route.entryId ? "!" : "↻"}</b>
             <h2>{t(contentError?.id === route.entryId ? "reader.contentFailed" : "reader.loadingContent")}</h2>
