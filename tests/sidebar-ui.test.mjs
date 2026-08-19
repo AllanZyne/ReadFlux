@@ -147,6 +147,8 @@ test("scroll-to-read is enabled by default and configurable from General setting
   assert.match(app, /storyIdsPassedByScroll\(/);
   assert.match(app, /data-entry-id=\{story\.id\}/);
   assert.match(app, /unreadIds\.map\(\(entryId\) => \(\{ entryId, field: "status", value: "read" \}\)\)/);
+  assert.match(app, /const updatedIds = candidateIds\.filter[\s\S]*?entryLabels\.get\(id\)\?\.includes\("updated"\)/);
+  assert.match(app, /updatedIds\.map\(\(id\) => removeEntryLabel\(config, id, "updated"\)\)/);
 });
 
 test("opening an updated article preserves the current Today or Updated snapshot", () => {

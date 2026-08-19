@@ -1992,34 +1992,60 @@ export default function App() {
         ? [entry.id]
         : []
     ));
-    if (!unreadIds.length) return;
+    const updatedIds = candidateIds.filter((id) => (
+      entryLabels.get(id)?.includes("updated")
+      && !autoReadPendingIds.current.has(id)
+    ));
+    const affectedIds = [...new Set([...unreadIds, ...updatedIds])];
+    if (!affectedIds.length) return;
 
-    unreadIds.forEach((id) => autoReadPendingIds.current.add(id));
+    affectedIds.forEach((id) => autoReadPendingIds.current.add(id));
     const idSet = new Set(unreadIds);
     const after = replaceEntries((current) => current.map((entry) => (
       idSet.has(entry.id) && entry.status === "unread"
         ? { ...entry, status: "read" as const }
         : entry
     )));
+    setEntryLabels((current) => {
+      const next = new Map(current);
+      updatedIds.forEach((id) => {
+        const labels = (next.get(id) ?? []).filter((label) => label !== "updated");
+        if (labels.length) next.set(id, labels);
+        else next.delete(id);
+      });
+      return next;
+    });
     try {
-      const queued = await queueEntryMutations(
-        config,
-        after.filter((entry) => idSet.has(entry.id)),
-        unreadIds.map((entryId) => ({ entryId, field: "status", value: "read" })),
-      );
-      rememberQueuedEntryMutations(queued);
-      void flushPendingEntryMutations().catch(() => undefined);
+      await Promise.all(updatedIds.map((id) => removeEntryLabel(config, id, "updated")));
+      if (unreadIds.length) {
+        const queued = await queueEntryMutations(
+          config,
+          after.filter((entry) => idSet.has(entry.id)),
+          unreadIds.map((entryId) => ({ entryId, field: "status", value: "read" })),
+        );
+        rememberQueuedEntryMutations(queued);
+        void flushPendingEntryMutations().catch(() => undefined);
+      }
     } catch (cause) {
+      await Promise.all(updatedIds.map((id) => addEntryLabel(config, id, "updated"))).catch(() => undefined);
       replaceEntries((current) => current.map((entry) => (
         idSet.has(entry.id) && entry.status === "read"
           ? { ...entry, status: "unread" as const }
           : entry
       )));
+      setEntryLabels((current) => {
+        const next = new Map(current);
+        updatedIds.forEach((id) => {
+          const labels = next.get(id) ?? [];
+          if (!labels.includes("updated")) next.set(id, [...labels, "updated"]);
+        });
+        return next;
+      });
       notify(errorMessage(cause, t, "errors.sync"));
     } finally {
-      unreadIds.forEach((id) => autoReadPendingIds.current.delete(id));
+      affectedIds.forEach((id) => autoReadPendingIds.current.delete(id));
     }
-  }, [config, flushPendingEntryMutations, notify, rememberQueuedEntryMutations, replaceEntries, t]);
+  }, [config, entryLabels, flushPendingEntryMutations, notify, rememberQueuedEntryMutations, replaceEntries, t]);
 
   const handleStoryListScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
     const list = event.currentTarget;
