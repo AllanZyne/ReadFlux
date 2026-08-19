@@ -44,6 +44,7 @@ const DATE_WORDS = new Set([
 ]);
 
 const URL_OR_EMAIL = /(?:https?:\/\/|www\.)\S+|\b[^\s@]+@[^\s@]+\.[^\s@]+\b/giu;
+const CONTAINS_URL_OR_EMAIL = /(?:https?:\/\/|www\.)\S+|\b[^\s@]+@[^\s@]+\.[^\s@]+\b/iu;
 const HTML_REMNANT = /<[^>]*>|&(?:[a-z]+|#\d+);/giu;
 const DATE_OR_TIME = /\b(?:19|20)\d{2}[-/.年]\d{1,2}(?:[-/.月]\d{1,2}日?)?(?:[t\s]\d{1,2}:\d{2}(?::\d{2})?)?|\b\d{1,2}[-/.月]\d{1,2}(?:[-/.]\d{2,4}|日)?|\b\d{1,2}:\d{2}(?::\d{2})?\b/giu;
 const PURE_NUMERIC = /^\p{N}+(?:[.,:/+-]\p{N}+)*%?$/u;
@@ -87,6 +88,15 @@ export async function initializeChineseRecommendationTerms() {
 
 export function normalizeRecommendationTerm(value: string) {
   return value.normalize("NFKC").trim().toLowerCase();
+}
+
+export function normalizeSelectedTopic(value: string) {
+  if (/[\r\n]/u.test(value)) return null;
+  const term = normalizeRecommendationTerm(value).replace(/\s+/gu, " ");
+  const length = Array.from(term).length;
+  if (length < 2 || length > 40) return null;
+  if (/[。！？!?；;]/u.test(term) || CONTAINS_URL_OR_EMAIL.test(term) || PURE_NUMERIC.test(term)) return null;
+  return term;
 }
 
 type CandidateToken = { term: string; tag?: string; index: number };
