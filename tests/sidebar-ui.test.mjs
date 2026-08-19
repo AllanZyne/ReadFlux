@@ -16,14 +16,18 @@ test("sidebar icons are provided by the local Bootstrap Icons package", () => {
 
 test("primary sidebar navigation uses Bootstrap Icons", () => {
   assert.match(app, /\["today",\s*"bi-brightness-high-fill",\s*t\("sidebar\.today"\),\s*navCounts\.today\]/);
+  assert.match(app, /\["all",\s*"bi-inbox",\s*t\("sidebar\.all"\),\s*navCounts\.all\]/);
   assert.match(app, /\["updated",\s*"bi-bell",\s*t\("sidebar\.updated"\),\s*navCounts\.updated\]/);
   assert.match(app, /\["saved",\s*"bi-star-fill",\s*t\("sidebar\.saved"\),\s*navCounts\.saved\]/);
-  assert.ok(app.indexOf('["today"') < app.indexOf('["updated"'));
+  assert.ok(app.indexOf('["today"') < app.indexOf('["all"'));
+  assert.ok(app.indexOf('["all"') < app.indexOf('["updated"'));
   assert.ok(app.indexOf('["updated"') < app.indexOf('["saved"'));
   assert.doesNotMatch(app, /sidebar\.allUnread/);
   assert.match(app, /<i className=\{`bi \$\{icon\}`\} aria-hidden="true" \/>/);
   assert.doesNotMatch(app, /<b>\{icon\}<\/b>/);
   assert.match(styles, /\.sidebar nav button>i\s*\{/);
+  assert.match(styles, /\.shell\[data-theme="day"\] \.sidebar nav button\.active\{background:#3568d4;color:#fff;box-shadow:none\}/);
+  assert.match(styles, /\.shell\[data-theme="night"\] \.sidebar nav button\.active\{background:#315da8;color:#fff;box-shadow:none\}/);
 });
 
 test("smart feed heading combines the selected feed with its source scope", () => {
@@ -41,11 +45,39 @@ test("article list actions live in the title bar as NetNewsWire-style icons", ()
   assert.match(styles, /\.feedTitleActions button:disabled\s*\{/);
 });
 
+test("article rows use a right-aligned time and status rail without summaries", () => {
+  assert.match(app, /className="storyMain"[\s\S]*?className="storySource"[\s\S]*?<h2>\{story\.title\}<\/h2>[\s\S]*?<footer>\{t\("feed\.minutes"/);
+  assert.match(app, /className="storyStatus"[\s\S]*?<time>\{formatZonedTime\(story\.published_at, activeTimeZone\)\}<\/time>[\s\S]*?<i aria-hidden="true" \/>/);
+  assert.doesNotMatch(app, /<h2>\{story\.title\}<\/h2><p>\{story\.summary\}<\/p>/);
+  assert.match(app, /\$\{story\.starred \? "starred" : ""\}/);
+  assert.match(app, /const updated = story\.status === "read" && \(entryLabels\.get\(story\.id\)\?\.includes\("updated"\) \?\? false\)/);
+  assert.match(app, /story\.status === "unread"[\s\S]*?"feed\.unread"[\s\S]*?updated[\s\S]*?"feed\.updated"/);
+  assert.match(app, /currentMode === "updated" && entry\.status === "read" && updatedIds\.has\(entry\.id\)/);
+  assert.match(app, /timeBuckets: new Map|const timeBuckets = mode === "today"/);
+  assert.match(styles, /\.story\{[^}]*grid-template-columns:minmax\(0,1fr\) 52px;[^}]*padding:13px 16px 12px/);
+  assert.match(styles, /\.storyStatus\{[^}]*align-items:flex-end;[^}]*justify-content:space-between/);
+  assert.match(styles, /\.storySource\{gap:5px;[^}]*font-size:10px\}/);
+  assert.match(styles, /\.story \.sourceIcon\{width:14px;height:14px;[^}]*font-size:7px\}/);
+  assert.match(styles, /\.story:not\(\.read\) \.storyStatus>i\{background:var\(--mint\)\}/);
+  assert.match(styles, /\.story\.read\.updated:not\(\.starred\) \.storyStatus>i\{background:#10b981\}/);
+  assert.match(styles, /\.story\.starred \.storyStatus>i\{background:var\(--yellow\)\}/);
+  assert.match(styles, /\.shell\[data-theme="day"\] \.story\.starred \.storyStatus>i\{background:#eab308\}/);
+  assert.match(styles, /\.shell\[data-theme="night"\] \.story\.starred \.storyStatus>i\{background:#facc15\}/);
+  assert.doesNotMatch(styles, /pulseRing/);
+});
+
+test("the reader does not reserve a persistent previous-next footer", () => {
+  assert.doesNotMatch(app, /className="readerFoot"/);
+  assert.match(styles, /\.readerScroll\{padding-top:0;padding-bottom:32px\}/);
+  assert.match(styles, /\.toast\{position:fixed;right:25px;bottom:20px;/);
+});
+
 test("unread-only state is isolated per smart feed", () => {
-  assert.match(app, /useState<Record<ListMode, boolean>>\(\{[\s\S]*?today: false,[\s\S]*?updated: false,[\s\S]*?saved: false/);
+  assert.match(app, /useState<Record<ListMode, boolean>>\(\{[\s\S]*?today: false,[\s\S]*?all: false,[\s\S]*?updated: false,[\s\S]*?saved: false/);
   assert.match(app, /const hideRead = mode !== "updated" && hideReadByMode\[mode\]/);
   assert.match(app, /hideReadRef\.current = nextMode !== "updated" && hideReadByMode\[nextMode\]/);
   assert.match(app, /today: hideReadByMode\.today \? unreadCount : todayCount/);
+  assert.match(app, /all: hideReadByMode\.all \? unreadCount : allCount/);
   assert.match(app, /saved: hideReadByMode\.saved[\s\S]*?entry\.status === "unread" && entry\.starred/);
 });
 
@@ -179,6 +211,8 @@ test("the empty-state reset button uses a light surface in the day theme", () =>
     styles,
     /\.shell\[data-theme="day"\] \.empty button\s*\{[^}]*border-color:#afc1df;[^}]*background:#fff;[^}]*color:#2559c2;/,
   );
+  assert.match(styles, /\.shell\[data-theme="day"\] \.readerEmpty h2\{color:#26364b\}/);
+  assert.match(styles, /\.shell\[data-theme="day"\] \.readerEmpty p\{color:#64748a\}/);
 });
 
 test("long category titles are truncated within their row", () => {
@@ -231,6 +265,9 @@ test("the refresh button exposes sync state on hover and changes icon after fail
 
 test("the three-column workspace fills the viewport without a global banner", () => {
   assert.match(styles, /\.workspace\s*\{[^}]*height:100vh;/);
+  assert.match(styles, /grid-template-columns:minmax\(190px,min\(var\(--sidebar-width,250px\),24vw\)\) 5px minmax\(300px,min\(var\(--list-width,430px\),38vw\)\) 5px minmax\(0,1fr\)/);
+  assert.match(styles, /grid-template-columns:minmax\(160px,min\(var\(--sidebar-width,250px\),22vw\)\) 5px minmax\(280px,min\(var\(--list-width,430px\),38vw\)\) 5px minmax\(0,1fr\)/);
+  assert.match(styles, /\.sidebar\{\s*display:flex;[\s\S]*?scrollbar-gutter:auto;\s*\}/);
   assert.match(styles, /\.sidebarHeader\s*\{[^}]*height:72px;/);
   assert.doesNotMatch(styles, /\.topbar\s*\{/);
 });

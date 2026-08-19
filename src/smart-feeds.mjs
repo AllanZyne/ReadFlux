@@ -159,19 +159,63 @@ export function nextDayBoundary(value, timeZone) {
 
 export function isEntryInSmartFeed(entry, mode, labels) {
   if (entry.status === "removed") return false;
-  if (mode === "today") return true;
-  if (mode === "updated") return labels?.get(entry.id)?.includes("updated") ?? false;
+  const updated = entry.status === "read"
+    && (labels?.get(entry.id)?.includes("updated") ?? false);
+  if (mode === "today") {
+    return entry.status === "unread" || updated;
+  }
+  if (mode === "all") return true;
+  if (mode === "updated") return updated;
   return entry.starred;
 }
 
 export function smartFeedStatusPriority(entry, labels) {
-  if (labels?.get(entry.id)?.includes("updated")) return 2;
-  if (entry.status === "unread") return 1;
+  if (entry.status === "unread") return 2;
+  if (labels?.get(entry.id)?.includes("updated")) return 1;
   return 0;
 }
 
-export function compareSmartFeedEntries(a, b, mode, labels) {
+export function smartFeedTimeBucket(value, now = Date.now(), timeZone) {
+  const entryKey = localDayKey(value, timeZone);
+  const todayKey = localDayKey(now, timeZone);
+  if (!entryKey || !todayKey) return 5;
+
+  const [entryYear, entryMonth, entryDay] = entryKey.split("-").map(Number);
+  const [todayYear, todayMonth, todayDay] = todayKey.split("-").map(Number);
+  const entryOrdinal = Date.UTC(entryYear, entryMonth - 1, entryDay) / 86_400_000;
+  const todayOrdinal = Date.UTC(todayYear, todayMonth - 1, todayDay) / 86_400_000;
+  const daysAgo = todayOrdinal - entryOrdinal;
+
+  // Future-dated entries are treated as current instead of falling into archive tiers.
+  if (daysAgo <= 0) return 0;
+  if (daysAgo === 1) return 1;
+
+  const todayWeekday = new Date(Date.UTC(todayYear, todayMonth - 1, todayDay)).getUTCDay();
+  const daysSinceMonday = (todayWeekday + 6) % 7;
+  if (daysAgo <= daysSinceMonday) return 2;
+  if (entryYear === todayYear && entryMonth === todayMonth) return 3;
+  if (entryYear === todayYear) return 4;
+  return 5;
+}
+
+export function compareSmartFeedEntries(a, b, mode, labels, context = {}) {
   if (mode === "today") {
+    const aBucket = context.timeBuckets?.get(a.id) ?? smartFeedTimeBucket(
+      a.published_at,
+      context.now,
+      context.timeZone,
+    );
+    const bBucket = context.timeBuckets?.get(b.id) ?? smartFeedTimeBucket(
+      b.published_at,
+      context.now,
+      context.timeZone,
+    );
+    const bucketOrder = aBucket - bBucket;
+    if (bucketOrder !== 0) return bucketOrder;
+
+    const unreadOrder = Number(b.status === "unread") - Number(a.status === "unread");
+    if (unreadOrder !== 0) return unreadOrder;
+
     const recommendationOrder = b.score - a.score;
     if (recommendationOrder !== 0) return recommendationOrder;
   }
@@ -182,13 +226,23 @@ export function compareSmartFeedEntries(a, b, mode, labels) {
 }
 
 export function countSmartFeedEntries(entries, labels) {
-  const counts = { unreadCount: 0, todayCount: 0, updatedCount: 0, savedCount: 0 };
+  const counts = {
+    unreadCount: 0,
+    todayCount: 0,
+    allCount: 0,
+    updatedCount: 0,
+    savedCount: 0,
+  };
 
   for (const entry of entries) {
     if (entry.status === "removed") continue;
-    if (entry.status === "unread") counts.unreadCount += 1;
-    counts.todayCount += 1;
-    if (labels?.get(entry.id)?.includes("updated")) counts.updatedCount += 1;
+    const unread = entry.status === "unread";
+    const updated = entry.status === "read"
+      && (labels?.get(entry.id)?.includes("updated") ?? false);
+    if (unread) counts.unreadCount += 1;
+    if (unread || updated) counts.todayCount += 1;
+    counts.allCount += 1;
+    if (updated) counts.updatedCount += 1;
     if (entry.starred) counts.savedCount += 1;
   }
 

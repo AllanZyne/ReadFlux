@@ -2,14 +2,15 @@
 
 ReadFlux is a static, local-first Miniflux client. It uses Miniflux as the
 source for feeds and articles, records real reading behavior in the browser,
-and ranks the complete synced article history into a personalized **Today**
-view.
+and turns unread or newly updated articles into a personalized **Today** view.
+The complete synced history remains available in **All**.
 
 ## Features
 
 - NetNewsWire-inspired three-column reading interface
-- **Today** contains read and unread articles from the complete synced history,
-  ranked by local recommendations
+- **Today** contains unread articles and previously read articles with new
+  updates, ordered by time period, unread status, and local recommendations
+- **All** contains the complete synced history in reverse publication order
 - **Updated** tracks previously read articles whose content changed since they
   were last opened
 - An **Unread only** list filter replaces a separate unread destination
@@ -117,9 +118,10 @@ The recommendation profile gives more weight to recent behavior and combines:
 - Saved articles
 - Negative keywords
 
-Recommendation scores only order **Today** and are not displayed in the article
-list. The **Recommendation data** tab in Settings exposes derived weights and
-raw events and allows records to be added, edited, or deleted.
+Recommendation scores order articles within each **Today** time and read-status
+tier and are not displayed in the article list. The **Recommendation data** tab
+in Settings exposes derived weights and raw events and allows records to be
+added, edited, or deleted.
 
 ### Optional WebDAV sync
 

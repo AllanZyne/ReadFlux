@@ -25,7 +25,7 @@ import {
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { startOptionalMinifluxTimeZoneLoad } from "./miniflux-timezone.mjs";
 import { articleHash, articlePermalink, parseAppRoute, type AppRoute } from "./routes";
-import { compareSmartFeedEntries, countSmartFeedEntries, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, nextDayBoundary, selectTimeZone, smartFeedStatusPriority, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
+import { compareSmartFeedEntries, countSmartFeedEntries, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, nextDayBoundary, selectTimeZone, smartFeedStatusPriority, smartFeedTimeBucket, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
 import { nextStoryRenderCount, STORY_RENDER_BATCH_SIZE } from "./story-list";
 import { storyTextForEntry } from "./story-text";
 import {
@@ -128,7 +128,7 @@ type BaseStory = Entry & Omit<Story, keyof Entry | "score" | "reason" | "scoreBr
   recommendationText: string;
 };
 type EntryPage = { total: number; entries: Entry[] };
-type ListMode = "today" | "updated" | "saved";
+type ListMode = "today" | "all" | "updated" | "saved";
 type Topic = { kind: "category" | "feed"; id: number } | null;
 type SyncProgress = {
   kind: "full" | "incremental" | "search";
@@ -1034,6 +1034,7 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [hideReadByMode, setHideReadByMode] = useState<Record<ListMode, boolean>>({
     today: false,
+    all: false,
     updated: false,
     saved: false,
   });
@@ -1376,7 +1377,7 @@ export default function App() {
       const currentTopic = topicRef.current;
       const currentHideRead = hideReadRef.current && currentMode !== "updated";
       const matchesCurrentMode = (entry: Entry) => (
-        currentMode === "updated" && updatedIds.has(entry.id)
+        currentMode === "updated" && entry.status === "read" && updatedIds.has(entry.id)
       ) || isEntryInSmartFeed(entry, currentMode, entryLabels);
       const relevant = protectedBatch.filter((entry) => {
         if (listSnapshotIds.current.has(entry.id)) return false;
@@ -1838,7 +1839,17 @@ export default function App() {
       if (!hasQuery) return true;
       return `${story.title} ${story.summary} ${story.source} ${story.author ?? ""}`.toLowerCase().includes(needle);
     });
-    filtered.sort((a, b) => compareSmartFeedEntries(a, b, mode, entryLabels));
+    const timeBuckets = mode === "today"
+      ? new Map(filtered.map((story) => [
+        story.id,
+        smartFeedTimeBucket(story.published_at, todayClock, activeTimeZone),
+      ]))
+      : undefined;
+    filtered.sort((a, b) => compareSmartFeedEntries(a, b, mode, entryLabels, {
+      now: todayClock,
+      timeZone: activeTimeZone,
+      timeBuckets,
+    }));
     return {
       ids: filtered.map((story) => story.id),
       initialEntries: stories,
@@ -1847,7 +1858,7 @@ export default function App() {
     };
   // The snapshot and context deliberately define when list order is rebuilt.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hideRead, listOrderVersion, listReadSnapshot, mode, query, topic]);
+  }, [activeTimeZone, hideRead, listOrderVersion, listReadSnapshot, mode, query, topic]);
 
   const visible = useMemo(() => {
     if (
@@ -2390,19 +2401,20 @@ export default function App() {
       rows[Math.max(0, Math.min(rows.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))]?.focus();
     }
   };
-  const { unreadCount, todayCount, updatedCount, savedCount } = useMemo(
+  const { unreadCount, todayCount, allCount, updatedCount, savedCount } = useMemo(
     () => countSmartFeedEntries(entries, entryLabels),
     [entries, entryLabels],
   );
   const navCounts = useMemo(() => ({
     today: hideReadByMode.today ? unreadCount : todayCount,
+    all: hideReadByMode.all ? unreadCount : allCount,
     updated: updatedCount,
     saved: hideReadByMode.saved
       ? entries.reduce((count, entry) => count + (
         entry.status === "unread" && entry.starred ? 1 : 0
       ), 0)
       : savedCount,
-  }), [entries, hideReadByMode, savedCount, todayCount, unreadCount, updatedCount]);
+  }), [allCount, entries, hideReadByMode, savedCount, todayCount, unreadCount, updatedCount]);
   const syncProgressLabel = syncProgress
     ? `${syncProgress.kind === "search"
       ? t("sync.searching")
@@ -2450,6 +2462,7 @@ export default function App() {
 
   const nav = [
     ["today", "bi-brightness-high-fill", t("sidebar.today"), navCounts.today],
+    ["all", "bi-inbox", t("sidebar.all"), navCounts.all],
     ["updated", "bi-bell", t("sidebar.updated"), navCounts.updated],
     ["saved", "bi-star-fill", t("sidebar.saved"), navCounts.saved],
   ] as const;
@@ -2533,11 +2546,28 @@ export default function App() {
             {pendingNew > 0 && <button className="newArticlesPill" onClick={refreshList}>{t("feed.newArticles", { count: pendingNew })}</button>}
             {loading && !entries.length ? <div className="empty"><b className="loadingMark">↻</b><h2>{t("feed.syncing")}</h2><p>{t("feed.syncingHint")}</p></div>
               : error && !entries.length ? <div className="empty errorState"><b>!</b><h2>{t("feed.connectionFailed")}</h2><p>{t(error.key, { status: error.status })}</p><button onClick={() => void load()}>{t("feed.reconnect")}</button></div>
-              : visible.length ? <>{renderedStories.map((story) => <article key={story.id} tabIndex={0} className={`story ${selected?.id === story.id ? "selected" : ""} ${story.status === "read" ? "read" : ""} ${entryLabels.has(story.id) && entryLabels.get(story.id)!.includes("updated") ? "updated" : ""}`} onClick={() => { choose(story); setMobileView("reader"); }} onKeyDown={(event) => { if (event.key === "Enter") { choose(story); setMobileView("reader"); } }}>
-                <div className="storySource"><SourceIcon src={feedIcons.get(story.feed_id)}>{story.mark}</SourceIcon><span>{story.source}</span><time>{formatZonedTime(story.published_at, activeTimeZone)}</time>{story.starred && <b>★</b>}</div>
-                <h2>{story.title}</h2><p>{story.summary}</p>
-                <footer><i /><span>{t(story.status === "unread" ? "feed.unread" : entryLabels.get(story.id)?.includes("updated") ? "feed.updated" : story.starred ? "feed.saved" : "feed.read")}</span><span>·</span><span>{t("feed.minutes", { count: story.reading_time || 1 })}</span></footer>
-              </article>)}{renderedStories.length < visible.length && <button className="storyListMore" type="button" onClick={revealMoreStories}>{t("feed.showMore", { count: Math.min(STORY_RENDER_BATCH_SIZE, visible.length - renderedStories.length) })}</button>}</> : <div className="empty"><b>✓</b><h2>{t("feed.empty")}</h2><p>{t("feed.emptyHint")}</p><button onClick={() => { setQuery(""); setHideReadByMode((current) => ({ ...current, today: false })); switchListContext("today", null); }}>{t("common.reset")}</button></div>}
+              : visible.length ? <>{renderedStories.map((story) => {
+                const updated = story.status === "read" && (entryLabels.get(story.id)?.includes("updated") ?? false);
+                const statusKey = story.starred
+                  ? "feed.saved"
+                  : story.status === "unread"
+                    ? "feed.unread"
+                    : updated
+                      ? "feed.updated"
+                      : "feed.read";
+                return <article key={story.id} tabIndex={0} className={`story ${selected?.id === story.id ? "selected" : ""} ${story.status === "read" ? "read" : ""} ${updated ? "updated" : ""} ${story.starred ? "starred" : ""}`} onClick={() => { choose(story); setMobileView("reader"); }} onKeyDown={(event) => { if (event.key === "Enter") { choose(story); setMobileView("reader"); } }}>
+                <div className="storyMain">
+                  <div className="storySource"><SourceIcon src={feedIcons.get(story.feed_id)}>{story.mark}</SourceIcon><span>{story.source}</span></div>
+                  <h2>{story.title}</h2>
+                  <footer>{t("feed.minutes", { count: story.reading_time || 1 })}</footer>
+                </div>
+                <div className="storyStatus">
+                  <time>{formatZonedTime(story.published_at, activeTimeZone)}</time>
+                  <i aria-hidden="true" />
+                  <span className="sr-only">{t(statusKey)}</span>
+                </div>
+              </article>;
+              })}{renderedStories.length < visible.length && <button className="storyListMore" type="button" onClick={revealMoreStories}>{t("feed.showMore", { count: Math.min(STORY_RENDER_BATCH_SIZE, visible.length - renderedStories.length) })}</button>}</> : <div className="empty"><b>✓</b><h2>{t("feed.empty")}</h2><p>{t("feed.emptyHint")}</p><button onClick={() => { setQuery(""); setHideReadByMode((current) => ({ ...current, today: false })); switchListContext("today", null); }}>{t("common.reset")}</button></div>}
           </div>
         </section>
         <div className="resizeHandle listHandle" onPointerDown={(event) => startResize("list", event)} onDoubleClick={() => setListWidth(430)} />
@@ -2581,7 +2611,6 @@ export default function App() {
                   : <ArticleBody content={selected.content} minifluxURL={config.url} imageMode={selectedImageMode} />}
               <div className="feedback"><span>{t("recommendation.feedbackQuestion")}</span><button onClick={() => void setFeedback("helpful")}>{t("recommendation.helpful")}</button><button onClick={() => void setFeedback("not_interested")}>{t("recommendation.notInterested")}</button></div>
             </div>
-            <footer className="readerFoot"><span><kbd>J</kbd><kbd>K</kbd> {t("reader.shortcuts")}　<kbd>S</kbd> {t("reader.save")}　<kbd>U</kbd> {t("feed.read")}</span><div><button onClick={() => move(-1)}>{t("reader.previous")}</button><button onClick={() => move(1)}>{t("reader.next")}</button></div></footer>
           </> : route.kind === "article" ? <div className={`empty readerEmpty ${contentError?.id === route.entryId ? "errorState" : ""}`}>
             <b className={contentError?.id === route.entryId ? "" : "loadingMark"}>{contentError?.id === route.entryId ? "!" : "↻"}</b>
             <h2>{t(contentError?.id === route.entryId ? "reader.contentFailed" : "reader.loadingContent")}</h2>

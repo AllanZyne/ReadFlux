@@ -16,7 +16,7 @@ test("empty or invalid reading-event timestamps are rejected before saving", () 
 });
 
 test("remote month replacement snapshots old keys before inserting new records", () => {
-  const replacement = clientSource.match(/export async function replaceRemoteReadingEventMonth[\s\S]*?\n}\n\nexport async function removeRemoteReadingEventMonth/)?.[0] ?? "";
+  const replacement = clientSource.match(/export async function replaceRemoteReadingEventMonth[\s\S]*?\r?\n}\r?\n\r?\nexport async function removeRemoteReadingEventMonth/)?.[0] ?? "";
   assert.match(replacement, /getAllKeys\(IDBKeyRange\.only\(sourceMonth\)\)/);
   assert.doesNotMatch(replacement, /openCursor/);
 });

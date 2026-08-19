@@ -9,6 +9,8 @@ import {
   localDayKey,
   nextDayBoundary,
   selectTimeZone,
+  smartFeedStatusPriority,
+  smartFeedTimeBucket,
   toZonedDateTimeInput,
   zonedDateTimeInputToIso,
 } from "../src/smart-feeds.mjs";
@@ -106,18 +108,36 @@ test("ambiguous daylight-saving input preserves the existing occurrence", () => 
   );
 });
 
-test("Today recommends the full synced history regardless of date or read status", () => {
+test("Today contains unread and updated entries only", () => {
+  const labels = new Map([[2, ["updated"]]]);
+
   assert.equal(isEntryInSmartFeed(entry(), "today"), true);
-  assert.equal(isEntryInSmartFeed(entry({ status: "read" }), "today"), true);
-  assert.equal(isEntryInSmartFeed(entry({ published_at: "2020-01-01T00:00:00Z" }), "today"), true);
+  assert.equal(isEntryInSmartFeed(entry({ id: 2, status: "read" }), "today", labels), true);
+  assert.equal(isEntryInSmartFeed(entry({ id: 3, status: "read" }), "today", labels), false);
   assert.equal(isEntryInSmartFeed(entry({ status: "removed" }), "today"), false);
 });
 
+test("Today status priority reflects unread before updated", () => {
+  const labels = new Map([[2, ["updated"]], [3, ["updated"]]]);
+
+  assert.equal(smartFeedStatusPriority(entry({ id: 1 }), labels), 2);
+  assert.equal(smartFeedStatusPriority(entry({ id: 2, status: "read" }), labels), 1);
+  assert.equal(smartFeedStatusPriority(entry({ id: 3 }), labels), 2);
+  assert.equal(smartFeedStatusPriority(entry({ id: 4, status: "read" }), labels), 0);
+});
+
+test("All contains the complete active history", () => {
+  assert.equal(isEntryInSmartFeed(entry(), "all"), true);
+  assert.equal(isEntryInSmartFeed(entry({ status: "read" }), "all"), true);
+  assert.equal(isEntryInSmartFeed(entry({ status: "removed" }), "all"), false);
+});
+
 test("Updated contains labeled entries until their update has been viewed", () => {
-  const labels = new Map([[1, ["updated"]]]);
+  const labels = new Map([[1, ["updated"]], [3, ["updated"]]]);
 
   assert.equal(isEntryInSmartFeed(entry({ status: "read" }), "updated", labels), true);
   assert.equal(isEntryInSmartFeed(entry({ id: 2, status: "read" }), "updated", labels), false);
+  assert.equal(isEntryInSmartFeed(entry({ id: 3 }), "updated", labels), false);
   assert.equal(isEntryInSmartFeed(entry({ status: "removed" }), "updated", labels), false);
 });
 
@@ -126,15 +146,106 @@ test("Saved includes starred entries regardless of read status", () => {
   assert.equal(isEntryInSmartFeed(entry({ starred: false }), "saved"), false);
 });
 
-test("Today sorts all statuses by recommendation without hard status tiers", () => {
-  const olderRecommended = entry({ published_at: localTimestamp(2, 1), score: 10 });
-  const newerUpdatedUnread = entry({ id: 2, published_at: localTimestamp(2, 8), score: 1 });
-  const labels = new Map([[2, ["updated"]]]);
+test("Today time buckets follow account-local calendar boundaries", () => {
+  const now = "2026-08-19T12:00:00+08:00";
+  const timeZone = "Asia/Shanghai";
 
-  assert.ok(compareSmartFeedEntries(olderRecommended, newerUpdatedUnread, "today", labels) < 0);
+  assert.equal(smartFeedTimeBucket("2026-08-19T01:00:00Z", now, timeZone), 0);
+  assert.equal(smartFeedTimeBucket("2026-08-18T01:00:00Z", now, timeZone), 1);
+  assert.equal(smartFeedTimeBucket("2026-08-17T01:00:00Z", now, timeZone), 2);
+  assert.equal(smartFeedTimeBucket("2026-08-10T01:00:00Z", now, timeZone), 3);
+  assert.equal(smartFeedTimeBucket("2026-07-10T01:00:00Z", now, timeZone), 4);
+  assert.equal(smartFeedTimeBucket("2025-12-31T01:00:00Z", now, timeZone), 5);
 });
 
-test("Updated sorts by changed time while Saved sorts by publication time", () => {
+test("Today treats Monday as the start of the current week", () => {
+  const now = "2026-08-19T12:00:00+08:00";
+
+  assert.equal(smartFeedTimeBucket("2026-08-17T12:00:00+08:00", now, "Asia/Shanghai"), 2);
+  assert.equal(smartFeedTimeBucket("2026-08-16T12:00:00+08:00", now, "Asia/Shanghai"), 3);
+});
+
+test("Today sorting prioritizes time tier before unread status and recommendation", () => {
+  const context = { now: "2026-08-19T12:00:00+08:00", timeZone: "Asia/Shanghai" };
+  const todayReadLowScore = entry({
+    status: "read",
+    published_at: "2026-08-19T01:00:00Z",
+    score: 1,
+  });
+  const yesterdayUnreadHighScore = entry({
+    id: 2,
+    published_at: "2026-08-18T01:00:00Z",
+    score: 100,
+  });
+
+  assert.ok(compareSmartFeedEntries(todayReadLowScore, yesterdayUnreadHighScore, "today", undefined, context) < 0);
+});
+
+test("Today sorting puts unread entries first within a time tier", () => {
+  const context = { now: "2026-08-19T12:00:00+08:00", timeZone: "Asia/Shanghai" };
+  const unreadLowScore = entry({
+    published_at: "2026-08-19T01:00:00Z",
+    score: 1,
+  });
+  const readHighScore = entry({
+    id: 2,
+    status: "read",
+    published_at: "2026-08-19T02:00:00Z",
+    score: 100,
+  });
+
+  assert.ok(compareSmartFeedEntries(unreadLowScore, readHighScore, "today", undefined, context) < 0);
+});
+
+test("Today sorting uses recommendation then publication time within a status tier", () => {
+  const context = { now: "2026-08-19T12:00:00+08:00", timeZone: "Asia/Shanghai" };
+  const olderRecommended = entry({
+    published_at: "2026-08-19T01:00:00Z",
+    score: 10,
+  });
+  const newerLowerScore = entry({
+    id: 2,
+    published_at: "2026-08-19T02:00:00Z",
+    score: 1,
+  });
+  const newerEqualScore = entry({
+    id: 3,
+    published_at: "2026-08-19T03:00:00Z",
+    score: 10,
+  });
+
+  assert.ok(compareSmartFeedEntries(olderRecommended, newerLowerScore, "today", undefined, context) < 0);
+  assert.ok(compareSmartFeedEntries(olderRecommended, newerEqualScore, "today", undefined, context) > 0);
+});
+
+test("Today sorting can reuse precomputed time buckets", () => {
+  const newer = entry({
+    published_at: "2026-08-19T02:00:00Z",
+    score: 1,
+  });
+  const older = entry({
+    id: 2,
+    published_at: "2026-08-18T02:00:00Z",
+    score: 100,
+  });
+  const context = {
+    now: "2026-08-19T12:00:00+08:00",
+    timeZone: "Asia/Shanghai",
+    timeBuckets: new Map([[newer.id, 1], [older.id, 0]]),
+  };
+
+  assert.ok(compareSmartFeedEntries(newer, older, "today", undefined, context) > 0);
+});
+
+test("Today time tiers use the configured timezone", () => {
+  const now = "2026-08-19T08:30:00Z";
+  const published = "2026-08-18T23:30:00Z";
+
+  assert.equal(smartFeedTimeBucket(published, now, "Asia/Shanghai"), 0);
+  assert.equal(smartFeedTimeBucket(published, now, "America/Los_Angeles"), 1);
+});
+
+test("Updated sorts by changed time while All and Saved sort by publication time", () => {
   const olderPublicationNewerChange = entry({
     id: 1,
     published_at: localTimestamp(1),
@@ -147,6 +258,7 @@ test("Updated sorts by changed time while Saved sorts by publication time", () =
   });
 
   assert.ok(compareSmartFeedEntries(olderPublicationNewerChange, newerPublicationOlderChange, "updated") < 0);
+  assert.ok(compareSmartFeedEntries(olderPublicationNewerChange, newerPublicationOlderChange, "all") > 0);
   assert.ok(compareSmartFeedEntries(olderPublicationNewerChange, newerPublicationOlderChange, "saved") > 0);
 });
 
@@ -157,11 +269,12 @@ test("smart feed counts cover all active entries and persisted updates", () => {
     entry({ id: 3, status: "read", starred: true }),
     entry({ id: 4, status: "removed", starred: true }),
   ];
-  const labels = new Map([[3, ["updated"]], [4, ["updated"]]]);
+  const labels = new Map([[1, ["updated"]], [3, ["updated"]], [4, ["updated"]]]);
 
   assert.deepEqual(countSmartFeedEntries(entries, labels), {
     unreadCount: 2,
     todayCount: 3,
+    allCount: 3,
     updatedCount: 1,
     savedCount: 1,
   });
