@@ -201,10 +201,11 @@ export function prioritizeFollowedTopicTerms(
     if (score) matches.set(term, score);
   }
   const followed = [...matches]
-    .sort((a, b) => b[1] - a[1]
-      || Array.from(b[0]).length - Array.from(a[0]).length
-      || a[0].localeCompare(b[0]))
-    .map(([term]) => term);
+    .map(([term, score]) => ({ term, score, length: Array.from(term).length }))
+    .sort((a, b) => b.score - a.score
+      || b.length - a.length
+      || (a.term < b.term ? -1 : a.term > b.term ? 1 : 0))
+    .map(({ term }) => term);
   return [
     ...followed,
     ...extractedTerms.map(normalizeRecommendationTerm).filter((term) => term && !matches.has(term)),
