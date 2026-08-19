@@ -177,6 +177,41 @@ function rankRecommendationTerms(fields: Array<{ value: string; weight: number; 
     .map(([term]) => term);
 }
 
+function topicMatchesText(term: string, text: string) {
+  if (HAN.test(term)) return text.includes(term);
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, "u").test(text);
+}
+
+export function prioritizeFollowedTopicTerms(
+  title: string,
+  summary: string,
+  followedTerms: Iterable<string>,
+  extractedTerms: string[],
+  limit = 5,
+) {
+  const normalizedTitle = normalizeRecommendationTerm(title).replace(/\s+/gu, " ");
+  const normalizedSummary = normalizeRecommendationTerm(summary).replace(/\s+/gu, " ");
+  const matches = new Map<string, number>();
+  for (const value of followedTerms) {
+    const term = normalizeSelectedTopic(value);
+    if (!term || matches.has(term)) continue;
+    const score = (topicMatchesText(term, normalizedTitle) ? 3 : 0)
+      + (topicMatchesText(term, normalizedSummary) ? 1 : 0);
+    if (score) matches.set(term, score);
+  }
+  const followed = [...matches]
+    .map(([term, score]) => ({ term, score, length: Array.from(term).length }))
+    .sort((a, b) => b.score - a.score
+      || b.length - a.length
+      || (a.term < b.term ? -1 : a.term > b.term ? 1 : 0))
+    .map(({ term }) => term);
+  return [
+    ...followed,
+    ...extractedTerms.map(normalizeRecommendationTerm).filter((term) => term && !matches.has(term)),
+  ].slice(0, limit);
+}
+
 export function extractRecommendationTerms(value: string, limit = 80) {
   return rankRecommendationTerms([{ value, weight: 1 }], limit);
 }

@@ -113,7 +113,7 @@ foreground time, scroll depth, entry path, and explicit **Helpful** or
 The recommendation profile gives more weight to recent behavior and combines:
 
 - Feed affinity
-- Explicitly followed topics selected from candidates, article titles, or article text
+- Explicitly followed topics selected from candidates, article titles, or article text; each topic has a fixed weight of 1 even when selected repeatedly
 - Publication time
 - Saved articles
 - Negative keywords
@@ -123,6 +123,11 @@ tier and are not displayed in the article list. The **Recommendation data** tab
 in Settings exposes derived weights and the 30 most recent raw events by
 default. Local records can be edited or deleted, and search still covers the
 complete event history.
+
+When an article is opened, followed topics found in its title or summary are
+prioritized in the five candidate-topic slots. Chinese topics use substring
+matching, while Latin-script words and phrases require complete word boundaries;
+the remaining slots are filled by the normal Jieba and technical-term extractor.
 
 ### Optional WebDAV sync
 

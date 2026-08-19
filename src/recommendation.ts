@@ -1,7 +1,7 @@
 import type { ReadingEvent, RankingExposure } from "./readflux-client.ts";
 import { normalizeRecommendationTerm } from "./recommendation-terms.ts";
 
-export const RECOMMENDATION_ALGORITHM_VERSION = "heuristic-v2-explicit-topics";
+export const RECOMMENDATION_ALGORITHM_VERSION = "heuristic-v3-fixed-topic-weights";
 
 export type InterestProfile = {
   sources: Map<number, number>;
@@ -105,9 +105,7 @@ export function deriveInterestProfile(
     if (!operation.interested) return;
     const selectedAt = new Date(operation.updatedAt).getTime();
     if (!Number.isFinite(selectedAt)) return;
-    const ageDays = Math.max(0, (now - selectedAt) / 86_400_000);
-    const weight = Math.exp(-ageDays / 90);
-    words.set(operation.term, (words.get(operation.term) ?? 0) + weight);
+    words.set(operation.term, 1);
   });
   return { sources, words, negatives };
 }
