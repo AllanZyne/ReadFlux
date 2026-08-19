@@ -113,15 +113,16 @@ foreground time, scroll depth, entry path, and explicit **Helpful** or
 The recommendation profile gives more weight to recent behavior and combines:
 
 - Feed affinity
-- Interest keywords from titles and article summaries
+- Explicitly followed topics selected from candidates, article titles, or article text
 - Publication time
 - Saved articles
 - Negative keywords
 
 Recommendation scores order articles within each **Today** time and read-status
 tier and are not displayed in the article list. The **Recommendation data** tab
-in Settings exposes derived weights and raw events and allows records to be
-added, edited, or deleted.
+in Settings exposes derived weights and the 30 most recent raw events by
+default. Local records can be edited or deleted, and search still covers the
+complete event history.
 
 ### Optional WebDAV sync
 

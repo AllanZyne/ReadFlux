@@ -81,7 +81,7 @@ import {
   WebDavSyncInterval,
 } from "./readflux-client";
 import { createRankingExposure, deriveInterestProfile, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, selectedTopicTermsByEntry, selectedTopicTermsForEntry, type RecommendationScoreBreakdown } from "./recommendation";
-import { extractRecommendationCandidateTermsAsync, initializeChineseRecommendationTerms, normalizeRecommendationTerm } from "./recommendation-terms";
+import { extractRecommendationCandidateTermsAsync, initializeChineseRecommendationTerms, normalizeRecommendationTerm, normalizeSelectedTopic } from "./recommendation-terms";
 import {
   clearWebDavEtagCache,
   synchronizeWebDav,
@@ -130,6 +130,12 @@ type BaseStory = Entry & Omit<Story, keyof Entry | "score" | "reason" | "scoreBr
 type EntryPage = { total: number; entries: Entry[] };
 type ListMode = "today" | "all" | "updated" | "saved";
 type Topic = { kind: "category" | "feed"; id: number } | null;
+type TopicSelection = {
+  term: string;
+  top: number;
+  left: number;
+  arrowLeft: number;
+};
 type SyncProgress = {
   kind: "full" | "incremental" | "search";
   phase?: EntrySyncPhase;
@@ -352,12 +358,25 @@ const SourceIcon = ({ children, src }: { children: React.ReactNode; src?: string
   </span>
 );
 
+function captureTextSelection(root: HTMLElement, onTextSelection: (text: string, rect: DOMRect) => void) {
+  window.setTimeout(() => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+    if (!selection.anchorNode || !selection.focusNode
+      || !root.contains(selection.anchorNode) || !root.contains(selection.focusNode)) return;
+    const rect = selection.getRangeAt(0).getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    onTextSelection(selection.toString(), rect);
+  });
+}
+
 function ArticleMetadata({
   story,
   feedIcon,
   timeZone,
   initialReadingSeconds,
   onReadingTick,
+  onTextSelection,
   t,
 }: {
   story: Story;
@@ -365,6 +384,7 @@ function ArticleMetadata({
   timeZone: string;
   initialReadingSeconds: number;
   onReadingTick: () => boolean;
+  onTextSelection: (text: string, rect: DOMRect) => void;
   t: TFunction;
 }) {
   const [readingSeconds, setReadingSeconds] = useState(initialReadingSeconds);
@@ -376,25 +396,41 @@ function ArticleMetadata({
     return () => window.clearInterval(timer);
   }, [onReadingTick]);
 
-  return <header className="articleHead"><div><h2>{story.title}</h2><p><SourceIcon src={feedIcon}>{story.mark}</SourceIcon>{story.author || story.source} · {formatZonedDateTime(story.published_at, timeZone)} · {t("feed.minutes", { count: story.reading_time || 1 })}{readingSeconds > 0 && <span className="articleReadingTime">· {Math.floor(readingSeconds / 60)}:{String(readingSeconds % 60).padStart(2, "0")}</span>}</p></div></header>;
+  return <header className="articleHead"><div><h2
+    onMouseUp={(event) => captureTextSelection(event.currentTarget, onTextSelection)}
+    onTouchEnd={(event) => captureTextSelection(event.currentTarget, onTextSelection)}
+  >{story.title}</h2><p><SourceIcon src={feedIcon}>{story.mark}</SourceIcon>{story.author || story.source} · {formatZonedDateTime(story.published_at, timeZone)} · {t("feed.minutes", { count: story.reading_time || 1 })}{readingSeconds > 0 && <span className="articleReadingTime">· {Math.floor(readingSeconds / 60)}:{String(readingSeconds % 60).padStart(2, "0")}</span>}</p></div></header>;
 }
 
 const ArticleBody = memo(function ArticleBody({
   content,
   minifluxURL,
   imageMode,
+  onTextSelection,
 }: {
   content: string;
   minifluxURL: string;
   imageMode: ImageLoadingMode;
+  onTextSelection: (text: string, rect: DOMRect) => void;
 }) {
   const markup = useMemo(() => ({
     __html: safeHtml(content, minifluxURL, imageMode),
   }), [content, minifluxURL, imageMode]);
 
-  return <div className="body articleContent" onError={handleArticleImageError} onClick={(event) => toggleLivePhoto(event.target)} onKeyDown={(event) => {
-    if ((event.key === "Enter" || event.key === " ") && toggleLivePhoto(event.target)) event.preventDefault();
-  }} dangerouslySetInnerHTML={markup} />;
+  return <div
+    className="body articleContent"
+    onError={handleArticleImageError}
+    onClick={(event) => toggleLivePhoto(event.target)}
+    onMouseUp={(event) => captureTextSelection(event.currentTarget, onTextSelection)}
+    onTouchEnd={(event) => captureTextSelection(event.currentTarget, onTextSelection)}
+    onKeyUp={(event) => {
+      if (event.shiftKey || event.key.startsWith("Arrow")) captureTextSelection(event.currentTarget, onTextSelection);
+    }}
+    onKeyDown={(event) => {
+      if ((event.key === "Enter" || event.key === " ") && toggleLivePhoto(event.target)) event.preventDefault();
+    }}
+    dangerouslySetInnerHTML={markup}
+  />;
 });
 
 type EventDraft = Omit<ReadingEvent, "id" | "updatedAt"> & { id?: string };
@@ -408,20 +444,6 @@ function defaultWebDavClientName() {
   const browser = navigator.userAgent.includes("Safari") && !navigator.userAgent.includes("Chrome") ? "Safari" : "Browser";
   const platform = navigator.userAgent.includes("Mac") ? "macOS" : navigator.platform || "Device";
   return `${browser} · ${platform}`;
-}
-
-function emptyEventDraft(): EventDraft {
-  return {
-    entryId: 0,
-    feedId: 0,
-    title: "",
-    source: "",
-    terms: [],
-    openedAt: new Date().toISOString(),
-    activeSeconds: 30,
-    scrollDepth: 0.5,
-    origin: "feed",
-  };
 }
 
 function SettingsDialog({
@@ -689,9 +711,11 @@ function SettingsDialog({
   const topWords = [...wordWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
   const diagnostics = recommendationDiagnostics(exposures, events);
   const selectedTermsByEntry = useMemo(() => selectedTopicTermsByEntry(events), [events]);
-  const shownEvents = [...events]
-    .filter((event) => !eventQuery.trim() || `${event.title} ${event.source} ${event.terms.join(" ")}`.toLowerCase().includes(eventQuery.trim().toLowerCase()))
+  const normalizedEventQuery = eventQuery.trim().toLowerCase();
+  const matchingEvents = [...events]
+    .filter((event) => !normalizedEventQuery || `${event.title} ${event.source} ${event.terms.join(" ")}`.toLowerCase().includes(normalizedEventQuery))
     .sort((a, b) => b.openedAt.localeCompare(a.openedAt));
+  const shownEvents = normalizedEventQuery ? matchingEvents : matchingEvents.slice(0, 30);
   const sortedFeeds = [...feeds]
     .sort((a, b) => `${a.category?.title ?? ""}\n${a.title}`.localeCompare(`${b.category?.title ?? ""}\n${b.title}`, i18n.resolvedLanguage ?? "en"));
   const selectedFeed = sortedFeeds.find((feed) => feed.id === selectedFeedId) ?? sortedFeeds[0] ?? null;
@@ -901,7 +925,6 @@ function SettingsDialog({
           {tab === "recommendation" && <div className="recommendationData">
             <section className="dataIntro">
               <div><h3>{t("recommendation.title")}</h3><p>{t("recommendation.description")}</p></div>
-              <button className="primaryAction" onClick={() => setDraft(emptyEventDraft())}>{t("recommendation.addRecord")}</button>
             </section>
             <section className="metricGrid">
               <div><strong>{events.length}</strong><span>{t("recommendation.readingEvents")}</span></div>
@@ -917,24 +940,6 @@ function SettingsDialog({
               <div><strong>{diagnostics.engagedOpenCount}</strong><span>{t("recommendation.engagedOpens")}</span></div>
               <div><strong>{diagnostics.clampedPercent.toFixed(1)}%</strong><span>{t("recommendation.saturation")}</span></div>
               <div><strong>{diagnostics.tiePercent.toFixed(1)}%</strong><span>{t("recommendation.tieRate")}</span></div>
-            </section>
-            <section className="diagnosticGrid">
-              <div>
-                <header><h3>{t("recommendation.scoreDistribution")}</h3><small>{t("recommendation.exposureDenominator")}</small></header>
-                <div className="weightList">{diagnostics.scoreDistribution.map((bucket) => <span key={bucket.label}><b>{bucket.label}</b><em>{bucket.count}</em></span>)}</div>
-              </div>
-              <div>
-                <header><h3>{t("recommendation.componentDistribution")}</h3><small>{t("recommendation.minAverageMax")}</small></header>
-                <div className="weightList">{(["source", "term", "freshness"] as const).map((component) => <span key={component}><b>{t(`recommendation.component.${component}`)}</b><em>{diagnostics.contributions[component].min.toFixed(1)} · {diagnostics.contributions[component].average.toFixed(1)} · {diagnostics.contributions[component].max.toFixed(1)}</em></span>)}</div>
-              </div>
-              <div>
-                <header><h3>{t("recommendation.engagementByRank")}</h3><small>{t("recommendation.engagementByRankHint")}</small></header>
-                <div className="weightList">{diagnostics.rankEngagement.filter((row) => row.impressions > 0).map((row) => <span key={row.rank}><b>#{row.rank} · {row.engagedOpens}/{row.impressions}</b><em>{row.engagedOpenPercent.toFixed(1)}%</em></span>)}</div>
-              </div>
-              <div>
-                <header><h3>{t("recommendation.evaluationAtK")}</h3><small>{t("recommendation.evaluationAtKHint")}</small></header>
-                <div className="weightList">{diagnostics.evaluationAtK.filter((row) => row.impressions > 0).map((row) => <span key={row.k}><b>@{row.k} · {t("recommendation.openRate")} {row.openPercent.toFixed(1)}% · {t("recommendation.engagedRate")} {row.engagedOpenPercent.toFixed(1)}%</b><em>{t("recommendation.starRate")} {row.starredPercent.toFixed(1)}% · {t("recommendation.bulkDismissRate")} {row.bulkDismissedPercent.toFixed(1)}%</em></span>)}</div>
-              </div>
             </section>
             <section className="derivedData twoColumns">
               <div>
@@ -1094,6 +1099,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [markAllReadOpen, setMarkAllReadOpen] = useState(false);
   const [markAllReadPosition, setMarkAllReadPosition] = useState({ top: 0, left: 0, arrowLeft: 0 });
+  const [topicSelection, setTopicSelection] = useState<TopicSelection | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(250);
   const [listWidth, setListWidth] = useState(430);
   const [subscriptionsCollapsed, setSubscriptionsCollapsed] = useState(
@@ -1133,6 +1139,7 @@ export default function App() {
   const readerRef = useRef<HTMLDivElement | null>(null);
   const markAllReadButtonRef = useRef<HTMLButtonElement | null>(null);
   const markAllReadConfirmRef = useRef<HTMLButtonElement | null>(null);
+  const topicSelectionConfirmRef = useRef<HTMLButtonElement | null>(null);
   const autoReadFrame = useRef<number | undefined>(undefined);
   const autoReadPendingIds = useRef<Set<number>>(new Set());
   const previousStoryListScrollTop = useRef(0);
@@ -2072,13 +2079,17 @@ export default function App() {
     ? events.reduce<ReadingEvent | undefined>((latest, event) => event.entryId === selected.id
       && (!latest || event.openedAt > latest.openedAt) ? event : latest, undefined)
     : undefined;
-  const selectedCandidateTerms = selected && activeCandidates?.entryId === selected.id
-    ? activeCandidates.terms.slice(0, 5)
-    : selectedReadingEvent?.termExtractionVersion ? selectedReadingEvent.terms.slice(0, 5) : [];
   const selectedTopicTerms = useMemo(
     () => selectedId !== null ? selectedTopicTermsForEntry(recommendationEvents, selectedId) : new Set<string>(),
     [recommendationEvents, selectedId],
   );
+  const extractedCandidateTerms = selected && activeCandidates?.entryId === selected.id
+    ? activeCandidates.terms
+    : selectedReadingEvent?.termExtractionVersion ? selectedReadingEvent.terms : [];
+  const selectedCandidateTerms = [
+    ...selectedTopicTerms,
+    ...extractedCandidateTerms.filter((term) => !selectedTopicTerms.has(term)),
+  ].slice(0, Math.max(5, selectedTopicTerms.size));
   const selectedReadingSeconds = selected
     ? recommendationEvents.reduce((sum, event) => event.entryId === selected.id ? sum + event.activeSeconds : sum, 0)
     : 0;
@@ -2201,6 +2212,8 @@ export default function App() {
   }, [config, selected, selectedImageMode, loadEntryContent]);
 
   const choose = useCallback((story: Story, origin?: ReadingEvent["origin"]) => {
+    setTopicSelection(null);
+    window.getSelection()?.removeAllRanges();
     navigateToArticle(story.id);
     commitActiveEvent();
     void persistActive();
@@ -2229,14 +2242,15 @@ export default function App() {
       const updatedAt = new Date().toISOString();
       let updatedEvent: ReadingEvent | null;
       if (activeEvent.current?.id === readingEvent.id) {
+        const terms = [...new Set([...activeEvent.current.terms, ...extracted.terms])];
         updatedEvent = {
           ...activeEvent.current,
-          terms: extracted.terms,
+          terms,
           termExtractionVersion: extracted.version,
           updatedAt,
         };
         activeEvent.current = updatedEvent;
-        setActiveCandidates({ entryId: story.id, terms: extracted.terms, loading: false });
+        setActiveCandidates({ entryId: story.id, terms, loading: false });
         await putReadingEvent(updatedEvent);
       } else {
         updatedEvent = await patchReadingEvent(readingEvent.id, {
@@ -2412,6 +2426,48 @@ export default function App() {
     };
   }, [dismissMarkAllRead, markAllReadOpen, positionMarkAllRead]);
 
+  const dismissTopicSelection = useCallback((clearSelection = true) => {
+    setTopicSelection(null);
+    if (clearSelection) window.getSelection()?.removeAllRanges();
+  }, []);
+
+  const requestTopicSelection = useCallback((value: string, rect: DOMRect) => {
+    const term = normalizeSelectedTopic(value);
+    if (!term || selectedTopicTerms.has(term)) {
+      setTopicSelection(null);
+      return;
+    }
+    const width = Math.min(112, window.innerWidth - 24);
+    const height = 44;
+    const left = Math.max(12, Math.min(window.innerWidth - width - 12, rect.left + rect.width / 2 - width / 2));
+    const top = Math.max(12, rect.top - height - 10);
+    setTopicSelection({
+      term,
+      top,
+      left,
+      arrowLeft: Math.max(18, Math.min(width - 18, rect.left + rect.width / 2 - left)),
+    });
+  }, [selectedTopicTerms]);
+
+  useEffect(() => {
+    if (!topicSelection) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      dismissTopicSelection();
+    };
+    const dismiss = () => dismissTopicSelection();
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", dismiss);
+    window.addEventListener("scroll", dismiss, true);
+    window.requestAnimationFrame(() => topicSelectionConfirmRef.current?.focus());
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", dismiss);
+      window.removeEventListener("scroll", dismiss, true);
+    };
+  }, [dismissTopicSelection, topicSelection]);
+
   const startResize = (kind: "sidebar" | "list", event: React.PointerEvent) => {
     event.preventDefault();
     const startX = event.clientX;
@@ -2431,7 +2487,7 @@ export default function App() {
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      if (settingsOpen || markAllReadOpen) return;
+      if (settingsOpen || markAllReadOpen || topicSelection) return;
       if (["INPUT", "TEXTAREA"].includes((event.target as HTMLElement).tagName)) return;
       if (event.key.toLowerCase() === "j" || event.key === "ArrowDown") move(1);
       if (event.key.toLowerCase() === "k" || event.key === "ArrowUp") move(-1);
@@ -2455,7 +2511,7 @@ export default function App() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, move, selected, entries, visible, selectedId, choose, toggleRead, markAllReadOpen, requestMarkVisibleRead, settingsOpen]);
+  }, [config, move, selected, entries, visible, selectedId, choose, toggleRead, markAllReadOpen, requestMarkVisibleRead, settingsOpen, topicSelection]);
 
   const setFeedback = async (feedback: "helpful" | "not_interested") => {
     if (!selected) return;
@@ -2474,7 +2530,7 @@ export default function App() {
     }
   };
 
-  const toggleTopicInterest = async (term: string) => {
+  const toggleTopicInterest = async (term: string, addToCandidates = false) => {
     if (!selected) return;
     if (!activeEvent.current || activeEvent.current.entryId !== selected.id) choose(selected);
     if (!activeEvent.current) return;
@@ -2492,12 +2548,21 @@ export default function App() {
       interested: !currentlySelected,
       updatedAt,
     };
+    const terms = addToCandidates && !currentEvent.terms.includes(normalizedTerm)
+      ? [normalizedTerm, ...currentEvent.terms]
+      : currentEvent.terms;
     const updatedEvent: ReadingEvent = {
       ...currentEvent,
+      terms,
       topicFeedback: [...(currentEvent.topicFeedback ?? []), operation],
       updatedAt,
     };
     activeEvent.current = updatedEvent;
+    if (addToCandidates) {
+      setActiveCandidates((current) => current?.entryId === selected.id
+        ? { ...current, terms: [...new Set([normalizedTerm, ...current.terms])], loading: false }
+        : { entryId: selected.id, terms: [normalizedTerm], loading: false });
+    }
     await putReadingEvent(updatedEvent);
     setEvents((current) => {
       const index = current.findIndex((event) => event.id === updatedEvent.id);
@@ -2505,6 +2570,14 @@ export default function App() {
     });
     scheduleWebDavUpload();
     notify(t(operation.interested ? "recommendation.topicSelected" : "recommendation.topicRemoved", { term }));
+  };
+
+  const followSelectedTopic = async () => {
+    const selection = topicSelection;
+    if (!selection) return;
+    dismissTopicSelection();
+    if (selectedTopicTerms.has(selection.term)) return;
+    await toggleTopicInterest(selection.term, true);
   };
 
   const categorySources = useMemo(() => categories.map((category) => ({
@@ -2758,6 +2831,7 @@ export default function App() {
                 timeZone={activeTimeZone}
                 initialReadingSeconds={selectedReadingSeconds}
                 onReadingTick={recordReadingTick}
+                onTextSelection={requestTopicSelection}
                 t={t}
               />
               {activeCandidates?.entryId === selected.id && activeCandidates.loading ? <section className="topicPicker topicPickerLoading" aria-live="polite">
@@ -2777,9 +2851,30 @@ export default function App() {
                 ? <div className="articleLoading" role="status"><b className="loadingMark">↻</b><p>{t("reader.loadingContent")}</p></div>
                 : contentError?.id === selected.id
                   ? <div className="articleLoading errorState"><b>!</b><p>{t(contentError.error.key, { status: contentError.error.status })}</p><button onClick={() => void loadEntryContent(selected.id)}>{t("common.retry")}</button></div>
-                  : <ArticleBody content={selected.content} minifluxURL={config.url} imageMode={selectedImageMode} />}
+                  : <ArticleBody
+                      content={selected.content}
+                      minifluxURL={config.url}
+                      imageMode={selectedImageMode}
+                      onTextSelection={requestTopicSelection}
+                    />}
               <div className="feedback"><span>{t("recommendation.feedbackQuestion")}</span><button onClick={() => void setFeedback("helpful")}>{t("recommendation.helpful")}</button><button onClick={() => void setFeedback("not_interested")}>{t("recommendation.notInterested")}</button></div>
             </div>
+            {topicSelection && <>
+              <div className="topicSelectionBackdrop" role="presentation" onMouseDown={() => dismissTopicSelection()} />
+              <section
+                className="topicSelectionConfirm"
+                role="dialog"
+                aria-modal="true"
+                aria-label={t("recommendation.followSelectedTopic")}
+                style={{
+                  top: topicSelection.top,
+                  left: topicSelection.left,
+                  "--topic-selection-arrow-left": `${topicSelection.arrowLeft}px`,
+                } as CSSProperties}
+              >
+                <button ref={topicSelectionConfirmRef} type="button" onClick={() => void followSelectedTopic()}>{t("recommendation.followSelectedTopic")}</button>
+              </section>
+            </>}
           </> : route.kind === "article" ? <div className={`empty readerEmpty ${contentError?.id === route.entryId ? "errorState" : ""}`}>
             <b className={contentError?.id === route.entryId ? "" : "loadingMark"}>{contentError?.id === route.entryId ? "!" : "↻"}</b>
             <h2>{t(contentError?.id === route.entryId ? "reader.contentFailed" : "reader.loadingContent")}</h2>

@@ -112,6 +112,20 @@ test("mark all as read requires the selected anchored confirmation", () => {
   assert.match(styles, /\.markAllReadConfirm:before\s*\{/);
 });
 
+test("article text selection uses a single anchored follow-topic confirmation", () => {
+  const confirmation = app.match(/<section\s+className="topicSelectionConfirm"([\s\S]*?)<\/section>/)?.[0] ?? "";
+  assert.match(app, /onTextSelection=\{requestTopicSelection\}/);
+  assert.match(confirmation, /role="dialog"/);
+  assert.match(confirmation, /aria-modal="true"/);
+  assert.equal((confirmation.match(/<button/g) ?? []).length, 1);
+  assert.match(confirmation, /recommendation\.followSelectedTopic/);
+  assert.doesNotMatch(confirmation, /<h2|<p/);
+  assert.match(styles, /\.topicSelectionBackdrop\{[^}]*position:fixed;[^}]*background:transparent/);
+  assert.match(styles, /\.topicSelectionConfirm\{[^}]*position:fixed;[^}]*width:min\(112px,[^}]*border:1px solid var\(--line\);[^}]*border-radius:10px;[^}]*background:var\(--panel2\)/);
+  assert.match(styles, /\.topicSelectionConfirm:before\{[^}]*bottom:-5px;[^}]*border-right:1px solid var\(--line\);[^}]*border-bottom:1px solid var\(--line\)/);
+  assert.doesNotMatch(app, /data-placement=\{topicSelection\.placement\}/);
+});
+
 test("feed article counts are hidden by default and controlled from General settings", () => {
   assert.match(app, /showFeedArticleCount: false/);
   assert.match(app, /checked=\{settings\.showFeedArticleCount\}/);
@@ -444,4 +458,9 @@ test("settings dialog typography keeps labels and supporting text readable", () 
   assert.match(styles, /\.settingsDialog label>span\s*\{[^}]*font-size:13px;[^}]*font-weight:500;/);
   assert.match(styles, /\.settingsDialog :is\(input,select\)\s*\{[^}]*font-size:13px;/);
   assert.match(styles, /\.settingsDialog :is\(p,small\)\s*\{[^}]*font-size:12px;/);
+});
+
+test("raw reading events use a fixed-height table with an internal sticky header", () => {
+  assert.match(styles, /\.eventTable\{[^}]*height:420px;[^}]*overflow-y:auto/);
+  assert.match(styles, /\.eventTableHead\{[^}]*position:sticky;[^}]*top:0;[^}]*z-index:1/);
 });

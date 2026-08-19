@@ -14,7 +14,7 @@ import {
   scoreRecommendation,
   selectedTopicTermsByEntry,
 } from "../src/recommendation.ts";
-import { extractRecommendationCandidateTerms } from "../src/recommendation-terms.ts";
+import { extractRecommendationCandidateTerms, normalizeSelectedTopic } from "../src/recommendation-terms.ts";
 
 const appSource = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
 const termSource = await readFile(new URL("../src/recommendation-terms.ts", import.meta.url), "utf8");
@@ -62,6 +62,15 @@ test("candidate extraction gives title terms more weight than summary terms", ()
   assert.equal(extractRecommendationCandidateTerms("LLVM", "compiler internals")[0], "llvm");
 });
 
+test("manual topic selection accepts short terms and rejects sentences or noisy values", () => {
+  assert.equal(normalizeSelectedTopic("  大语言模型  "), "大语言模型");
+  assert.equal(normalizeSelectedTopic("Retrieval Augmented Generation"), "retrieval augmented generation");
+  assert.equal(normalizeSelectedTopic("跨越\n段落"), null);
+  assert.equal(normalizeSelectedTopic("这是一整句话。"), null);
+  assert.equal(normalizeSelectedTopic("https://example.com/topic"), null);
+  assert.equal(normalizeSelectedTopic("42"), null);
+});
+
 test("article opening delegates Jieba extraction and dictionary warmup to a worker", () => {
   assert.match(appSource, /terms:\s*\[\][\s\S]*?extractRecommendationCandidateTermsAsync/);
   assert.match(appSource, /const initialPersistence = putReadingEvent\(readingEvent\)[\s\S]*?await initialPersistence/);
@@ -74,10 +83,27 @@ test("topic toggles derive current state from the active event", () => {
   assert.match(appSource, /term: normalizedTerm/);
 });
 
+test("selected article text uses the existing topic operation and persists as a candidate", () => {
+  assert.match(appSource, /onTextSelection=\{requestTopicSelection\}/);
+  assert.match(appSource, /<ArticleMetadata[\s\S]*?onTextSelection=\{requestTopicSelection\}/);
+  assert.match(appSource, /<h2[\s\S]*?onMouseUp=\{\(event\) => captureTextSelection\(event\.currentTarget, onTextSelection\)\}/);
+  assert.match(appSource, /className="topicSelectionConfirm"[\s\S]*?recommendation\.followSelectedTopic/);
+  assert.match(appSource, /toggleTopicInterest\(selection\.term, true\)/);
+  assert.match(appSource, /const terms = addToCandidates[\s\S]*?\[normalizedTerm,\s*\.\.\.currentEvent\.terms\]/);
+  assert.match(appSource, /new Set\(\[\.\.\.activeEvent\.current\.terms,\s*\.\.\.extracted\.terms\]\)/);
+});
+
 test("background extraction handles persistence failures and avoids sorting event history", () => {
   assert.match(appSource, /extractRecommendationCandidateTermsAsync[\s\S]*?\.catch\(\(\) => \{/);
   assert.match(appSource, /events\.reduce<ReadingEvent \| undefined>/);
   assert.doesNotMatch(appSource, /events\.filter\(\(event\) => event\.entryId === selected\.id\)\.sort/);
+});
+
+test("raw reading events default to the 30 most recent while search covers all events", () => {
+  assert.match(appSource, /matchingEvents = \[\.\.\.events\][\s\S]*?b\.openedAt\.localeCompare\(a\.openedAt\)/);
+  assert.match(appSource, /shownEvents = normalizedEventQuery \? matchingEvents : matchingEvents\.slice\(0, 30\)/);
+  assert.doesNotMatch(appSource, /recommendation\.addRecord|emptyEventDraft/);
+  assert.doesNotMatch(appSource, /diagnosticGrid|recommendation\.(?:scoreDistribution|componentDistribution|engagementByRank|evaluationAtK)/);
 });
 
 test("reading and saving never imply topic interest", () => {
