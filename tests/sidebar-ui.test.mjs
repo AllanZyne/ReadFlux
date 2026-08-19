@@ -43,6 +43,19 @@ test("article list actions live in the title bar as NetNewsWire-style icons", ()
   assert.match(styles, /\.feedTitleActions button:disabled\s*\{/);
 });
 
+test("article rows use a right-aligned time and status rail without summaries", () => {
+  assert.match(app, /className="storyMain"[\s\S]*?className="storySource"[\s\S]*?<h2>\{story\.title\}<\/h2>[\s\S]*?<footer>\{t\("feed\.minutes"/);
+  assert.match(app, /className="storyStatus"[\s\S]*?<time>\{formatZonedTime\(story\.published_at, activeTimeZone\)\}<\/time>[\s\S]*?<i aria-hidden="true" \/>/);
+  assert.doesNotMatch(app, /<h2>\{story\.title\}<\/h2><p>\{story\.summary\}<\/p>/);
+  assert.match(app, /\$\{story\.starred \? "starred" : ""\}/);
+  assert.match(styles, /\.story\{[^}]*grid-template-columns:minmax\(0,1fr\) 52px;[^}]*padding:13px 16px 12px/);
+  assert.match(styles, /\.storyStatus\{[^}]*align-items:flex-end;[^}]*justify-content:space-between/);
+  assert.match(styles, /\.story:not\(\.read\) \.storyStatus>i\{background:var\(--mint\)\}/);
+  assert.match(styles, /\.story\.updated:not\(\.starred\) \.storyStatus>i\{background:#10b981\}/);
+  assert.match(styles, /\.story\.starred \.storyStatus>i\{background:var\(--yellow\)\}/);
+  assert.doesNotMatch(styles, /pulseRing/);
+});
+
 test("unread-only state is isolated per smart feed", () => {
   assert.match(app, /useState<Record<ListMode, boolean>>\(\{[\s\S]*?today: false,[\s\S]*?all: false,[\s\S]*?updated: false,[\s\S]*?saved: false/);
   assert.match(app, /const hideRead = mode !== "updated" && hideReadByMode\[mode\]/);
