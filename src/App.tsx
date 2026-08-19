@@ -2452,9 +2452,15 @@ export default function App() {
   useEffect(() => {
     if (!topicSelection) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      dismissTopicSelection();
+      if (event.key === "Tab") {
+        event.preventDefault();
+        topicSelectionConfirmRef.current?.focus();
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        dismissTopicSelection();
+      }
     };
     const dismiss = () => dismissTopicSelection();
     window.addEventListener("keydown", handleKeyDown);

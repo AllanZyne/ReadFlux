@@ -115,6 +115,7 @@ test("mark all as read requires the selected anchored confirmation", () => {
 test("article text selection uses a single anchored follow-topic confirmation", () => {
   const confirmation = app.match(/<section\s+className="topicSelectionConfirm"([\s\S]*?)<\/section>/)?.[0] ?? "";
   assert.match(app, /onTextSelection=\{requestTopicSelection\}/);
+  assert.match(app, /event\.key === "Tab"[\s\S]*?event\.preventDefault\(\)[\s\S]*?topicSelectionConfirmRef\.current\?\.focus\(\)/);
   assert.match(confirmation, /role="dialog"/);
   assert.match(confirmation, /aria-modal="true"/);
   assert.equal((confirmation.match(/<button/g) ?? []).length, 1);
