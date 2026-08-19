@@ -50,6 +50,8 @@ test("article rows use a right-aligned time and status rail without summaries", 
   assert.match(app, /\$\{story\.starred \? "starred" : ""\}/);
   assert.match(styles, /\.story\{[^}]*grid-template-columns:minmax\(0,1fr\) 52px;[^}]*padding:13px 16px 12px/);
   assert.match(styles, /\.storyStatus\{[^}]*align-items:flex-end;[^}]*justify-content:space-between/);
+  assert.match(styles, /\.storySource\{gap:5px;[^}]*font-size:10px\}/);
+  assert.match(styles, /\.story \.sourceIcon\{width:14px;height:14px;[^}]*font-size:7px\}/);
   assert.match(styles, /\.story:not\(\.read\) \.storyStatus>i\{background:var\(--mint\)\}/);
   assert.match(styles, /\.story\.updated:not\(\.starred\) \.storyStatus>i\{background:#10b981\}/);
   assert.match(styles, /\.story\.starred \.storyStatus>i\{background:var\(--yellow\)\}/);
