@@ -2006,15 +2006,17 @@ export default function App() {
         ? { ...entry, status: "read" as const }
         : entry
     )));
-    setEntryLabels((current) => {
-      const next = new Map(current);
-      updatedIds.forEach((id) => {
-        const labels = (next.get(id) ?? []).filter((label) => label !== "updated");
-        if (labels.length) next.set(id, labels);
-        else next.delete(id);
+    if (updatedIds.length) {
+      setEntryLabels((current) => {
+        const next = new Map(current);
+        updatedIds.forEach((id) => {
+          const labels = (next.get(id) ?? []).filter((label) => label !== "updated");
+          if (labels.length) next.set(id, labels);
+          else next.delete(id);
+        });
+        return next;
       });
-      return next;
-    });
+    }
     try {
       await Promise.all(updatedIds.map((id) => removeEntryLabel(config, id, "updated")));
       if (unreadIds.length) {
@@ -2033,14 +2035,16 @@ export default function App() {
           ? { ...entry, status: "unread" as const }
           : entry
       )));
-      setEntryLabels((current) => {
-        const next = new Map(current);
-        updatedIds.forEach((id) => {
-          const labels = next.get(id) ?? [];
-          if (!labels.includes("updated")) next.set(id, [...labels, "updated"]);
+      if (updatedIds.length) {
+        setEntryLabels((current) => {
+          const next = new Map(current);
+          updatedIds.forEach((id) => {
+            const labels = next.get(id) ?? [];
+            if (!labels.includes("updated")) next.set(id, [...labels, "updated"]);
+          });
+          return next;
         });
-        return next;
-      });
+      }
       notify(errorMessage(cause, t, "errors.sync"));
     } finally {
       affectedIds.forEach((id) => autoReadPendingIds.current.delete(id));
