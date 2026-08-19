@@ -21,6 +21,8 @@ export const DEFAULT_FULL_SYNC_INTERVAL: MinifluxSyncInterval = 240;
 export type ProfileSettings = {
   theme: ThemeName;
   language?: SupportedLanguage;
+  showFeedArticleCount: boolean;
+  markReadOnScroll: boolean;
   imageLoadingPreferences: ImageLoadingPreferences;
   incrementalSyncIntervalMinutes: MinifluxSyncInterval;
   fullSyncIntervalMinutes: MinifluxSyncInterval;
@@ -852,6 +854,8 @@ export function normalizeProfileSettings(value?: unknown): ProfileSettings {
   return {
     theme: stored?.theme === "night" ? "night" : "day",
     ...(isSupportedLanguage(language) ? { language } : {}),
+    showFeedArticleCount: stored?.showFeedArticleCount === true,
+    markReadOnScroll: stored?.markReadOnScroll !== false,
     imageLoadingPreferences,
     incrementalSyncIntervalMinutes: normalizeMinifluxSyncInterval(
       stored?.incrementalSyncIntervalMinutes,

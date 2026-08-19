@@ -45,7 +45,7 @@ test("article list actions live in the title bar as NetNewsWire-style icons", ()
   assert.match(styles, /\.feedTitleActions button:disabled\s*\{/);
 });
 
-test("article rows use a right-aligned time and status rail without summaries", () => {
+test("article rows align full-width titles with right-aligned time and status markers", () => {
   assert.match(app, /className="storyMain"[\s\S]*?className="storySource"[\s\S]*?<h2>\{story\.title\}<\/h2>[\s\S]*?<footer>\{t\("feed\.minutes"/);
   assert.match(app, /className="storyStatus"[\s\S]*?<time>\{formatZonedTime\(story\.published_at, activeTimeZone\)\}<\/time>[\s\S]*?<i aria-hidden="true" \/>/);
   assert.doesNotMatch(app, /<h2>\{story\.title\}<\/h2><p>\{story\.summary\}<\/p>/);
@@ -54,9 +54,12 @@ test("article rows use a right-aligned time and status rail without summaries", 
   assert.match(app, /story\.status === "unread"[\s\S]*?"feed\.unread"[\s\S]*?updated[\s\S]*?"feed\.updated"/);
   assert.match(app, /currentMode === "updated" && entry\.status === "read" && updatedIds\.has\(entry\.id\)/);
   assert.match(app, /timeBuckets: new Map|const timeBuckets = mode === "today"/);
-  assert.match(styles, /\.story\{[^}]*grid-template-columns:minmax\(0,1fr\) 52px;[^}]*padding:13px 16px 12px/);
-  assert.match(styles, /\.storyStatus\{[^}]*align-items:flex-end;[^}]*justify-content:space-between/);
-  assert.match(styles, /\.storySource\{gap:5px;[^}]*font-size:10px\}/);
+  assert.match(styles, /\.story\{display:grid;[^}]*grid-template-columns:minmax\(0,1fr\) auto;[^}]*grid-template-rows:auto auto auto;[^}]*grid-template-areas:"source time" "title title" "footer dot";[^}]*column-gap:10px;[^}]*padding:13px 14px 12px/);
+  assert.match(styles, /\.storyMain,\.storyStatus\{display:contents\}/);
+  assert.match(styles, /\.story h2\{grid-area:title;[^}]*padding-right:8px;/);
+  assert.match(styles, /\.storyStatus time\{grid-area:time;justify-self:end;/);
+  assert.match(styles, /\.storyStatus>i\{grid-area:dot;align-self:end;justify-self:end;/);
+  assert.match(styles, /\.storySource\{[^}]*gap:5px;[^}]*font-size:10px\}/);
   assert.match(styles, /\.story \.sourceIcon\{width:14px;height:14px;[^}]*font-size:7px\}/);
   assert.match(styles, /\.story:not\(\.read\) \.storyStatus>i\{background:var\(--mint\)\}/);
   assert.match(styles, /\.story\.read\.updated:not\(\.starred\) \.storyStatus>i\{background:#10b981\}/);
@@ -86,9 +89,9 @@ test("mark all as read requires the selected anchored confirmation", () => {
   const confirmation = app.match(/<section\s+className="markAllReadConfirm"([\s\S]*?)<\/section>/)?.[0] ?? "";
 
   assert.match(app, /onClick=\{requestMarkVisibleRead\}/);
-  assert.match(app, /const visibleUnreadCount = useMemo\([\s\S]*?story\.status === "unread"[\s\S]*?\[visible\]/);
-  assert.match(app, /disabled=\{!visibleUnreadCount\}/);
-  assert.match(confirmation, /count: visibleUnreadCount/);
+  assert.match(app, /const visibleMarkReadCount = useMemo\([\s\S]*?story\.status === "unread" \|\| entryLabels\.get\(story\.id\)\?\.includes\("updated"\)[\s\S]*?\[entryLabels, visible\]/);
+  assert.match(app, /disabled=\{!visibleMarkReadCount\}/);
+  assert.match(confirmation, /count: visibleMarkReadCount/);
   assert.match(app, /className=\{markAllReadOpen \? "markAllReadSpotlight" : ""\}/);
   assert.match(app, /event\.shiftKey[\s\S]*?requestMarkVisibleRead\(\)/);
   assert.match(confirmation, /role="dialog"/);
@@ -109,6 +112,48 @@ test("mark all as read requires the selected anchored confirmation", () => {
   assert.match(styles, /\.markAllReadConfirm:before\s*\{/);
 });
 
+test("feed article counts are hidden by default and controlled from General settings", () => {
+  assert.match(app, /showFeedArticleCount: false/);
+  assert.match(app, /checked=\{settings\.showFeedArticleCount\}/);
+  assert.match(app, /setShowFeedArticleCount\(event\.target\.checked\)/);
+  assert.match(app, /resetsSource \? "↩" : settings\.showFeedArticleCount \? count : ""/);
+  assert.match(app, /<em>\{settings\.showFeedArticleCount \? categoryCount \|\| "" : ""\}<\/em>/);
+  assert.match(app, /<em>\{settings\.showFeedArticleCount \? countByFeed\.get\(feed\.id\) \|\| "" : ""\}<\/em>/);
+  assert.match(app, /\(settings\.showFeedArticleCount \|\| error && entries\.length > 0\) && <small>/);
+  assert.match(app, /settings\.showFeedArticleCount[\s\S]*?feed\.recommendedCount[\s\S]*?feed\.updatedCount[\s\S]*?feed\.articleCount/);
+  assert.match(styles, /\.settingToggle>input:checked\+i\{/);
+});
+
+test("scroll-to-read is enabled by default and configurable from General settings", () => {
+  assert.match(app, /markReadOnScroll: true/);
+  assert.match(app, /checked=\{settings\.markReadOnScroll\}/);
+  assert.match(app, /setMarkReadOnScroll\(event\.target\.checked\)/);
+  assert.match(app, /if \(!settings\.markReadOnScroll \|\| list\.scrollTop <= previousScrollTop\) return;/);
+  assert.match(app, /storyIdsPassedByScroll\(/);
+  assert.match(app, /data-entry-id=\{story\.id\}/);
+  assert.match(app, /unreadIds\.map\(\(entryId\) => \(\{ entryId, field: "status", value: "read" \}\)\)/);
+});
+
+test("opening an updated article preserves the current Today or Updated snapshot", () => {
+  assert.match(
+    app,
+    /const wasUpdatedWhenListed = \(mode === "today" \|\| mode === "updated"\)[\s\S]*?frozenVisibleOrder\.initialLabels\.get\(story\.id\)\?\.includes\("updated"\)/,
+  );
+  assert.match(app, /if \(!wasUpdatedWhenListed && !isEntryInSmartFeed/);
+});
+
+test("mark all as read also clears Updated labels from the visible list", () => {
+  const start = app.indexOf("const markVisibleRead = useCallback");
+  const end = app.indexOf("const positionMarkAllRead", start);
+  const markVisibleRead = app.slice(start, end);
+
+  assert.ok(start >= 0 && end > start);
+  assert.match(markVisibleRead, /const updatedIds = visible[\s\S]*?entryLabels\.get\(story\.id\)\?\.includes\("updated"\)/);
+  assert.match(markVisibleRead, /setEntryLabels\(labelsAfter\)/);
+  assert.match(markVisibleRead, /Promise\.all\(updatedIds\.map\(\(id\) => removeEntryLabel\(config, id, "updated"\)\)\)/);
+  assert.match(markVisibleRead, /setListReadSnapshot\(new Map\(after\.map/);
+});
+
 test("the subscriptions heading toggles the whole persisted section", () => {
   assert.match(app, /readflux\.sidebar\.subscriptions-collapsed/);
   assert.match(app, /subscriptionsCollapsed\s*\?\s*"bi-chevron-right"\s*:\s*"bi-chevron-down"/);
@@ -124,7 +169,7 @@ test("the subscriptions heading toggles the whole persisted section", () => {
 test("scheme A resets the source scope through every smart feed", () => {
   assert.match(app, /onClick=\{\(\) => switchListContext\(key, null\)\}/);
   assert.match(app, /const resetsSource = mode === key && topic !== null/);
-  assert.match(app, /resetsSource \? "↩" : count/);
+  assert.match(app, /resetsSource \? "↩" : settings\.showFeedArticleCount \? count : ""/);
   assert.match(app, /sidebar\.resetSource/);
   assert.doesNotMatch(app, /allSubscriptions|所有订阅/);
 });
@@ -146,9 +191,19 @@ test("changing smart feed, category, or feed closes the open article", () => {
 });
 
 test("subscription counts follow the smart feed and unread-only filter", () => {
-  assert.match(app, /if \(!isEntryInSmartFeed\(entry, mode, entryLabels\)\) return;/);
-  assert.match(app, /mode !== "updated" && hideRead && entry\.status !== "unread"/);
+  assert.match(app, /if \(!sourceSnapshot\.statuses\.has\(entry\.id\)\) return;/);
+  assert.match(app, /status: statusWhenCaptured[\s\S]*?sourceSnapshot\.labels/);
+  assert.match(app, /mode !== "updated" && hideRead && statusWhenCaptured !== "unread"/);
   assert.match(app, /const visibleCategorySources = useMemo/);
+});
+
+test("category and feed buttons keep their smart-feed snapshot until reset or mode change", () => {
+  assert.match(app, /const changingSmartFeed = modeRef\.current !== nextMode/);
+  assert.match(app, /const returningToSmartFeed = !changingSmartFeed && currentTopic !== null && nextTopic === null/);
+  assert.match(app, /if \(changingSmartFeed \|\| returningToSmartFeed\) \{\s*captureSourceSnapshot\(entriesRef\.current, entryLabels\);/);
+  assert.match(app, /const refreshList = useCallback\([\s\S]*?captureSourceSnapshot\(entriesRef\.current, entryLabels\)/);
+  assert.match(app, /if \(initialCacheHydration\) \{[\s\S]*?if \(cached\.length\) captureSourceSnapshot\(cached, labels\);/);
+  assert.match(app, /if \(loading \|\| sourceSnapshotInitialized\.current \|\| !entries\.length\) return;[\s\S]*?captureSourceSnapshot\(entries, entryLabels\);/);
 });
 
 test("subscription collapse state survives unavailable browser storage", () => {
@@ -271,6 +326,13 @@ test("the three-column workspace fills the viewport without a global banner", ()
   assert.match(styles, /\.sidebar\{\s*display:flex;[\s\S]*?scrollbar-gutter:auto;\s*\}/);
   assert.match(styles, /\.sidebarHeader\s*\{[^}]*height:72px;/);
   assert.doesNotMatch(styles, /\.topbar\s*\{/);
+});
+
+test("source rows sit as close to their scrollbar as article rows do", () => {
+  assert.match(styles, /\.sidebarScroll\{[\s\S]*?padding:12px 0 16px 10px;[\s\S]*?scrollbar-gutter:stable;/);
+  assert.match(styles, /\.storyList\{padding:0;/);
+  assert.match(styles, /\.sideLabel\{[^}]*margin:13px 0 4px 7px;/);
+  assert.match(styles, /\.workspace\.mobile-sources \.sidebarScroll\{padding:14px 0 14px 10px\}/);
 });
 
 test("article panel headers do not draw horizontal divider lines", () => {
