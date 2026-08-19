@@ -320,6 +320,7 @@ test("the three-column workspace fills the viewport without a global banner", ()
 test("source rows sit as close to their scrollbar as article rows do", () => {
   assert.match(styles, /\.sidebarScroll\{[\s\S]*?padding:12px 0 16px 10px;[\s\S]*?scrollbar-gutter:stable;/);
   assert.match(styles, /\.storyList\{padding:0;/);
+  assert.match(styles, /\.sideLabel\{[^}]*margin:13px 0 4px 7px;/);
   assert.match(styles, /\.workspace\.mobile-sources \.sidebarScroll\{padding:14px 0 14px 10px\}/);
 });
 

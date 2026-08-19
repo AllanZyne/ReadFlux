@@ -227,7 +227,7 @@ kbd{padding:2px 6px;border:1px solid #33423e;border-radius:4px;background:#1a252
 }
 .sideLabel{
   height:30px;
-  margin:13px 7px 4px;
+  margin:13px 0 4px 7px;
   color:var(--muted);
   font:650 10px/1 var(--font-geist-sans);
   letter-spacing:.08em;
