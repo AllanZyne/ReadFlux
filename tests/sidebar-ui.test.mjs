@@ -71,6 +71,7 @@ test("article rows align full-width titles with right-aligned time and status ma
 
 test("the reader does not reserve a persistent previous-next footer", () => {
   assert.doesNotMatch(app, /className="readerFoot"/);
+  assert.doesNotMatch(styles, /readerFoot/);
   assert.match(styles, /\.readerScroll\{padding-top:0;padding-bottom:32px\}/);
   assert.match(styles, /\.toast\{position:fixed;right:25px;bottom:20px;/);
 });
