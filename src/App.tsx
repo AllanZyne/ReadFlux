@@ -1086,6 +1086,10 @@ export default function App() {
     } catch { /* ignore */ }
     return new Map();
   });
+  const [sourceSnapshot, setSourceSnapshot] = useState<{
+    statuses: Map<number, Entry["status"]>;
+    labels: Map<number, string[]>;
+  }>(() => ({ statuses: new Map(), labels: new Map() }));
   const [reasonOpen, setReasonOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [markAllReadOpen, setMarkAllReadOpen] = useState(false);
@@ -1260,6 +1264,13 @@ export default function App() {
     entriesRef.current = next;
     setEntries(next);
     return next;
+  }, []);
+
+  const captureSourceSnapshot = useCallback((snapshotEntries: Entry[], labels: Map<number, string[]>) => {
+    setSourceSnapshot({
+      statuses: new Map(snapshotEntries.map((entry) => [entry.id, entry.status])),
+      labels: new Map(labels),
+    });
   }, []);
 
   const navigateToArticle = useCallback((entryId: number) => {
@@ -1495,6 +1506,9 @@ export default function App() {
       if (initialCacheHydration || snapshotMissesCache) {
         setListOrderVersion((version) => version + 1);
       }
+      if (initialCacheHydration) {
+        captureSourceSnapshot(cached, labels);
+      }
       if (snapshotMissesCache) {
         setListReadSnapshot(new Map(cached.map((entry) => [entry.id, entry.status])));
       }
@@ -1639,7 +1653,7 @@ export default function App() {
         queueMicrotask(() => void loadRef.current({ background: true, mode: queuedMode }));
       }
     }
-  }, [config, flushPendingEntryMutations, mergeEntryBatch, replaceEntries, settings.fullSyncIntervalMinutes, settings.incrementalSyncIntervalMinutes]);
+  }, [captureSourceSnapshot, config, flushPendingEntryMutations, mergeEntryBatch, replaceEntries, settings.fullSyncIntervalMinutes, settings.incrementalSyncIntervalMinutes]);
   useEffect(() => {
     loadRef.current = load;
   }, [load]);
@@ -1840,11 +1854,14 @@ export default function App() {
     commitActiveEvent();
     resetRenderedStories();
     setListReadSnapshot(new Map(entriesRef.current.map((entry) => [entry.id, entry.status])));
+    captureSourceSnapshot(entriesRef.current, entryLabels);
     setPendingNew(0);
-  }, [commitActiveEvent, resetRenderedStories]);
+  }, [captureSourceSnapshot, commitActiveEvent, entryLabels, resetRenderedStories]);
 
   const switchListContext = useCallback((nextMode: ListMode, nextTopic: Topic) => {
     const currentTopic = topicRef.current;
+    const changingSmartFeed = modeRef.current !== nextMode;
+    const returningToSmartFeed = !changingSmartFeed && currentTopic !== null && nextTopic === null;
     const sameTopic = (
       currentTopic?.kind === nextTopic?.kind && currentTopic?.id === nextTopic?.id
     ) || (currentTopic === null && nextTopic === null);
@@ -1858,13 +1875,16 @@ export default function App() {
     setMarkAllReadOpen(false);
     resetRenderedStories();
     setListReadSnapshot(new Map(entriesRef.current.map((entry) => [entry.id, entry.status])));
+    if (changingSmartFeed || returningToSmartFeed) {
+      captureSourceSnapshot(entriesRef.current, entryLabels);
+    }
     setPendingNew(0);
     modeRef.current = nextMode;
     topicRef.current = nextTopic;
     hideReadRef.current = nextMode !== "updated" && hideReadByMode[nextMode];
     setMode(nextMode);
     setTopic(nextTopic);
-  }, [commitActiveEvent, hideReadByMode, navigateToList, persistActive, resetRenderedStories]);
+  }, [captureSourceSnapshot, commitActiveEvent, entryLabels, hideReadByMode, navigateToList, persistActive, resetRenderedStories]);
 
   const frozenVisibleOrder = useMemo(() => {
     const hasQuery = !!query.trim();
@@ -2481,12 +2501,18 @@ export default function App() {
   const countByFeed = useMemo(() => {
     const counts = new Map<number, number>();
     entries.forEach((entry) => {
-      if (!isEntryInSmartFeed(entry, mode, entryLabels)) return;
-      if (mode !== "updated" && hideRead && entry.status !== "unread") return;
+      if (!sourceSnapshot.statuses.has(entry.id)) return;
+      const statusWhenCaptured = sourceSnapshot.statuses.get(entry.id) ?? entry.status;
+      if (!isEntryInSmartFeed(
+        { ...entry, status: statusWhenCaptured },
+        mode,
+        sourceSnapshot.labels,
+      )) return;
+      if (mode !== "updated" && hideRead && statusWhenCaptured !== "unread") return;
       counts.set(entry.feed_id, (counts.get(entry.feed_id) ?? 0) + 1);
     });
     return counts;
-  }, [entries, entryLabels, hideRead, mode]);
+  }, [entries, hideRead, mode, sourceSnapshot]);
   const visibleCategorySources = useMemo(() => categorySources.flatMap((category) => {
     const visibleFeeds = category.feeds.filter((feed) =>
       (countByFeed.get(feed.id) ?? 0) > 0

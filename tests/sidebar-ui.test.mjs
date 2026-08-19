@@ -190,9 +190,18 @@ test("changing smart feed, category, or feed closes the open article", () => {
 });
 
 test("subscription counts follow the smart feed and unread-only filter", () => {
-  assert.match(app, /if \(!isEntryInSmartFeed\(entry, mode, entryLabels\)\) return;/);
-  assert.match(app, /mode !== "updated" && hideRead && entry\.status !== "unread"/);
+  assert.match(app, /if \(!sourceSnapshot\.statuses\.has\(entry\.id\)\) return;/);
+  assert.match(app, /status: statusWhenCaptured[\s\S]*?sourceSnapshot\.labels/);
+  assert.match(app, /mode !== "updated" && hideRead && statusWhenCaptured !== "unread"/);
   assert.match(app, /const visibleCategorySources = useMemo/);
+});
+
+test("category and feed buttons keep their smart-feed snapshot until reset or mode change", () => {
+  assert.match(app, /const changingSmartFeed = modeRef\.current !== nextMode/);
+  assert.match(app, /const returningToSmartFeed = !changingSmartFeed && currentTopic !== null && nextTopic === null/);
+  assert.match(app, /if \(changingSmartFeed \|\| returningToSmartFeed\) \{\s*captureSourceSnapshot\(entriesRef\.current, entryLabels\);/);
+  assert.match(app, /const refreshList = useCallback\([\s\S]*?captureSourceSnapshot\(entriesRef\.current, entryLabels\)/);
+  assert.match(app, /if \(initialCacheHydration\) \{\s*captureSourceSnapshot\(cached, labels\);/);
 });
 
 test("subscription collapse state survives unavailable browser storage", () => {
