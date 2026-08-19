@@ -140,13 +140,20 @@ test("feed article counts are hidden by default and controlled from General sett
 });
 
 test("scroll-to-read is enabled by default and configurable from General settings", () => {
+  const start = app.indexOf("const markEntriesReadFromScroll = useCallback");
+  const end = app.indexOf("const handleStoryListScroll", start);
+  const markEntriesReadFromScroll = app.slice(start, end);
+
+  assert.ok(start >= 0 && end > start);
   assert.match(app, /markReadOnScroll: true/);
   assert.match(app, /checked=\{settings\.markReadOnScroll\}/);
   assert.match(app, /setMarkReadOnScroll\(event\.target\.checked\)/);
   assert.match(app, /if \(!settings\.markReadOnScroll \|\| list\.scrollTop <= previousScrollTop\) return;/);
   assert.match(app, /storyIdsPassedByScroll\(/);
   assert.match(app, /data-entry-id=\{story\.id\}/);
-  assert.match(app, /unreadIds\.map\(\(entryId\) => \(\{ entryId, field: "status", value: "read" \}\)\)/);
+  assert.match(markEntriesReadFromScroll, /unreadIds\.map\(\(entryId\) => \(\{ entryId, field: "status", value: "read" \}\)\)/);
+  assert.match(markEntriesReadFromScroll, /const updatedIds = candidateIds\.filter[\s\S]*?entryLabels\.get\(id\)\?\.includes\("updated"\)/);
+  assert.match(markEntriesReadFromScroll, /updatedIds\.map\(\(id\) => removeEntryLabel\(config, id, "updated"\)\)/);
 });
 
 test("opening an updated article preserves the current Today or Updated snapshot", () => {
