@@ -81,7 +81,7 @@ import {
   WebDavSyncInterval,
 } from "./readflux-client";
 import { createRankingExposure, deriveInterestProfile, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, selectedTopicTermsByEntry, selectedTopicTermsForEntry, type RecommendationScoreBreakdown } from "./recommendation";
-import { extractRecommendationCandidateTermsAsync, initializeChineseRecommendationTerms, normalizeRecommendationTerm, normalizeSelectedTopic } from "./recommendation-terms";
+import { extractRecommendationCandidateTermsAsync, initializeChineseRecommendationTerms, normalizeRecommendationTerm, normalizeSelectedTopic, prioritizeFollowedTopicTerms } from "./recommendation-terms";
 import {
   clearWebDavEtagCache,
   synchronizeWebDav,
@@ -2269,10 +2269,16 @@ export default function App() {
     const initialPersistence = putReadingEvent(readingEvent);
     void extractRecommendationCandidateTermsAsync(story.title, story.summary).then(async (extracted) => {
       await initialPersistence;
+      const prioritizedTerms = prioritizeFollowedTopicTerms(
+        story.title,
+        story.summary,
+        interest.words.keys(),
+        extracted.terms,
+      );
       const updatedAt = new Date().toISOString();
       let updatedEvent: ReadingEvent | null;
       if (activeEvent.current?.id === readingEvent.id) {
-        const terms = [...new Set([...activeEvent.current.terms, ...extracted.terms])];
+        const terms = [...new Set([...activeEvent.current.terms, ...prioritizedTerms])];
         updatedEvent = {
           ...activeEvent.current,
           terms,
@@ -2284,7 +2290,7 @@ export default function App() {
         await putReadingEvent(updatedEvent);
       } else {
         updatedEvent = await patchReadingEvent(readingEvent.id, {
-          terms: extracted.terms,
+          terms: prioritizedTerms,
           termExtractionVersion: extracted.version,
           updatedAt,
         });
@@ -2317,7 +2323,7 @@ export default function App() {
       void updateEntry(story.id, { status: "read" }, t("reader.markedRead"));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, mode, query, visible, persistActive, commitActiveEvent, loadEntryContent, entryLabels, navigateToArticle, t]);
+  }, [config, mode, query, visible, persistActive, commitActiveEvent, loadEntryContent, entryLabels, interest, navigateToArticle, t]);
 
   useEffect(() => {
     if (route.kind === "article") {

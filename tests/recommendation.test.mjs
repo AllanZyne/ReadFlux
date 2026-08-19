@@ -14,7 +14,7 @@ import {
   scoreRecommendation,
   selectedTopicTermsByEntry,
 } from "../src/recommendation.ts";
-import { extractRecommendationCandidateTerms, normalizeSelectedTopic } from "../src/recommendation-terms.ts";
+import { extractRecommendationCandidateTerms, normalizeSelectedTopic, prioritizeFollowedTopicTerms } from "../src/recommendation-terms.ts";
 
 const appSource = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
 const termSource = await readFile(new URL("../src/recommendation-terms.ts", import.meta.url), "utf8");
@@ -62,6 +62,33 @@ test("candidate extraction gives title terms more weight than summary terms", ()
   assert.equal(extractRecommendationCandidateTerms("LLVM", "compiler internals")[0], "llvm");
 });
 
+test("followed Chinese topics and English phrases take priority when the article contains them", () => {
+  assert.deepEqual(prioritizeFollowedTopicTerms(
+    "大语言模型中的 Retrieval Augmented Generation",
+    "介绍 OpenAI API 和向量数据库",
+    ["语言模型", "retrieval augmented generation", "openai api", "没有出现"],
+    ["retrieval", "模型", "向量"],
+  ), ["retrieval augmented generation", "语言模型", "openai api", "retrieval", "模型"]);
+});
+
+test("followed English topics require complete word boundaries", () => {
+  assert.deepEqual(prioritizeFollowedTopicTerms(
+    "Said and repainted",
+    "C++20 compiler internals",
+    ["ai", "paint", "c++20", "compiler internals"],
+    ["compiler", "internals"],
+  ), ["compiler internals", "c++20", "compiler", "internals"]);
+});
+
+test("followed-topic priority is capped and deterministic", () => {
+  assert.deepEqual(prioritizeFollowedTopicTerms(
+    "alpha beta gamma delta epsilon zeta",
+    "",
+    ["zeta", "beta", "epsilon", "alpha", "delta", "gamma"],
+    ["fallback"],
+  ), ["epsilon", "alpha", "delta", "gamma", "beta"]);
+});
+
 test("manual topic selection accepts short terms and rejects sentences or noisy values", () => {
   assert.equal(normalizeSelectedTopic("  大语言模型  "), "大语言模型");
   assert.equal(normalizeSelectedTopic("Retrieval Augmented Generation"), "retrieval augmented generation");
@@ -90,7 +117,7 @@ test("selected article text uses the existing topic operation and persists as a 
   assert.match(appSource, /className="topicSelectionConfirm"[\s\S]*?recommendation\.followSelectedTopic/);
   assert.match(appSource, /toggleTopicInterest\(selection\.term, true\)/);
   assert.match(appSource, /const terms = addToCandidates[\s\S]*?\[normalizedTerm,\s*\.\.\.currentEvent\.terms\]/);
-  assert.match(appSource, /new Set\(\[\.\.\.activeEvent\.current\.terms,\s*\.\.\.extracted\.terms\]\)/);
+  assert.match(appSource, /prioritizeFollowedTopicTerms\([\s\S]*?interest\.words\.keys\(\)[\s\S]*?new Set\(\[\.\.\.activeEvent\.current\.terms,\s*\.\.\.prioritizedTerms\]\)/);
 });
 
 test("background extraction handles persistence failures and avoids sorting event history", () => {
@@ -130,6 +157,22 @@ test("only the latest explicit per-article topic choice contributes", () => {
   assert.equal(profile.negatives.size, 0);
 });
 
+test("explicit topic weights stay fixed at one across repeated selections and time", () => {
+  const profile = deriveInterestProfile([
+    event({
+      entryId: 1,
+      topicFeedback: [{ id: "old", term: "LLVM", interested: true, updatedAt: "2025-01-01T00:00:00.000Z" }],
+    }),
+    event({
+      id: "event-2",
+      entryId: 2,
+      topicFeedback: [{ id: "new", term: "llvm", interested: true, updatedAt: "2026-08-14T00:00:00.000Z" }],
+    }),
+  ], [], Date.parse("2026-08-14T02:00:00.000Z"));
+  assert.equal(profile.words.size, 1);
+  assert.equal(profile.words.get("llvm"), 1);
+});
+
 test("invalid explicit-topic timestamps do not receive maximum weight", () => {
   const profile = deriveInterestProfile([event({
     topicFeedback: [{ id: "invalid", term: "llvm", interested: true, updatedAt: "not-a-date" }],
@@ -163,7 +206,7 @@ test("log-scaled scoring retains discrimination at high affinity", () => {
   assert.ok(breakdown.termScore > 20 && breakdown.termScore < 24);
   assert.ok(breakdown.unclampedScore < 99);
   assert.equal(breakdown.score, Math.round(breakdown.unclampedScore));
-  assert.equal(RECOMMENDATION_ALGORITHM_VERSION, "heuristic-v2-explicit-topics");
+  assert.equal(RECOMMENDATION_ALGORITHM_VERSION, "heuristic-v3-fixed-topic-weights");
 });
 
 test("exposure capture bounds ordered items and attribution uses a one-based rank", () => {
@@ -191,7 +234,7 @@ test("exposure capture bounds ordered items and attribution uses a one-based ran
   assert.deepEqual(rankingAttribution(exposure, 100), {
     rankingId: "ranking-1",
     exposedRank: 1,
-    algorithmVersion: "heuristic-v2-explicit-topics",
+    algorithmVersion: "heuristic-v3-fixed-topic-weights",
   });
   assert.deepEqual(rankingAttribution(exposure, 999), {});
 });
@@ -223,7 +266,7 @@ test("diagnostics use matching exposure items rather than opens as their denomin
   const exposure = {
     id: "ranking-1",
     createdAt: "2026-08-14T00:00:00.000Z",
-    algorithmVersion: "heuristic-v2-explicit-topics",
+    algorithmVersion: "heuristic-v3-fixed-topic-weights",
     schemaVersion: 1,
     surface: "today",
     candidateCount: 3,
