@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   compareSmartFeedEntries,
   countSmartFeedEntries,
+  formatStoryListDate,
   formatZonedDateTime,
   formatZonedTime,
   isEntryInSmartFeed,
@@ -69,9 +70,22 @@ test("reader timestamps are formatted in the Miniflux account timezone", () => {
   assert.equal(formatZonedDateTime(value, "Asia/Shanghai"), "2026/08/02 02:00:00");
 });
 
+test("article-list timestamps become more specific as articles get older", () => {
+  const now = "2026-08-20T12:00:00+08:00";
+  const timeZone = "Asia/Shanghai";
+
+  assert.equal(formatStoryListDate("2026-08-20T01:30:00Z", now, timeZone, "zh-CN"), "09:30");
+  assert.equal(formatStoryListDate("2026-08-19T01:30:00Z", now, timeZone, "zh-CN"), "周三 09:30");
+  assert.equal(formatStoryListDate("2026-08-17T01:30:00Z", now, timeZone, "en"), "Mon 09:30");
+  assert.equal(formatStoryListDate("2026-08-10T01:30:00Z", now, timeZone, "zh-CN"), "8月10日");
+  assert.equal(formatStoryListDate("2026-07-10T01:30:00Z", now, timeZone, "en"), "Jul 10");
+  assert.equal(formatStoryListDate("2025-12-31T01:30:00Z", now, timeZone, "zh-CN"), "2025年12月31日");
+});
+
 test("invalid timestamps use stable display fallbacks", () => {
   assert.equal(formatZonedTime("not-a-date", "Asia/Shanghai"), "--:--");
   assert.equal(formatZonedDateTime("", "Asia/Shanghai"), "—");
+  assert.equal(formatStoryListDate("not-a-date", Date.now(), "Asia/Shanghai", "zh-CN"), "--:--");
   assert.equal(toZonedDateTimeInput("not-a-date", "Asia/Shanghai"), "");
   assert.equal(localDayKey("not-a-date", "Asia/Shanghai"), "");
 });

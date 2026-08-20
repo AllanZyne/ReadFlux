@@ -1,5 +1,6 @@
 const dayFormatters = new Map();
 const dateTimeFormatters = new Map();
+const storyListDateFormatters = new Map();
 
 function dayFormatter(timeZone) {
   if (!timeZone) return null;
@@ -66,6 +67,32 @@ export function formatZonedDateTime(value, timeZone) {
   const parts = zonedDateTimeParts(value, timeZone);
   if (!parts) return "—";
   return `${parts.year}/${parts.month}/${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
+function storyListDateFormatter(locale, timeZone, format) {
+  const key = `${locale}\n${timeZone ?? ""}\n${format}`;
+  if (storyListDateFormatters.has(key)) return storyListDateFormatters.get(key);
+  const options = format === "weekday"
+    ? { timeZone, weekday: "short" }
+    : format === "month-day"
+      ? { timeZone, month: "short", day: "numeric" }
+      : { timeZone, year: "numeric", month: "short", day: "numeric" };
+  const formatter = new Intl.DateTimeFormat(locale, options);
+  storyListDateFormatters.set(key, formatter);
+  return formatter;
+}
+
+export function formatStoryListDate(value, now = Date.now(), timeZone, locale = "en") {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "--:--";
+  const bucket = smartFeedTimeBucket(value, now, timeZone);
+  if (bucket === 0) return formatZonedTime(value, timeZone);
+  if (bucket <= 2) {
+    const weekday = storyListDateFormatter(locale, timeZone, "weekday").format(date);
+    return `${weekday} ${formatZonedTime(value, timeZone)}`;
+  }
+  const format = bucket <= 4 ? "month-day" : "year-month-day";
+  return storyListDateFormatter(locale, timeZone, format).format(date);
 }
 
 export function toZonedDateTimeInput(value, timeZone) {
