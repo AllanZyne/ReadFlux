@@ -10,6 +10,91 @@ type SyncEntry = {
 
 const CURSOR_OVERLAP_MS = 5_000;
 
+const BLOCK_TAG_PATTERN = /<\/?(?:address|article|aside|blockquote|br|dd|div|dl|dt|figcaption|figure|footer|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)\b[^>]*>/gi;
+const HIDDEN_CONTENT_PATTERN = /<(script|style|template|noscript)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
+const HTML_COMMENT_PATTERN = /<!--[\s\S]*?-->/g;
+const HTML_TAG_PATTERN = /<[^>]*>/g;
+const MEDIA_CONTAINER_PATTERN = /<(video|audio|iframe)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
+const MEDIA_OPEN_TAG_PATTERN = /<(video|audio|iframe)\b[^>]*>/gi;
+const IMAGE_TAG_PATTERN = /<img\b[^>]*>/gi;
+const ALT_ATTRIBUTE_PATTERN = /\salt\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i;
+
+const HTML_ENTITIES: Record<string, string> = {
+  amp: "&",
+  apos: "'",
+  bull: "•",
+  cent: "¢",
+  copy: "©",
+  darr: "↓",
+  deg: "°",
+  divide: "÷",
+  euro: "€",
+  gt: ">",
+  hellip: "…",
+  laquo: "«",
+  larr: "←",
+  ldquo: "“",
+  lsquo: "‘",
+  lt: "<",
+  mdash: "—",
+  middot: "·",
+  nbsp: " ",
+  ndash: "–",
+  plusmn: "±",
+  pound: "£",
+  quot: '"',
+  raquo: "»",
+  rarr: "→",
+  rdquo: "”",
+  reg: "®",
+  rsquo: "’",
+  times: "×",
+  trade: "™",
+  uarr: "↑",
+  yen: "¥",
+};
+
+function decodeCommonHtmlEntities(value: string) {
+  return value.replace(/&(?:#(\d+)|#x([\da-f]+)|([a-z]+));/gi, (entity, decimal, hexadecimal, named) => {
+    if (decimal) {
+      const codePoint = Number(decimal);
+      return Number.isSafeInteger(codePoint) && codePoint <= 0x10FFFF
+        ? String.fromCodePoint(codePoint)
+        : entity;
+    }
+    if (hexadecimal) {
+      const codePoint = Number.parseInt(hexadecimal, 16);
+      return Number.isSafeInteger(codePoint) && codePoint <= 0x10FFFF
+        ? String.fromCodePoint(codePoint)
+        : entity;
+    }
+    return HTML_ENTITIES[named.toLowerCase()] ?? entity;
+  });
+}
+
+export function normalizeArticleText(value?: string) {
+  return decodeCommonHtmlEntities(value ?? "")
+    .normalize("NFKC")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+export function normalizeArticleContent(content: string) {
+  const semanticMarkup = content
+    .replace(HTML_COMMENT_PATTERN, "")
+    .replace(HIDDEN_CONTENT_PATTERN, "")
+    .replace(MEDIA_CONTAINER_PATTERN, (_tag, rawName: string) => ` [${rawName.toLowerCase()}] `)
+    .replace(MEDIA_OPEN_TAG_PATTERN, (_tag, rawName: string) => ` [${rawName.toLowerCase()}] `)
+    .replace(IMAGE_TAG_PATTERN, (tag) => {
+      const altMatch = ALT_ATTRIBUTE_PATTERN.exec(tag);
+      const alt = normalizeArticleText(altMatch?.[1] ?? altMatch?.[2] ?? altMatch?.[3]);
+      return alt ? ` [image:${alt}] ` : " [image] ";
+    })
+    .replace(BLOCK_TAG_PATTERN, " ")
+    .replace(HTML_TAG_PATTERN, "");
+  return normalizeArticleText(semanticMarkup);
+}
+
 export function newestChangedAt(entries: SyncEntry[], fallback?: string) {
   let newest = fallback && Number.isFinite(Date.parse(fallback)) ? fallback : undefined;
   let newestTime = newest ? Date.parse(newest) : Number.NEGATIVE_INFINITY;
@@ -38,10 +123,8 @@ export function syncIntervalElapsed(lastSyncAt: string | undefined, intervalMinu
 }
 
 function articleContentChanged<T extends SyncEntry>(cached: T, entry: T) {
-  return cached.title !== entry.title
-    || cached.url !== entry.url
-    || cached.content !== entry.content
-    || cached.author !== entry.author;
+  return normalizeArticleText(cached.title) !== normalizeArticleText(entry.title)
+    || normalizeArticleContent(cached.content) !== normalizeArticleContent(entry.content);
 }
 
 export function mergeSyncedEntries<T extends SyncEntry>(

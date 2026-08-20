@@ -5,6 +5,8 @@ import {
   incrementalChangedAfter,
   mergeSyncedEntries,
   newestChangedAt,
+  normalizeArticleContent,
+  normalizeArticleText,
   syncIntervalElapsed,
 } from "../src/entry-sync.ts";
 
@@ -123,6 +125,58 @@ test("changed read entries are labeled before React state scheduling", () => {
   assert.equal(result.entries[0].content, "<p>Updated</p>");
   assert.match(app, /protectPendingEntryMutations\(batch,[\s\S]*?mergeSyncedEntries\(entriesRef\.current,\s*protectedBatch\)/);
   assert.doesNotMatch(app, /setEntries\(\(current\) => \{[\s\S]*?updatedIds\.add/);
+});
+
+test("article update detection compares normalized visible content", () => {
+  assert.equal(normalizeArticleText("  Ａ\n title  "), "A title");
+  assert.equal(
+    normalizeArticleContent('<p>Hello <strong>world</strong>&nbsp;&amp; friends&mdash;&copy;&ldquo;quoted&rdquo;</p>'),
+    'Hello world & friends—©“quoted”',
+  );
+
+  const cached = [{
+    id: 8,
+    status: "read",
+    title: "A  title",
+    url: "https://example.com/old",
+    author: undefined,
+    content: '<p>Hello <strong>world</strong>&mdash;&copy;</p><video src="https://cdn.example/video.mp4?token=old" poster="old.jpg"><a href="https://example.com/watch?id=1">Watch video</a></video><img src="old.jpg" alt="Diagram">',
+  }];
+  const remote = [{
+    id: 8,
+    status: "read",
+    title: "Ａ title",
+    url: "https://example.com/new?tracking=1",
+    author: "",
+    content: '<div class="new">Hello <b>world</b>—©</div><video src="https://cdn.example/video.mp4?token=new" poster="new.jpg"><a href="https://example.com/watch?id=2">Different fallback text</a></video><img src="new.jpg" alt="Diagram">',
+  }];
+
+  assert.deepEqual([...mergeSyncedEntries(cached, remote).updatedIds], []);
+});
+
+test("visible text and media structure changes still mark read articles updated", () => {
+  const cached = [{
+    id: 9,
+    status: "read",
+    title: "Title",
+    content: '<p>Original text</p><img src="one.jpg" alt="First diagram">',
+  }];
+
+  const textChanged = [{
+    id: 9,
+    status: "read",
+    title: "Title",
+    content: '<p>Revised text</p><img src="two.jpg" alt="First diagram">',
+  }];
+  const mediaChanged = [{
+    id: 9,
+    status: "read",
+    title: "Title",
+    content: '<p>Original text</p><video src="one.mp4"></video>',
+  }];
+
+  assert.deepEqual([...mergeSyncedEntries(cached, textChanged).updatedIds], [9]);
+  assert.deepEqual([...mergeSyncedEntries(cached, mediaChanged).updatedIds], [9]);
 });
 
 test("unread and unchanged entries do not receive update labels", () => {

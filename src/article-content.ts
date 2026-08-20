@@ -38,19 +38,6 @@ export function articleMediaURL(value: string, baseURL?: string): string | null 
   }
 }
 
-export function isExpiredWeiboMediaURL(value: string, now = Date.now()): boolean {
-  try {
-    const url = new URL(value);
-    if (!/(^|\.)weibocdn\.com$/i.test(url.hostname)) return false;
-
-    const expires = url.searchParams.get("Expires");
-    if (!expires || !/^\d+$/.test(expires)) return false;
-    return Number(expires) * 1000 <= now;
-  } catch {
-    return false;
-  }
-}
-
 export function isWeiboLivePhotoURL(value: string): boolean {
   try {
     const wrapper = new URL(value);
