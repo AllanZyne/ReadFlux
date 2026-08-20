@@ -25,7 +25,7 @@ import {
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { startOptionalMinifluxTimeZoneLoad } from "./miniflux-timezone.mjs";
 import { articleHash, articlePermalink, parseAppRoute, type AppRoute } from "./routes";
-import { compareSmartFeedEntries, countSmartFeedEntries, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, nextDayBoundary, selectTimeZone, smartFeedStatusPriority, smartFeedTimeBucket, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
+import { compareSmartFeedEntries, countSmartFeedEntries, formatStoryListDate, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, nextDayBoundary, selectTimeZone, smartFeedStatusPriority, smartFeedTimeBucket, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
 import { nextStoryRenderCount, STORY_RENDER_BATCH_SIZE, storyIdsPassedByScroll } from "./story-list";
 import { storyTextForEntry } from "./story-text";
 import {
@@ -2846,7 +2846,10 @@ export default function App() {
                   <footer>{t("feed.minutes", { count: story.reading_time || 1 })}</footer>
                 </div>
                 <div className="storyStatus">
-                  <time>{formatZonedTime(story.published_at, activeTimeZone)}</time>
+                  <time
+                    dateTime={story.published_at}
+                    title={formatZonedDateTime(story.published_at, activeTimeZone)}
+                  >{formatStoryListDate(story.published_at, todayClock, activeTimeZone, i18n.resolvedLanguage ?? "en")}</time>
                   <i aria-hidden="true" />
                   <span className="sr-only">{t(statusKey)}</span>
                 </div>

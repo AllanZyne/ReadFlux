@@ -26,6 +26,12 @@ export type TimeZoneSelection = {
 export function selectTimeZone(timeZone?: string): TimeZoneSelection;
 export function formatZonedTime(value: string | number | Date, timeZone: string): string;
 export function formatZonedDateTime(value: string | number | Date, timeZone: string): string;
+export function formatStoryListDate(
+  value: string | number | Date,
+  now?: string | number | Date,
+  timeZone?: string,
+  locale?: string,
+): string;
 export function toZonedDateTimeInput(value: string | number | Date, timeZone: string): string;
 export function zonedDateTimeInputToIso(
   value: string,
