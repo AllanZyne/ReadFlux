@@ -85,11 +85,11 @@ function storyListDateFormatter(locale, timeZone, format) {
 export function formatStoryListDate(value, now = Date.now(), timeZone, locale = "en") {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "--:--";
-  const bucket = smartFeedTimeBucket(value, now, timeZone);
-  if (bucket === 0) return formatZonedTime(value, timeZone);
+  const bucket = smartFeedTimeBucket(date, now, timeZone);
+  if (bucket === 0) return formatZonedTime(date, timeZone);
   if (bucket <= 2) {
     const weekday = storyListDateFormatter(locale, timeZone, "weekday").format(date);
-    return `${weekday} ${formatZonedTime(value, timeZone)}`;
+    return `${weekday} ${formatZonedTime(date, timeZone)}`;
   }
   const format = bucket <= 4 ? "month-day" : "year-month-day";
   return storyListDateFormatter(locale, timeZone, format).format(date);

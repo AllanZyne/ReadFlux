@@ -70,7 +70,7 @@ test("reader timestamps are formatted in the Miniflux account timezone", () => {
   assert.equal(formatZonedDateTime(value, "Asia/Shanghai"), "2026/08/02 02:00:00");
 });
 
-test("article-list timestamps become more specific as articles get older", () => {
+test("article-list timestamps adapt their detail to article age", () => {
   const now = "2026-08-20T12:00:00+08:00";
   const timeZone = "Asia/Shanghai";
 
