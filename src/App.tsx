@@ -74,6 +74,7 @@ import {
   removeEntryLabel,
   resetEntrySync,
   saveCachedFeedCatalog,
+  saveCachedFeedCatalogTimeZone,
   saveConnection,
   saveEntrySyncState,
   saveProfileSettings,
@@ -1150,6 +1151,9 @@ export default function App() {
   const [listOrderVersion, setListOrderVersion] = useState(0);
   const [renderedStoryCount, setRenderedStoryCount] = useState(STORY_RENDER_BATCH_SIZE);
   const [referrerScopeState, setReferrerScopeState] = useState({ url: "", scope: "" });
+  // Bumped whenever a catalog refresh starts or the connection changes, so a
+  // late-resolving timezone request from a superseded load is discarded.
+  const catalogRevision = useRef(0);
   const entriesRef = useRef<Entry[]>([]);
   const activeEvent = useRef<ReadingEvent | null>(null);
   const latestExposure = useRef<RankingExposure | null>(null);
@@ -1590,16 +1594,15 @@ export default function App() {
           timeZone: cachedCatalog?.timeZone,
         }).catch(() => undefined);
         // The timezone request never blocks the sync; it upgrades the stored
-        // catalog once it settles.
+        // catalog once it settles. The revision guard drops the result when a
+        // newer load or a connection change has superseded this one, and the
+        // write touches only the timezone so it cannot clobber newer feeds.
+        const revision = ++catalogRevision.current;
         void loadOptionalMinifluxTimeZone(() => minifluxFetch<MinifluxUser>(config, "/v1/me"))
           .then((timeZone) => {
-            if (!timeZone) return;
+            if (!timeZone || revision !== catalogRevision.current) return;
             setMinifluxTimeZone(timeZone);
-            return saveCachedFeedCatalog<Feed, Category>(config, {
-              feeds: nextFeeds,
-              categories: nextCategories,
-              timeZone,
-            });
+            return saveCachedFeedCatalogTimeZone(config, timeZone);
           })
           .catch(() => undefined);
       }
@@ -1728,6 +1731,7 @@ export default function App() {
   // `load` identity: legitimate state changes recreate that callback, and
   // depending on it would turn every one of them into another sync.
   useEffect(() => {
+    catalogRevision.current += 1;
     if (config) queueMicrotask(() => void loadRef.current());
   }, [config]);
 

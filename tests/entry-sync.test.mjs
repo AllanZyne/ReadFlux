@@ -161,6 +161,20 @@ test("a corrupted cached timezone is discarded instead of formatting dates", () 
   assert.match(client, /timeZone: undefined/);
 });
 
+test("a late timezone response cannot overwrite a newer cached catalog", () => {
+  // The timezone request outlives its load, so it must not rewrite feeds or
+  // categories, and must be dropped once a newer load or connection supersedes it.
+  assert.match(client, /export async function saveCachedFeedCatalogTimeZone/);
+  assert.match(client, /const current = await requestResult\(store\.get\(key\)\)/);
+  assert.match(app, /const revision = \+\+catalogRevision\.current/);
+  assert.match(app, /revision !== catalogRevision\.current\) return/);
+  assert.match(app, /saveCachedFeedCatalogTimeZone\(config, timeZone\)/);
+  // A connection change invalidates any in-flight timezone write.
+  assert.match(app, /catalogRevision\.current \+= 1;\s*\n\s*if \(config\) queueMicrotask/);
+  // The timezone path must no longer rewrite the whole catalog.
+  assert.doesNotMatch(app, /setMinifluxTimeZone\(timeZone\);\s*\n\s*return saveCachedFeedCatalog</);
+});
+
 test("repeated loads keep sidebar state identity when nothing changed", () => {
   // Identity churn here re-ran the feed-icon effect and feedMap memo on every
   // load, which is what made a redundant sync so expensive.

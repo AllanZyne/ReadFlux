@@ -478,6 +478,24 @@ export async function saveCachedFeedCatalog<F, C>(
   db.close();
 }
 
+/**
+ * Updates only the cached timezone, in one transaction, so a late-resolving
+ * timezone request can never overwrite feeds or categories that a newer sync
+ * has already stored. Does nothing when no catalog has been cached yet.
+ */
+export async function saveCachedFeedCatalogTimeZone(config: ConnectionConfig, timeZone: string) {
+  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
+  const key = `${FEED_CATALOG}:${scope}`;
+  const transaction = db.transaction(SETTINGS, "readwrite");
+  const store = transaction.objectStore(SETTINGS);
+  const current = await requestResult(store.get(key));
+  if (current && typeof current === "object") {
+    store.put({ ...(current as CachedFeedCatalog), timeZone }, key);
+  }
+  await transactionComplete(transaction);
+  db.close();
+}
+
 export async function getEntrySyncState(config: ConnectionConfig): Promise<EntrySyncState | null> {
   const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
   const value = await requestResult(
