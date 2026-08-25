@@ -14,7 +14,7 @@ import {
 } from "./article-images";
 import { articleMediaURL, isWeiboLivePhotoURL, youtubeEmbedURL } from "./article-content";
 import { runExclusive } from "./async-lock";
-import { incrementalChangedAfter, mergeSyncedEntries, newestChangedAt, syncIntervalElapsed } from "./entry-sync";
+import { incrementalChangedAfter, mergeSyncedEntries, newestChangedAt, sameJsonValue, syncIntervalElapsed } from "./entry-sync";
 import {
   entryMutationPatches,
   flushEntryMutationOutbox,
@@ -23,7 +23,7 @@ import {
   type EntryMutationPatch,
 } from "./entry-mutation-sync";
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
-import { startOptionalMinifluxTimeZoneLoad } from "./miniflux-timezone.mjs";
+import { loadOptionalMinifluxTimeZone } from "./miniflux-timezone.mjs";
 import { articleHash, articlePermalink, parseAppRoute, type AppRoute } from "./routes";
 import { compareSmartFeedEntries, countSmartFeedEntries, formatStoryListDate, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, nextDayBoundary, selectTimeZone, smartFeedStatusPriority, smartFeedTimeBucket, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
 import { nextStoryRenderCount, STORY_RENDER_BATCH_SIZE, storyIdsPassedByScroll } from "./story-list";
@@ -44,6 +44,7 @@ import {
   type EntryMutation,
   type StoredEntryMutation,
   getCachedEntries,
+  getCachedFeedCatalog,
   getCachedFeedIcons,
   getConnection,
   getEntryLabels,
@@ -72,6 +73,8 @@ import {
   ReadingEvent,
   removeEntryLabel,
   resetEntrySync,
+  saveCachedFeedCatalog,
+  saveCachedFeedCatalogTimeZone,
   saveConnection,
   saveEntrySyncState,
   saveProfileSettings,
@@ -429,6 +432,25 @@ const ArticleBody = memo(function ArticleBody({
     dangerouslySetInnerHTML={markup}
   />;
 });
+
+function sameEntryLabels(current: Map<number, string[]>, next: Map<number, string[]>) {
+  if (current === next) return true;
+  if (current.size !== next.size) return false;
+  for (const [entryId, labels] of current) {
+    const other = next.get(entryId);
+    if (!other || other.length !== labels.length) return false;
+    if (!labels.every((label) => other.includes(label))) return false;
+  }
+  return true;
+}
+
+/**
+ * Sidebar metadata is re-read on every load. Keeping the previous array when it
+ * is unchanged stops dependent effects and memos from recomputing for nothing.
+ */
+function sameCatalogList<T>(current: T[], next: T[]) {
+  return current === next || sameJsonValue(current, next);
+}
 
 type EventDraft = Omit<ReadingEvent, "id" | "updatedAt"> & { id?: string };
 type WebDavSyncStatus = {
@@ -1129,6 +1151,9 @@ export default function App() {
   const [listOrderVersion, setListOrderVersion] = useState(0);
   const [renderedStoryCount, setRenderedStoryCount] = useState(STORY_RENDER_BATCH_SIZE);
   const [referrerScopeState, setReferrerScopeState] = useState({ url: "", scope: "" });
+  // Bumped whenever a catalog refresh starts or the connection changes, so a
+  // late-resolving timezone request from a superseded load is discarded.
+  const catalogRevision = useRef(0);
   const entriesRef = useRef<Entry[]>([]);
   const activeEvent = useRef<ReadingEvent | null>(null);
   const latestExposure = useRef<RankingExposure | null>(null);
@@ -1495,19 +1520,16 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      startOptionalMinifluxTimeZoneLoad(
-        () => minifluxFetch<MinifluxUser>(config, "/v1/me"),
-        setMinifluxTimeZone,
-      );
       try {
         await flushPendingEntryMutations();
       } catch { /* pending local state remains protected while article refresh continues */ }
-      const [cached, storedState, labels] = await Promise.all([
+      const [cached, storedState, labels, cachedCatalog] = await Promise.all([
         getCachedEntries<Entry>(config),
         getEntrySyncState(config),
         getEntryLabels(config),
+        getCachedFeedCatalog<Feed, Category>(config).catch(() => null),
       ]);
-      setEntryLabels(labels);
+      setEntryLabels((current) => sameEntryLabels(current, labels) ? current : labels);
       replaceEntries(cached);
       syncStateRef.current = storedState;
       const initialCacheHydration = hydratedConnectionRef.current !== config;
@@ -1525,12 +1547,13 @@ export default function App() {
       if (snapshotMissesCache) {
         setListReadSnapshot(new Map(cached.map((entry) => [entry.id, entry.status])));
       }
-      const [feedData, categoryData] = await Promise.all([
-        minifluxFetch<Feed[]>(config, "/v1/feeds"),
-        minifluxFetch<Category[]>(config, "/v1/categories"),
-      ]);
-      setFeeds(feedData ?? []);
-      setCategories(categoryData ?? []);
+      if (cachedCatalog) {
+        setFeeds((current) => sameCatalogList(current, cachedCatalog.feeds) ? current : cachedCatalog.feeds);
+        setCategories((current) => (
+          sameCatalogList(current, cachedCatalog.categories) ? current : cachedCatalog.categories
+        ));
+        if (cachedCatalog.timeZone) setMinifluxTimeZone(cachedCatalog.timeZone);
+      }
       setSelectedId((current) => current && cached.some((entry) => entry.id === current) ? current : null);
 
       const requestedMode = options?.mode ?? "auto";
@@ -1550,6 +1573,39 @@ export default function App() {
             : incrementalSyncDue
               ? "incremental"
               : null;
+
+      // Account, feed, and category metadata follows the entry sync cadence.
+      // Without a local catalog there is nothing to render the sidebar from, so
+      // that first fetch still happens regardless of what is due.
+      if (syncMode || !cachedCatalog) {
+        const [feedData, categoryData] = await Promise.all([
+          minifluxFetch<Feed[]>(config, "/v1/feeds"),
+          minifluxFetch<Category[]>(config, "/v1/categories"),
+        ]);
+        const nextFeeds = feedData ?? [];
+        const nextCategories = categoryData ?? [];
+        setFeeds((current) => sameCatalogList(current, nextFeeds) ? current : nextFeeds);
+        setCategories((current) => sameCatalogList(current, nextCategories) ? current : nextCategories);
+        // Persist before continuing so a following load reads the catalog
+        // instead of racing this write and refetching the same metadata.
+        await saveCachedFeedCatalog<Feed, Category>(config, {
+          feeds: nextFeeds,
+          categories: nextCategories,
+          timeZone: cachedCatalog?.timeZone,
+        }).catch(() => undefined);
+        // The timezone request never blocks the sync; it upgrades the stored
+        // catalog once it settles. The revision guard drops the result when a
+        // newer load or a connection change has superseded this one, and the
+        // write touches only the timezone so it cannot clobber newer feeds.
+        const revision = ++catalogRevision.current;
+        void loadOptionalMinifluxTimeZone(() => minifluxFetch<MinifluxUser>(config, "/v1/me"))
+          .then((timeZone) => {
+            if (!timeZone || revision !== catalogRevision.current) return;
+            setMinifluxTimeZone(timeZone);
+            return saveCachedFeedCatalogTimeZone(config, timeZone);
+          })
+          .catch(() => undefined);
+      }
 
       if (!syncMode) {
         const lastSyncAt = storedState?.lastIncrementalSyncAt ?? lastFullSyncAt;
@@ -1671,9 +1727,13 @@ export default function App() {
     loadRef.current = load;
   }, [load]);
 
+  // Loads when a connection appears. This deliberately does not depend on the
+  // `load` identity: legitimate state changes recreate that callback, and
+  // depending on it would turn every one of them into another sync.
   useEffect(() => {
-    if (config) queueMicrotask(() => void load());
-  }, [config, load]);
+    catalogRevision.current += 1;
+    if (config) queueMicrotask(() => void loadRef.current());
+  }, [config]);
 
   useEffect(() => {
     if (!config || !query.trim() || loading) return;

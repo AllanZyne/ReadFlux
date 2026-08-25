@@ -7,6 +7,7 @@ import {
   newestChangedAt,
   normalizeArticleContent,
   normalizeArticleText,
+  sameJsonValue,
   syncIntervalElapsed,
 } from "../src/entry-sync.ts";
 
@@ -86,6 +87,119 @@ test("feed icons use a connection-scoped cache keyed by Miniflux icon version", 
   assert.match(app, /currentIconIds\.get\(icon\.feedId\) === icon\.iconId/);
   assert.match(app, /const uncachedFeeds = withIcons\.filter/);
   assert.match(app, /putCachedFeedIcons\(config,\s*loadedIcons\)/);
+});
+
+test("sidebar metadata is cached locally and refreshed on the sync cadence", () => {
+  // The catalog reuses the existing settings store, so no schema bump is needed.
+  assert.match(client, /FEED_CATALOG\s*=\s*"feed-catalog"/);
+  assert.match(client, /export async function getCachedFeedCatalog/);
+  assert.match(client, /export async function saveCachedFeedCatalog/);
+  assert.match(client, /objectStore\(SETTINGS\)\.delete\(`\$\{FEED_CATALOG\}:\$\{scope\}`\)/);
+
+  // A cold start renders feeds, categories, and the timezone from cache.
+  assert.match(app, /getCachedFeedCatalog<Feed, Category>\(config\)/);
+  assert.match(app, /if \(cachedCatalog\) \{/);
+  assert.match(app, /if \(cachedCatalog\.timeZone\) setMinifluxTimeZone\(cachedCatalog\.timeZone\)/);
+
+  // Account, feed, and category requests only run when a sync is due, or when
+  // there is no catalog yet to render the sidebar from.
+  assert.match(app, /if \(syncMode \|\| !cachedCatalog\) \{/);
+  assert.match(app, /saveCachedFeedCatalog<Feed, Category>\(config, \{/);
+});
+
+test("account, feed, and category requests are not issued on every load", () => {
+  // Everything before the sync gate runs on every load() call, so these three
+  // requests must sit after it. Guards against reintroducing per-load fetches.
+  const loadBody = app.slice(
+    app.indexOf("const load = useCallback"),
+    app.indexOf("if (syncMode || !cachedCatalog)"),
+  );
+  assert.ok(loadBody.length > 0);
+  assert.doesNotMatch(loadBody, /"\/v1\/feeds"/);
+  assert.doesNotMatch(loadBody, /"\/v1\/categories"/);
+  assert.doesNotMatch(loadBody, /"\/v1\/me"/);
+  // The timezone request still must not block the entry sync.
+  assert.match(app, /void loadOptionalMinifluxTimeZone\(/);
+  assert.doesNotMatch(app, /await loadOptionalMinifluxTimeZone\(/);
+});
+
+test("synced data comparison ignores property order but respects array order", () => {
+  // Feed objects that serialise their keys differently are still the same feed,
+  // so a reordered response must not count as a change.
+  assert.equal(
+    sameJsonValue({ id: 1, title: "A" }, { title: "A", id: 1 }),
+    true,
+  );
+  assert.equal(
+    sameJsonValue(
+      [{ id: 1, icon: { feed_id: 1, icon_id: 9 } }],
+      [{ icon: { icon_id: 9, feed_id: 1 }, id: 1 }],
+    ),
+    true,
+  );
+  // Sidebar ordering comes from the response order, so a reorder is a change.
+  assert.equal(sameJsonValue([{ id: 1 }, { id: 2 }], [{ id: 2 }, { id: 1 }]), false);
+  // Real differences are still detected.
+  assert.equal(sameJsonValue({ id: 1, title: "A" }, { id: 1, title: "B" }), false);
+  assert.equal(sameJsonValue({ id: 1 }, { id: 1, title: "A" }), false);
+  assert.equal(sameJsonValue({ id: 1, title: "A" }, { id: 1 }), false);
+  assert.equal(sameJsonValue([{ id: 1 }], [{ id: 1 }, { id: 2 }]), false);
+  // Null and primitive edges must not throw or report false equality.
+  assert.equal(sameJsonValue(null, null), true);
+  assert.equal(sameJsonValue(null, {}), false);
+  assert.equal(sameJsonValue({}, null), false);
+  assert.equal(sameJsonValue({ a: null }, { a: null }), true);
+  assert.equal(sameJsonValue({ a: null }, { a: 0 }), false);
+  assert.equal(sameJsonValue([], {}), false);
+  assert.equal(sameJsonValue(undefined, undefined), true);
+  assert.equal(sameJsonValue("a", "a"), true);
+  assert.equal(sameJsonValue(1, "1"), false);
+});
+
+test("a corrupted cached timezone is discarded instead of formatting dates", () => {
+  assert.match(client, /typeof catalog\.timeZone === "string"/);
+  assert.match(client, /timeZone: undefined/);
+});
+
+test("a late timezone response cannot overwrite a newer cached catalog", () => {
+  // The timezone request outlives its load, so it must not rewrite feeds or
+  // categories, and must be dropped once a newer load or connection supersedes it.
+  assert.match(client, /export async function saveCachedFeedCatalogTimeZone/);
+  assert.match(client, /const current = await requestResult\(store\.get\(key\)\)/);
+  assert.match(app, /const revision = \+\+catalogRevision\.current/);
+  assert.match(app, /revision !== catalogRevision\.current\) return/);
+  assert.match(app, /saveCachedFeedCatalogTimeZone\(config, timeZone\)/);
+  // A connection change invalidates any in-flight timezone write.
+  assert.match(app, /catalogRevision\.current \+= 1;\s*\n\s*if \(config\) queueMicrotask/);
+  // The timezone path must no longer rewrite the whole catalog.
+  assert.doesNotMatch(app, /setMinifluxTimeZone\(timeZone\);\s*\n\s*return saveCachedFeedCatalog</);
+});
+
+test("repeated loads keep sidebar state identity when nothing changed", () => {
+  // Identity churn here re-ran the feed-icon effect and feedMap memo on every
+  // load, which is what made a redundant sync so expensive.
+  assert.match(app, /function sameCatalogList/);
+  // Serialised comparison would churn whenever the response key order changed.
+  assert.match(app, /sameJsonValue\(current, next\)/);
+  assert.doesNotMatch(app, /JSON\.stringify\(current\)/);
+  assert.match(app, /setFeeds\(\(current\) => sameCatalogList\(current, nextFeeds\) \? current : nextFeeds\)/);
+  assert.match(
+    app,
+    /setCategories\(\(current\) => sameCatalogList\(current, nextCategories\) \? current : nextCategories\)/,
+  );
+  assert.doesNotMatch(app, /setFeeds\(feedData \?\? \[\]\)/);
+  assert.doesNotMatch(app, /setCategories\(categoryData \?\? \[\]\)/);
+});
+
+test("entry labels keep their identity when the cached labels are unchanged", () => {
+  // An unconditional setEntryLabels(new Map) invalidated mergeEntryBatch, which
+  // invalidated load, which re-fired the load effect in a loop.
+  assert.match(app, /function sameEntryLabels/);
+  assert.match(
+    app,
+    /setEntryLabels\(\(current\) => sameEntryLabels\(current, labels\) \? current : labels\)/,
+  );
+  assert.doesNotMatch(app, /setEntryLabels\(labels\);/);
 });
 
 test("on-demand content caches the same local status and starred state shown in the UI", () => {
