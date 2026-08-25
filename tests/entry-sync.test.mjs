@@ -7,6 +7,7 @@ import {
   newestChangedAt,
   normalizeArticleContent,
   normalizeArticleText,
+  sameJsonValue,
   syncIntervalElapsed,
 } from "../src/entry-sync.ts";
 
@@ -122,10 +123,51 @@ test("account, feed, and category requests are not issued on every load", () => 
   assert.doesNotMatch(app, /await loadOptionalMinifluxTimeZone\(/);
 });
 
+test("synced data comparison ignores property order but respects array order", () => {
+  // Feed objects that serialise their keys differently are still the same feed,
+  // so a reordered response must not count as a change.
+  assert.equal(
+    sameJsonValue({ id: 1, title: "A" }, { title: "A", id: 1 }),
+    true,
+  );
+  assert.equal(
+    sameJsonValue(
+      [{ id: 1, icon: { feed_id: 1, icon_id: 9 } }],
+      [{ icon: { icon_id: 9, feed_id: 1 }, id: 1 }],
+    ),
+    true,
+  );
+  // Sidebar ordering comes from the response order, so a reorder is a change.
+  assert.equal(sameJsonValue([{ id: 1 }, { id: 2 }], [{ id: 2 }, { id: 1 }]), false);
+  // Real differences are still detected.
+  assert.equal(sameJsonValue({ id: 1, title: "A" }, { id: 1, title: "B" }), false);
+  assert.equal(sameJsonValue({ id: 1 }, { id: 1, title: "A" }), false);
+  assert.equal(sameJsonValue({ id: 1, title: "A" }, { id: 1 }), false);
+  assert.equal(sameJsonValue([{ id: 1 }], [{ id: 1 }, { id: 2 }]), false);
+  // Null and primitive edges must not throw or report false equality.
+  assert.equal(sameJsonValue(null, null), true);
+  assert.equal(sameJsonValue(null, {}), false);
+  assert.equal(sameJsonValue({}, null), false);
+  assert.equal(sameJsonValue({ a: null }, { a: null }), true);
+  assert.equal(sameJsonValue({ a: null }, { a: 0 }), false);
+  assert.equal(sameJsonValue([], {}), false);
+  assert.equal(sameJsonValue(undefined, undefined), true);
+  assert.equal(sameJsonValue("a", "a"), true);
+  assert.equal(sameJsonValue(1, "1"), false);
+});
+
+test("a corrupted cached timezone is discarded instead of formatting dates", () => {
+  assert.match(client, /typeof catalog\.timeZone === "string"/);
+  assert.match(client, /timeZone: undefined/);
+});
+
 test("repeated loads keep sidebar state identity when nothing changed", () => {
   // Identity churn here re-ran the feed-icon effect and feedMap memo on every
   // load, which is what made a redundant sync so expensive.
   assert.match(app, /function sameCatalogList/);
+  // Serialised comparison would churn whenever the response key order changed.
+  assert.match(app, /sameJsonValue\(current, next\)/);
+  assert.doesNotMatch(app, /JSON\.stringify\(current\)/);
   assert.match(app, /setFeeds\(\(current\) => sameCatalogList\(current, nextFeeds\) \? current : nextFeeds\)/);
   assert.match(
     app,

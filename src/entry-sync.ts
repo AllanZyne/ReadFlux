@@ -127,6 +127,29 @@ function articleContentChanged<T extends SyncEntry>(cached: T, entry: T) {
     || normalizeArticleContent(cached.content) !== normalizeArticleContent(entry.content);
 }
 
+/**
+ * Structural comparison for decoded JSON, used to tell whether synced data
+ * actually changed. Property order is ignored so a response that serialises its
+ * keys differently still counts as unchanged; array order is significant.
+ */
+export function sameJsonValue(current: unknown, next: unknown): boolean {
+  if (current === next) return true;
+  if (current === null || next === null) return false;
+  if (typeof current !== "object" || typeof next !== "object") return false;
+  if (Array.isArray(current) || Array.isArray(next)) {
+    if (!Array.isArray(current) || !Array.isArray(next)) return false;
+    return current.length === next.length
+      && current.every((item, index) => sameJsonValue(item, next[index]));
+  }
+  const currentKeys = Object.keys(current);
+  const nextRecord = next as Record<string, unknown>;
+  if (currentKeys.length !== Object.keys(next).length) return false;
+  return currentKeys.every((key) => (
+    Object.prototype.hasOwnProperty.call(next, key)
+    && sameJsonValue((current as Record<string, unknown>)[key], nextRecord[key])
+  ));
+}
+
 export function mergeSyncedEntries<T extends SyncEntry>(
   current: T[],
   batch: T[],

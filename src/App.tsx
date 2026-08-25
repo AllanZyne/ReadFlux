@@ -14,7 +14,7 @@ import {
 } from "./article-images";
 import { articleMediaURL, isWeiboLivePhotoURL, youtubeEmbedURL } from "./article-content";
 import { runExclusive } from "./async-lock";
-import { incrementalChangedAfter, mergeSyncedEntries, newestChangedAt, syncIntervalElapsed } from "./entry-sync";
+import { incrementalChangedAfter, mergeSyncedEntries, newestChangedAt, sameJsonValue, syncIntervalElapsed } from "./entry-sync";
 import {
   entryMutationPatches,
   flushEntryMutationOutbox,
@@ -448,9 +448,7 @@ function sameEntryLabels(current: Map<number, string[]>, next: Map<number, strin
  * is unchanged stops dependent effects and memos from recomputing for nothing.
  */
 function sameCatalogList<T>(current: T[], next: T[]) {
-  if (current === next) return true;
-  if (current.length !== next.length) return false;
-  return JSON.stringify(current) === JSON.stringify(next);
+  return current === next || sameJsonValue(current, next);
 }
 
 type EventDraft = Omit<ReadingEvent, "id" | "updatedAt"> & { id?: string };

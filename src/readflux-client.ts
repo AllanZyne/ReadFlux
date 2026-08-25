@@ -458,7 +458,12 @@ export async function getCachedFeedCatalog<F, C>(
   db.close();
   if (!value || typeof value !== "object") return null;
   const catalog = value as CachedFeedCatalog<F, C>;
-  return Array.isArray(catalog.feeds) && Array.isArray(catalog.categories) ? catalog : null;
+  if (!Array.isArray(catalog.feeds) || !Array.isArray(catalog.categories)) return null;
+  // A corrupted timezone must not reach date formatting; drop it and let the
+  // caller fall back the same way it does when Miniflux omits one.
+  return typeof catalog.timeZone === "string" && catalog.timeZone
+    ? catalog
+    : { ...catalog, timeZone: undefined };
 }
 
 export async function saveCachedFeedCatalog<F, C>(
