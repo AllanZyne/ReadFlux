@@ -8,3 +8,7 @@ dist/
 .env.*
 !.env.example
 npm-debug.log*
+
+# Local tooling artifacts
+.vite-dev.log
+.playwright-mcp/

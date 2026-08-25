@@ -65,6 +65,17 @@ export type CachedFeedIcon = {
   src: string;
 };
 
+/**
+ * Sidebar metadata kept locally so a cold start can render feeds, categories,
+ * and the account timezone without waiting on Miniflux.
+ */
+export type CachedFeedCatalog<F = unknown, C = unknown> = {
+  feeds: F[];
+  categories: C[];
+  timeZone?: string;
+  savedAt: string;
+};
+
 export type ReadingEvent = {
   id: string;
   entryId: number;
@@ -145,6 +156,7 @@ const SETTINGS = "settings";
 const ENTRY_CACHE = "entry-cache";
 const ENTRY_LABELS = "entry-labels";
 const FEED_ICONS = "feed-icons";
+const FEED_CATALOG = "feed-catalog";
 const ENTRY_MUTATIONS = "entry-mutations";
 const REMOTE_EVENTS = "remote-reading-events";
 const RANKING_EXPOSURES = "ranking-exposures";
@@ -436,6 +448,31 @@ export async function putCachedFeedIcons(config: ConnectionConfig, icons: Cached
   db.close();
 }
 
+export async function getCachedFeedCatalog<F, C>(
+  config: ConnectionConfig,
+): Promise<CachedFeedCatalog<F, C> | null> {
+  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
+  const value = await requestResult(
+    db.transaction(SETTINGS).objectStore(SETTINGS).get(`${FEED_CATALOG}:${scope}`),
+  );
+  db.close();
+  if (!value || typeof value !== "object") return null;
+  const catalog = value as CachedFeedCatalog<F, C>;
+  return Array.isArray(catalog.feeds) && Array.isArray(catalog.categories) ? catalog : null;
+}
+
+export async function saveCachedFeedCatalog<F, C>(
+  config: ConnectionConfig,
+  catalog: Omit<CachedFeedCatalog<F, C>, "savedAt">,
+) {
+  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
+  const transaction = db.transaction(SETTINGS, "readwrite");
+  const record: CachedFeedCatalog<F, C> = { ...catalog, savedAt: new Date().toISOString() };
+  transaction.objectStore(SETTINGS).put(record, `${FEED_CATALOG}:${scope}`);
+  await transactionComplete(transaction);
+  db.close();
+}
+
 export async function getEntrySyncState(config: ConnectionConfig): Promise<EntrySyncState | null> {
   const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
   const value = await requestResult(
@@ -469,6 +506,7 @@ export async function resetEntrySync(config: ConnectionConfig) {
     cursorRequest.onerror = () => transaction.abort();
   }
   transaction.objectStore(SETTINGS).delete(`entry-sync-state:${scope}`);
+  transaction.objectStore(SETTINGS).delete(`${FEED_CATALOG}:${scope}`);
   await transactionComplete(transaction);
   db.close();
 }

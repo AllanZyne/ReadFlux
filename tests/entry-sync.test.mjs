@@ -88,6 +88,64 @@ test("feed icons use a connection-scoped cache keyed by Miniflux icon version", 
   assert.match(app, /putCachedFeedIcons\(config,\s*loadedIcons\)/);
 });
 
+test("sidebar metadata is cached locally and refreshed on the sync cadence", () => {
+  // The catalog reuses the existing settings store, so no schema bump is needed.
+  assert.match(client, /FEED_CATALOG\s*=\s*"feed-catalog"/);
+  assert.match(client, /export async function getCachedFeedCatalog/);
+  assert.match(client, /export async function saveCachedFeedCatalog/);
+  assert.match(client, /objectStore\(SETTINGS\)\.delete\(`\$\{FEED_CATALOG\}:\$\{scope\}`\)/);
+
+  // A cold start renders feeds, categories, and the timezone from cache.
+  assert.match(app, /getCachedFeedCatalog<Feed, Category>\(config\)/);
+  assert.match(app, /if \(cachedCatalog\) \{/);
+  assert.match(app, /if \(cachedCatalog\.timeZone\) setMinifluxTimeZone\(cachedCatalog\.timeZone\)/);
+
+  // Account, feed, and category requests only run when a sync is due, or when
+  // there is no catalog yet to render the sidebar from.
+  assert.match(app, /if \(syncMode \|\| !cachedCatalog\) \{/);
+  assert.match(app, /saveCachedFeedCatalog<Feed, Category>\(config, \{/);
+});
+
+test("account, feed, and category requests are not issued on every load", () => {
+  // Everything before the sync gate runs on every load() call, so these three
+  // requests must sit after it. Guards against reintroducing per-load fetches.
+  const loadBody = app.slice(
+    app.indexOf("const load = useCallback"),
+    app.indexOf("if (syncMode || !cachedCatalog)"),
+  );
+  assert.ok(loadBody.length > 0);
+  assert.doesNotMatch(loadBody, /"\/v1\/feeds"/);
+  assert.doesNotMatch(loadBody, /"\/v1\/categories"/);
+  assert.doesNotMatch(loadBody, /"\/v1\/me"/);
+  // The timezone request still must not block the entry sync.
+  assert.match(app, /void loadOptionalMinifluxTimeZone\(/);
+  assert.doesNotMatch(app, /await loadOptionalMinifluxTimeZone\(/);
+});
+
+test("repeated loads keep sidebar state identity when nothing changed", () => {
+  // Identity churn here re-ran the feed-icon effect and feedMap memo on every
+  // load, which is what made a redundant sync so expensive.
+  assert.match(app, /function sameCatalogList/);
+  assert.match(app, /setFeeds\(\(current\) => sameCatalogList\(current, nextFeeds\) \? current : nextFeeds\)/);
+  assert.match(
+    app,
+    /setCategories\(\(current\) => sameCatalogList\(current, nextCategories\) \? current : nextCategories\)/,
+  );
+  assert.doesNotMatch(app, /setFeeds\(feedData \?\? \[\]\)/);
+  assert.doesNotMatch(app, /setCategories\(categoryData \?\? \[\]\)/);
+});
+
+test("entry labels keep their identity when the cached labels are unchanged", () => {
+  // An unconditional setEntryLabels(new Map) invalidated mergeEntryBatch, which
+  // invalidated load, which re-fired the load effect in a loop.
+  assert.match(app, /function sameEntryLabels/);
+  assert.match(
+    app,
+    /setEntryLabels\(\(current\) => sameEntryLabels\(current, labels\) \? current : labels\)/,
+  );
+  assert.doesNotMatch(app, /setEntryLabels\(labels\);/);
+});
+
 test("on-demand content caches the same local status and starred state shown in the UI", () => {
   assert.match(app, /const merged = local[\s\S]*status:\s*local\.status,\s*starred:\s*local\.starred/);
   assert.match(app, /putCachedEntries\(config,\s*\[merged\]\)/);
