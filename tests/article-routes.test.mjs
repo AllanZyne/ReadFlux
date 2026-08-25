@@ -36,7 +36,7 @@ test("the app synchronizes article selection with browser history", () => {
   assert.match(app, /if \(mobileView === "reader"\)[\s\S]*?setMobileView\("list"\)/);
   assert.doesNotMatch(app, /choose\(routedStory, "feed"\)/);
   assert.match(app, /minifluxFetch<Entry>\(config, `\/v1\/entries\/\$\{id\}`\)/);
-  assert.match(app, /<a href=\{selected\.url\}[^>]*title=\{t\("reader\.openOriginal"\)\}/);
+  assert.match(app, /<a href=\{selected\.url\} target="_blank" rel="noopener noreferrer" title=\{t\("reader\.openOriginal"\)\}/);
   assert.match(app, /clipboard\.writeText\(selected\.url\)/);
   assert.doesNotMatch(app, /clipboard\.writeText\(articlePermalink/);
 });
