@@ -33,8 +33,9 @@ The primary product contract is:
   `Unread only`, marks the current list read, or refreshes data. Midnight score
   decay must not rebuild the captured list or its read-status snapshot.
 - `Saved` must be loaded from all paginated starred Miniflux results.
-- Category and feed selection filters the current smart feed. Selecting any
-  smart feed clears that source scope and closes the current article.
+- Category and feed selection filters the current smart feed. Switching smart
+  feeds preserves that source scope and closes the current article; selecting
+  the active smart feed again clears the source scope.
 - Day and night are the only themes.
 - Settings are an in-app dialog. Recommendation data is inspectable and raw
   events can be added, edited, or deleted.

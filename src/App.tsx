@@ -2817,7 +2817,8 @@ export default function App() {
           <div className="sidebarScroll" onKeyDown={handleSidebarKey}>
             <nav>{nav.map(([key, icon, label, count]) => {
               const resetsSource = mode === key && topic !== null;
-              return <button data-sidebar-row key={key} className={mode === key ? "active" : ""} onClick={() => switchListContext(key, null)} aria-label={resetsSource ? t("sidebar.resetSource", { title: label }) : undefined} title={resetsSource ? t("sidebar.resetSource", { title: label }) : undefined}><i className={`bi ${icon}`} aria-hidden="true" /><span>{label}</span><em>{resetsSource ? "↩" : settings.showFeedArticleCount ? count : ""}</em></button>;
+              const nextTopic = mode === key ? null : topic;
+              return <button data-sidebar-row key={key} className={mode === key ? "active" : ""} onClick={() => switchListContext(key, nextTopic)} aria-label={resetsSource ? t("sidebar.resetSource", { title: label }) : undefined} title={resetsSource ? t("sidebar.resetSource", { title: label }) : undefined}><i className={`bi ${icon}`} aria-hidden="true" /><span>{label}</span><em>{resetsSource ? "↩" : settings.showFeedArticleCount ? count : ""}</em></button>;
             })}</nav>
             <div className="sideLabel"><span>{t("sidebar.subscriptions")}</span><button type="button" onClick={() => setSubscriptionsCollapsed((current) => !current)} title={t(subscriptionsCollapsed ? "sidebar.expand" : "sidebar.collapse")} aria-label={t(subscriptionsCollapsed ? "sidebar.expand" : "sidebar.collapse")} aria-expanded={!subscriptionsCollapsed}><i className={`bi ${subscriptionsCollapsed ? "bi-chevron-right" : "bi-chevron-down"}`} aria-hidden="true" /></button></div>
             {!subscriptionsCollapsed && visibleCategorySources.map((category) => {

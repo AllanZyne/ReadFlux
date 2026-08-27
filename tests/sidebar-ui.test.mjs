@@ -188,8 +188,9 @@ test("the subscriptions heading toggles the whole persisted section", () => {
   assert.doesNotMatch(heading, />折叠<|>展开</);
 });
 
-test("scheme A resets the source scope through every smart feed", () => {
-  assert.match(app, /onClick=\{\(\) => switchListContext\(key, null\)\}/);
+test("switching smart feeds preserves the source scope while the active feed can reset it", () => {
+  assert.match(app, /const nextTopic = mode === key \? null : topic/);
+  assert.match(app, /onClick=\{\(\) => switchListContext\(key, nextTopic\)\}/);
   assert.match(app, /const resetsSource = mode === key && topic !== null/);
   assert.match(app, /resetsSource \? "↩" : settings\.showFeedArticleCount \? count : ""/);
   assert.match(app, /sidebar\.resetSource/);
