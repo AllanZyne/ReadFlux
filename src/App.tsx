@@ -2886,9 +2886,7 @@ export default function App() {
           </>}
           <div className="storyList" ref={storyListRef} onScroll={handleStoryListScroll}>
             {pendingNew > 0 && <button className="newArticlesPill" onClick={refreshList}>{t("feed.newArticles", { count: pendingNew })}</button>}
-            {loading && !entries.length ? <div className="empty"><b className="loadingMark">↻</b><h2>{t("feed.syncing")}</h2><p>{t("feed.syncingHint")}</p></div>
-              : error && !entries.length ? <div className="empty errorState"><b>!</b><h2>{t("feed.connectionFailed")}</h2><p>{t(error.key, { status: error.status })}</p><button onClick={() => void load()}>{t("feed.reconnect")}</button></div>
-              : visible.length ? <>{renderedStories.map((story) => {
+            {visible.length ? <>{renderedStories.map((story) => {
                 const updated = story.status === "read" && (entryLabels.get(story.id)?.includes("updated") ?? false);
                 const statusKey = story.starred
                   ? "feed.saved"
@@ -2912,8 +2910,13 @@ export default function App() {
                   <span className="sr-only">{t(statusKey)}</span>
                 </div>
               </article>;
-              })}{renderedStories.length < visible.length && <button className="storyListMore" type="button" onClick={revealMoreStories}>{t("feed.showMore", { count: Math.min(STORY_RENDER_BATCH_SIZE, visible.length - renderedStories.length) })}</button>}</> : <div className="empty"><b>✓</b><h2>{t("feed.empty")}</h2><p>{t("feed.emptyHint")}</p></div>}
+              })}{renderedStories.length < visible.length && <button className="storyListMore" type="button" onClick={revealMoreStories}>{t("feed.showMore", { count: Math.min(STORY_RENDER_BATCH_SIZE, visible.length - renderedStories.length) })}</button>}</> : null}
           </div>
+          {!visible.length && (loading && !entries.length
+            ? <div className="empty storyListState"><b className="loadingMark">↻</b><h2>{t("feed.syncing")}</h2><p>{t("feed.syncingHint")}</p></div>
+            : error && !entries.length
+              ? <div className="empty storyListState errorState"><b>!</b><h2>{t("feed.connectionFailed")}</h2><p>{t(error.key, { status: error.status })}</p><button onClick={() => void load()}>{t("feed.reconnect")}</button></div>
+              : <div className="empty storyListState"><b>✓</b><h2>{t("feed.empty")}</h2><p>{t("feed.emptyHint")}</p></div>)}
         </section>
         <div className="resizeHandle listHandle" onPointerDown={(event) => startResize("list", event)} onDoubleClick={() => setListWidth(430)} />
 
