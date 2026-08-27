@@ -1095,7 +1095,7 @@ export default function App() {
   );
   const activeTimeZone = timeZoneSelection.timeZone;
   const [topic, setTopic] = useState<Topic>(null);
-  const [query, setQuery] = useState("");
+  const [query] = useState("");
   const [hideReadByMode, setHideReadByMode] = useState<Record<ListMode, boolean>>({
     today: false,
     all: false,
@@ -2911,7 +2911,7 @@ export default function App() {
                   <span className="sr-only">{t(statusKey)}</span>
                 </div>
               </article>;
-              })}{renderedStories.length < visible.length && <button className="storyListMore" type="button" onClick={revealMoreStories}>{t("feed.showMore", { count: Math.min(STORY_RENDER_BATCH_SIZE, visible.length - renderedStories.length) })}</button>}</> : <div className="empty"><b>✓</b><h2>{t("feed.empty")}</h2><p>{t("feed.emptyHint")}</p><button onClick={() => { setQuery(""); setHideReadByMode((current) => ({ ...current, today: false })); switchListContext("today", null); }}>{t("common.reset")}</button></div>}
+              })}{renderedStories.length < visible.length && <button className="storyListMore" type="button" onClick={revealMoreStories}>{t("feed.showMore", { count: Math.min(STORY_RENDER_BATCH_SIZE, visible.length - renderedStories.length) })}</button>}</> : <div className="empty"><b>✓</b><h2>{t("feed.empty")}</h2><p>{t("feed.emptyHint")}</p></div>}
           </div>
         </section>
         <div className="resizeHandle listHandle" onPointerDown={(event) => startResize("list", event)} onDoubleClick={() => setListWidth(430)} />

@@ -215,8 +215,8 @@ kbd{padding:2px 6px;border:1px solid #33423e;border-radius:4px;background:#1a252
 .shell[data-theme="night"] .sidebar nav button.active{background:#315da8;color:#fff;box-shadow:none}
 .shell[data-theme="day"] .story.starred .storyStatus>i{background:#eab308}
 .shell[data-theme="night"] .story.starred .storyStatus>i{background:#facc15}
-.shell[data-theme="day"] .readerEmpty h2{color:#26364b}
-.shell[data-theme="day"] .readerEmpty p{color:#64748a}
+.shell[data-theme="day"] .empty h2{color:#26364b}
+.shell[data-theme="day"] .empty p{color:#64748a}
 .sidebar nav button.active>i,.sidebar nav button.active em,.groupHead.selected em,.sourceRow.selected em{
   color:inherit;
 }
