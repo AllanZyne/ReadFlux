@@ -285,13 +285,13 @@ test("sidebar icons use optical sizing for Today", () => {
   assert.match(styles, /\.sidebar nav button>i\.bi-brightness-high-fill\s*\{[^}]*font-size:17px;/);
 });
 
-test("the empty-state reset button uses a light surface in the day theme", () => {
-  assert.match(
-    styles,
-    /\.shell\[data-theme="day"\] \.empty button\s*\{[^}]*border-color:#afc1df;[^}]*background:#fff;[^}]*color:#2559c2;/,
+test("day-theme empty states share readable text colors without a reset button", () => {
+  assert.match(styles, /\.shell\[data-theme="day"\] \.empty h2\{color:#26364b\}/);
+  assert.match(styles, /\.shell\[data-theme="day"\] \.empty p\{color:#64748a\}/);
+  assert.doesNotMatch(
+    app,
+    /t\("feed\.emptyHint"\)<\/p><button/,
   );
-  assert.match(styles, /\.shell\[data-theme="day"\] \.readerEmpty h2\{color:#26364b\}/);
-  assert.match(styles, /\.shell\[data-theme="day"\] \.readerEmpty p\{color:#64748a\}/);
 });
 
 test("long category titles are truncated within their row", () => {
