@@ -294,6 +294,16 @@ test("day-theme empty states share readable text colors without a reset button",
   );
 });
 
+test("article-list states fill the whole panel and center their content", () => {
+  assert.match(styles, /\.feed\{[^}]*position:relative;/);
+  assert.match(styles, /\.storyListState\{[^}]*position:absolute;[^}]*inset:0;[^}]*min-height:0;[^}]*pointer-events:none/);
+  assert.match(styles, /\.storyListState button\{pointer-events:auto\}/);
+  assert.match(app, /className="storyList" ref=\{storyListRef\} onScroll=\{handleStoryListScroll\}/);
+  assert.match(app, /className="empty storyListState"/);
+  assert.match(app, /className="empty storyListState errorState"/);
+  assert.equal(app.match(/className="empty storyListState/g)?.length, 3);
+});
+
 test("long category titles are truncated within their row", () => {
   assert.match(
     styles,
