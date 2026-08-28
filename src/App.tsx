@@ -388,11 +388,14 @@ const StoryRow = memo(function StoryRow({
         : "feed.read";
   return <article
     data-entry-id={story.id}
+    role="button"
     tabIndex={0}
     className={`story ${selected ? "selected" : ""} ${story.status === "read" ? "read" : ""} ${updated ? "updated" : ""} ${story.starred ? "starred" : ""}`}
     onClick={() => onChoose(story)}
     onKeyDown={(event) => {
-      if (event.key === "Enter") onChoose(story);
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      onChoose(story);
     }}
   >
     <div className="storyMain">
