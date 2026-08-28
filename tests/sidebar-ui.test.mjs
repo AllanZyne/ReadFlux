@@ -47,7 +47,7 @@ test("article list actions live in the title bar as NetNewsWire-style icons", ()
 
 test("article rows align full-width titles with right-aligned time and status markers", () => {
   assert.match(app, /data-entry-id=\{story\.id\}[\s\S]*?role="button"[\s\S]*?tabIndex=\{0\}/);
-  assert.match(app, /event\.key !== "Enter" && event\.key !== " "[\s\S]*?event\.preventDefault\(\);[\s\S]*?onChoose\(story\)/);
+  assert.match(app, /event\.key !== "Enter" && event\.key !== " "[\s\S]*?event\.preventDefault\(\);[\s\S]*?event\.stopPropagation\(\);[\s\S]*?onChoose\(story\)/);
   assert.match(app, /className="storyMain"[\s\S]*?className="storySource"[\s\S]*?<h2>\{story\.title\}<\/h2>[\s\S]*?<footer>\{t\("feed\.minutes"/);
   assert.match(app, /className="storyStatus"[\s\S]*?<time[\s\S]*?dateTime=\{story\.published_at\}[\s\S]*?formatStoryListDate\(story\.published_at, todayClock, timeZone, locale\)[\s\S]*?<\/time>[\s\S]*?<i aria-hidden="true" \/>/);
   assert.doesNotMatch(app, /<h2>\{story\.title\}<\/h2><p>\{story\.summary\}<\/p>/);

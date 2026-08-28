@@ -395,6 +395,7 @@ const StoryRow = memo(function StoryRow({
     onKeyDown={(event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
+      event.stopPropagation();
       onChoose(story);
     }}
   >
