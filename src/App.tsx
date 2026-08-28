@@ -1,4 +1,4 @@
-import { CSSProperties, FormEvent, memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CSSProperties, FormEvent, memo, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import {
@@ -357,6 +357,59 @@ const SourceIcon = ({ children, src }: { children: React.ReactNode; src?: string
     {src ? <img src={src} alt="" /> : children}
   </span>
 );
+
+const StoryRow = memo(function StoryRow({
+  story,
+  selected,
+  updated,
+  feedIcon,
+  todayClock,
+  timeZone,
+  locale,
+  onChoose,
+  t,
+}: {
+  story: Story;
+  selected: boolean;
+  updated: boolean;
+  feedIcon?: string;
+  todayClock: number;
+  timeZone: string;
+  locale: string;
+  onChoose: (story: Story) => void;
+  t: TFunction;
+}) {
+  const statusKey = story.starred
+    ? "feed.saved"
+    : story.status === "unread"
+      ? "feed.unread"
+      : updated
+        ? "feed.updated"
+        : "feed.read";
+  return <article
+    data-entry-id={story.id}
+    tabIndex={0}
+    className={`story ${selected ? "selected" : ""} ${story.status === "read" ? "read" : ""} ${updated ? "updated" : ""} ${story.starred ? "starred" : ""}`}
+    onClick={() => onChoose(story)}
+    onKeyDown={(event) => {
+      if (event.key === "Enter") onChoose(story);
+    }}
+  >
+    <div className="storyMain">
+      <div className="storySource"><SourceIcon src={feedIcon}>{story.mark}</SourceIcon><span>{story.source}</span></div>
+      <h2>{story.title}</h2>
+      <footer>{t("feed.minutes", { count: story.reading_time || 1 })}</footer>
+    </div>
+    <div className="storyStatus">
+      <time
+        dateTime={story.published_at}
+        title={formatZonedDateTime(story.published_at, timeZone)}
+      >{formatStoryListDate(story.published_at, todayClock, timeZone, locale)}</time>
+      <i aria-hidden="true" />
+      <span className="sr-only">{t(statusKey)}</span>
+    </div>
+  </article>;
+});
 
 function captureTextSelection(root: HTMLElement, onTextSelection: (text: string, rect: DOMRect) => void) {
   window.setTimeout(() => {
@@ -2162,29 +2215,33 @@ export default function App() {
   useEffect(() => { visibleEmptyRef.current = !visible.length; }, [visible]);
 
   const selected = stories.find((story) => story.id === selectedId) ?? null;
-  const selectedReadingEvent = selected
-    ? events.reduce<ReadingEvent | undefined>((latest, event) => event.entryId === selected.id
+  const deferredSelectedId = useDeferredValue(selectedId);
+  const readerSelected = deferredSelectedId === selectedId ? selected : null;
+  const selectedReadingEvent = readerSelected
+    ? events.reduce<ReadingEvent | undefined>((latest, event) => event.entryId === readerSelected.id
       && (!latest || event.openedAt > latest.openedAt) ? event : latest, undefined)
     : undefined;
   const selectedTopicTerms = useMemo(
-    () => selectedId !== null ? selectedTopicTermsForEntry(recommendationEvents, selectedId) : new Set<string>(),
-    [recommendationEvents, selectedId],
+    () => deferredSelectedId !== null
+      ? selectedTopicTermsForEntry(recommendationEvents, deferredSelectedId)
+      : new Set<string>(),
+    [recommendationEvents, deferredSelectedId],
   );
-  const extractedCandidateTerms = selected && activeCandidates?.entryId === selected.id
+  const extractedCandidateTerms = readerSelected && activeCandidates?.entryId === readerSelected.id
     ? activeCandidates.terms
     : selectedReadingEvent?.termExtractionVersion ? selectedReadingEvent.terms : [];
   const selectedCandidateTerms = [
     ...selectedTopicTerms,
     ...extractedCandidateTerms.filter((term) => !selectedTopicTerms.has(term)),
   ].slice(0, Math.max(5, selectedTopicTerms.size));
-  const selectedReadingSeconds = selected
-    ? recommendationEvents.reduce((sum, event) => event.entryId === selected.id ? sum + event.activeSeconds : sum, 0)
+  const selectedReadingSeconds = readerSelected
+    ? recommendationEvents.reduce((sum, event) => event.entryId === readerSelected.id ? sum + event.activeSeconds : sum, 0)
     : 0;
-  const selectedImageMode = selected
+  const selectedImageMode = readerSelected
     ? resolveImageLoadingMode(
         settings.imageLoadingPreferences,
         referrerScope,
-        selected.feed_id,
+        readerSelected.feed_id,
         imageProxyAvailable,
       )
     : "direct-no-referrer";
@@ -2368,16 +2425,20 @@ export default function App() {
     });
     if (config && entryLabels.get(story.id)?.includes("updated")) {
       void removeEntryLabel(config, story.id, "updated");
-      setEntryLabels((current) => {
-        const next = new Map(current);
-        const labels = (next.get(story.id) ?? []).filter((l) => l !== "updated");
-        if (labels.length) next.set(story.id, labels);
-        else next.delete(story.id);
-        return next;
+      startTransition(() => {
+        setEntryLabels((current) => {
+          const next = new Map(current);
+          const labels = (next.get(story.id) ?? []).filter((l) => l !== "updated");
+          if (labels.length) next.set(story.id, labels);
+          else next.delete(story.id);
+          return next;
+        });
       });
     }
     if (story.status === "unread" && config) {
-      void updateEntry(story.id, { status: "read" }, t("reader.markedRead"));
+      startTransition(() => {
+        void updateEntry(story.id, { status: "read" }, t("reader.markedRead"));
+      });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config, mode, query, visible, persistActive, commitActiveEvent, loadEntryContent, entryLabels, interest, navigateToArticle, t]);
@@ -2416,6 +2477,10 @@ export default function App() {
     }
     choose(visible[nextIndex]);
   }, [visible, selectedId, choose, renderedStoryCount]);
+  const openStory = useCallback((story: Story) => {
+    choose(story);
+    setMobileView("reader");
+  }, [choose]);
 
   const toggleRead = useCallback((story: Story) => {
     if (!config) return;
@@ -2886,31 +2951,18 @@ export default function App() {
           </>}
           <div className="storyList" ref={storyListRef} onScroll={handleStoryListScroll}>
             {pendingNew > 0 && <button className="newArticlesPill" onClick={refreshList}>{t("feed.newArticles", { count: pendingNew })}</button>}
-            {visible.length ? <>{renderedStories.map((story) => {
-                const updated = story.status === "read" && (entryLabels.get(story.id)?.includes("updated") ?? false);
-                const statusKey = story.starred
-                  ? "feed.saved"
-                  : story.status === "unread"
-                    ? "feed.unread"
-                    : updated
-                      ? "feed.updated"
-                      : "feed.read";
-                return <article key={story.id} data-entry-id={story.id} tabIndex={0} className={`story ${selected?.id === story.id ? "selected" : ""} ${story.status === "read" ? "read" : ""} ${updated ? "updated" : ""} ${story.starred ? "starred" : ""}`} onClick={() => { choose(story); setMobileView("reader"); }} onKeyDown={(event) => { if (event.key === "Enter") { choose(story); setMobileView("reader"); } }}>
-                <div className="storyMain">
-                  <div className="storySource"><SourceIcon src={feedIcons.get(story.feed_id)}>{story.mark}</SourceIcon><span>{story.source}</span></div>
-                  <h2>{story.title}</h2>
-                  <footer>{t("feed.minutes", { count: story.reading_time || 1 })}</footer>
-                </div>
-                <div className="storyStatus">
-                  <time
-                    dateTime={story.published_at}
-                    title={formatZonedDateTime(story.published_at, activeTimeZone)}
-                  >{formatStoryListDate(story.published_at, todayClock, activeTimeZone, i18n.resolvedLanguage ?? "en")}</time>
-                  <i aria-hidden="true" />
-                  <span className="sr-only">{t(statusKey)}</span>
-                </div>
-              </article>;
-              })}{renderedStories.length < visible.length && <button className="storyListMore" type="button" onClick={revealMoreStories}>{t("feed.showMore", { count: Math.min(STORY_RENDER_BATCH_SIZE, visible.length - renderedStories.length) })}</button>}</> : null}
+            {visible.length ? <>{renderedStories.map((story) => <StoryRow
+              key={story.id}
+              story={story}
+              selected={selected?.id === story.id}
+              updated={story.status === "read" && (entryLabels.get(story.id)?.includes("updated") ?? false)}
+              feedIcon={feedIcons.get(story.feed_id)}
+              todayClock={todayClock}
+              timeZone={activeTimeZone}
+              locale={i18n.resolvedLanguage ?? "en"}
+              onChoose={openStory}
+              t={t}
+            />)}{renderedStories.length < visible.length && <button className="storyListMore" type="button" onClick={revealMoreStories}>{t("feed.showMore", { count: Math.min(STORY_RENDER_BATCH_SIZE, visible.length - renderedStories.length) })}</button>}</> : null}
           </div>
           {!visible.length && (loading && !entries.length
             ? <div className="empty storyListState"><b className="loadingMark">↻</b><h2>{t("feed.syncing")}</h2><p>{t("feed.syncingHint")}</p></div>
@@ -2940,7 +2992,7 @@ export default function App() {
                 onTextSelection={requestTopicSelection}
                 t={t}
               />
-              {activeCandidates?.entryId === selected.id && activeCandidates.loading ? <section className="topicPicker topicPickerLoading" aria-live="polite">
+              {readerSelected && (activeCandidates?.entryId === selected.id && activeCandidates.loading ? <section className="topicPicker topicPickerLoading" aria-live="polite">
                 <div><strong>{t("recommendation.candidateTopics")}</strong><small>{t("recommendation.extractingTopics")}</small></div>
               </section> : selectedCandidateTerms.length > 0 && <section className="topicPicker" aria-labelledby="topic-picker-title">
                 <div><strong id="topic-picker-title">{t("recommendation.candidateTopics")}</strong><small>{t("recommendation.candidateTopicsHint")}</small></div>
@@ -2948,17 +3000,19 @@ export default function App() {
                   const selectedTopic = selectedTopicTerms.has(term);
                   return <button key={term} className={selectedTopic ? "selected" : ""} aria-pressed={selectedTopic} onClick={() => void toggleTopicInterest(term)}>{selectedTopic ? "✓ " : "+ "}{term}</button>;
                 })}</div>
-              </section>}
+              </section>)}
               <section className="reason">
                 <button className="reasonHead" onClick={() => setReasonOpen(!reasonOpen)}><span>{t("recommendation.reason")}</span><small>{reasonOpen ? t("recommendation.collapse") : t("recommendation.view")}</small></button>
                 {reasonOpen && <><p>{selected.reason}</p><div className="tags">{[selected.category, selected.source, ...(selected.tags ?? [])].slice(0, 4).map((tag) => <span key={tag}>{tag}</span>)}</div></>}
               </section>
-              {contentLoadingId === selected.id
+              {readerSelected?.id !== selected.id
+                ? <div className="articleLoading" role="status"><b className="loadingMark">↻</b><p>{t("reader.loadingContent")}</p></div>
+                : contentLoadingId === selected.id
                 ? <div className="articleLoading" role="status"><b className="loadingMark">↻</b><p>{t("reader.loadingContent")}</p></div>
                 : contentError?.id === selected.id
                   ? <div className="articleLoading errorState"><b>!</b><p>{t(contentError.error.key, { status: contentError.error.status })}</p><button onClick={() => void loadEntryContent(selected.id)}>{t("common.retry")}</button></div>
                   : <ArticleBody
-                      content={selected.content}
+                      content={readerSelected.content}
                       minifluxURL={config.url}
                       imageMode={selectedImageMode}
                       onTextSelection={requestTopicSelection}

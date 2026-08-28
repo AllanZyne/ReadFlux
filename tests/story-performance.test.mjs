@@ -21,6 +21,8 @@ test("large article lists render in bounded progressive batches", () => {
   assert.match(app, /ref=\{storyListRef\}/);
   assert.match(app, /resetRenderedStories[\s\S]*?previousStoryListScrollTop\.current = 0;[\s\S]*?storyListRef\.current\.scrollTop = 0/);
   assert.match(app, /renderedStories\.map\(\(story\)/);
+  assert.match(app, /const StoryRow = memo\(function StoryRow/);
+  assert.match(app, /selected=\{selected\?\.id === story\.id\}/);
   assert.match(app, /count: Math\.min\(STORY_RENDER_BATCH_SIZE, visible\.length - renderedStories\.length\)/);
   assert.doesNotMatch(app, /visible\.map\(\(story\) => <article/);
 });
@@ -57,6 +59,14 @@ test("story metadata and recommendation scoring have separate memoized stages", 
   assert.match(app, /const baseStories = useMemo<BaseStory\[\]>/);
   assert.match(app, /const stories = useMemo<Story\[\]>/);
   assert.match(app, /text: story\.recommendationText/);
+});
+
+test("article selection paints before deferred reader work and list mutations", () => {
+  assert.match(app, /const deferredSelectedId = useDeferredValue\(selectedId\)/);
+  assert.match(app, /const readerSelected = deferredSelectedId === selectedId \? selected : null/);
+  assert.match(app, /readerSelected\?\.id !== selected\.id[\s\S]*?reader\.loadingContent/);
+  assert.match(app, /startTransition\(\(\) => \{\s*setEntryLabels/);
+  assert.match(app, /startTransition\(\(\) => \{\s*void updateEntry\(story\.id, \{ status: "read" \}/);
 });
 
 test("frozen list order does not require an effect-driven second render", () => {
