@@ -34,9 +34,10 @@ The complete synced history remains available in **All**.
 
 ReadFlux has no application server:
 
-- The Miniflux URL and API key are stored only in the current browser's
-  `localStorage` or `sessionStorage`.
-- Reading events and recommendation settings are stored in IndexedDB.
+- The Miniflux URL, API key, timezone, and preferences are stored only in
+  this browser's `localStorage`.
+- Article content, article state, feed metadata, sync state, reading events,
+  ranking exposures, and pending Miniflux writes are stored in IndexedDB.
 - The browser sends requests directly to your Miniflux server.
 - The repository and build output contain no credentials.
 

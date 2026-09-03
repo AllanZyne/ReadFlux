@@ -64,14 +64,14 @@ async function sendMutationGroup(config: ConnectionConfig, mutations: StoredEntr
 }
 
 async function flushClaimedMutations(config: ConnectionConfig) {
-  const claimed = await claimEntryMutations(config);
+  const claimed = await claimEntryMutations();
   let firstError: unknown;
   for (const group of groupEntryMutations(claimed)) {
     try {
       await sendMutationGroup(config, group);
-      await completeEntryMutations(config, group);
+      await completeEntryMutations(group);
     } catch (cause) {
-      await retryEntryMutations(config, group);
+      await retryEntryMutations(group);
       firstError ??= cause;
     }
   }
@@ -95,6 +95,6 @@ export function flushEntryMutationOutbox(config: ConnectionConfig) {
   });
 }
 
-export async function loadEntryMutationPatches(config: ConnectionConfig) {
-  return entryMutationPatches(await getEntryMutations(config));
+export async function loadEntryMutationPatches() {
+  return entryMutationPatches(await getEntryMutations());
 }

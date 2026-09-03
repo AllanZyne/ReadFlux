@@ -8,7 +8,7 @@ import { isSupportedLanguage, type SupportedLanguage } from "./languages.ts";
 export type ConnectionConfig = {
   url: string;
   apiKey: string;
-  remember: boolean;
+  timeZone?: string;
 };
 
 export type ThemeName = "day" | "night";
@@ -53,7 +53,6 @@ export type EntryMutation =
 
 export type StoredEntryMutation = EntryMutation & {
   key: string;
-  scope: string;
   revision: string;
   state: "pending" | "sending";
   updatedAt: string;
@@ -66,13 +65,12 @@ export type CachedFeedIcon = {
 };
 
 /**
- * Sidebar metadata kept locally so a cold start can render feeds, categories,
- * and the account timezone without waiting on Miniflux.
+ * Sidebar metadata kept locally so a cold start can render feeds and
+ * categories without waiting on Miniflux.
  */
 export type CachedFeedCatalog<F = unknown, C = unknown> = {
   feeds: F[];
   categories: C[];
-  timeZone?: string;
   savedAt: string;
 };
 
@@ -148,16 +146,20 @@ export type WebDavConfig = {
 };
 
 const LOCAL_CONFIG = "readflux.miniflux.local";
-const SESSION_CONFIG = "readflux.miniflux.session";
+const PREFERENCES = "readflux.preferences";
 const DB_NAME = "readflux-profile";
-const DB_VERSION = 8;
+const DB_VERSION = 9;
 const EVENTS = "reading-events";
 const SETTINGS = "settings";
-const ENTRY_CACHE = "entry-cache";
-const ENTRY_LABELS = "entry-labels";
+const ARTICLES = "articles";
+const ARTICLE_STATE = "article-state";
 const FEED_ICONS = "feed-icons";
 const FEED_CATALOG = "feed-catalog";
-const ENTRY_MUTATIONS = "entry-mutations";
+const SYNC_STATE = "sync-state";
+const OUTBOX = "outbox";
+const LEGACY_ENTRY_CACHE = "entry-cache";
+const LEGACY_ENTRY_LABELS = "entry-labels";
+const LEGACY_ENTRY_MUTATIONS = "entry-mutations";
 const REMOTE_EVENTS = "remote-reading-events";
 const RANKING_EXPOSURES = "ranking-exposures";
 const REMOTE_RANKING_EXPOSURES = "remote-ranking-exposures";
@@ -169,24 +171,25 @@ const WEBDAV_DIRTY_EXPOSURE_MONTHS = "webdav-dirty-exposure-months";
 
 type CacheableEntry = {
   id: number;
+  status: "read" | "unread" | "removed";
+  starred: boolean;
+  updated?: boolean;
 };
 
-type EntryCacheRecord<T extends CacheableEntry = CacheableEntry> = {
-  key: string;
-  scope: string;
-  entry: T;
+type ArticleRecord<T extends CacheableEntry = CacheableEntry> = {
+  id: number;
+  article: Omit<T, "id" | "status" | "starred" | "updated">;
 };
 
-type EntryLabelRecord = {
-  key: string;
-  scope: string;
+type ArticleStateRecord = {
   entryId: number;
-  labels: string[];
+  status: CacheableEntry["status"];
+  starred: boolean;
+  updated: boolean;
 };
 
-type FeedIconRecord = CachedFeedIcon & {
-  key: string;
-  scope: string;
+type FeedCatalogRecord<F = unknown, C = unknown> = CachedFeedCatalog<F, C> & {
+  id: "catalog";
 };
 
 type RemoteEventRecord = {
@@ -207,28 +210,28 @@ type RemoteExposureRecord = {
 
 export function getConnection(): ConnectionConfig | null {
   if (typeof window === "undefined") return null;
-  for (const storage of [sessionStorage, localStorage]) {
-    const value = storage.getItem(storage === sessionStorage ? SESSION_CONFIG : LOCAL_CONFIG);
-    if (!value) continue;
-    try {
-      return JSON.parse(value) as ConnectionConfig;
-    } catch {
-      storage.removeItem(storage === sessionStorage ? SESSION_CONFIG : LOCAL_CONFIG);
-    }
+  const value = localStorage.getItem(LOCAL_CONFIG);
+  if (!value) return null;
+  try {
+    const config = JSON.parse(value) as Partial<ConnectionConfig>;
+    if (!config.url || !config.apiKey) throw new Error("Invalid connection");
+    return {
+      url: config.url,
+      apiKey: config.apiKey,
+      ...(typeof config.timeZone === "string" && config.timeZone ? { timeZone: config.timeZone } : {}),
+    };
+  } catch {
+    localStorage.removeItem(LOCAL_CONFIG);
+    return null;
   }
-  return null;
 }
 
 export function saveConnection(config: ConnectionConfig) {
-  const target = config.remember ? localStorage : sessionStorage;
-  const other = config.remember ? sessionStorage : localStorage;
-  target.setItem(config.remember ? LOCAL_CONFIG : SESSION_CONFIG, JSON.stringify(config));
-  other.removeItem(config.remember ? SESSION_CONFIG : LOCAL_CONFIG);
+  localStorage.setItem(LOCAL_CONFIG, JSON.stringify(config));
 }
 
 export function clearConnection() {
   localStorage.removeItem(LOCAL_CONFIG);
-  sessionStorage.removeItem(SESSION_CONFIG);
 }
 
 export class MinifluxRequestError extends Error {
@@ -273,21 +276,34 @@ function openDb(): Promise<IDBDatabase> {
         store.createIndex("openedAt", "openedAt");
       }
       if (!db.objectStoreNames.contains(SETTINGS)) db.createObjectStore(SETTINGS);
-      if (!db.objectStoreNames.contains(ENTRY_CACHE)) {
-        const store = db.createObjectStore(ENTRY_CACHE, { keyPath: "key" });
-        store.createIndex("scope", "scope");
-      }
-      if (!db.objectStoreNames.contains(ENTRY_LABELS)) {
-        const store = db.createObjectStore(ENTRY_LABELS, { keyPath: "key" });
-        store.createIndex("scope", "scope");
-      }
-      if (!db.objectStoreNames.contains(FEED_ICONS)) {
-        const store = db.createObjectStore(FEED_ICONS, { keyPath: "key" });
-        store.createIndex("scope", "scope");
-      }
-      if (!db.objectStoreNames.contains(ENTRY_MUTATIONS)) {
-        const store = db.createObjectStore(ENTRY_MUTATIONS, { keyPath: "key" });
-        store.createIndex("scope", "scope");
+      if (db.objectStoreNames.contains(LEGACY_ENTRY_CACHE)) db.deleteObjectStore(LEGACY_ENTRY_CACHE);
+      if (db.objectStoreNames.contains(LEGACY_ENTRY_LABELS)) db.deleteObjectStore(LEGACY_ENTRY_LABELS);
+      if (db.objectStoreNames.contains(FEED_ICONS)) db.deleteObjectStore(FEED_ICONS);
+      if (!db.objectStoreNames.contains(ARTICLES)) db.createObjectStore(ARTICLES, { keyPath: "id" });
+      if (!db.objectStoreNames.contains(ARTICLE_STATE)) db.createObjectStore(ARTICLE_STATE, { keyPath: "entryId" });
+      if (!db.objectStoreNames.contains(FEED_ICONS)) db.createObjectStore(FEED_ICONS, { keyPath: "feedId" });
+      if (!db.objectStoreNames.contains(FEED_CATALOG)) db.createObjectStore(FEED_CATALOG, { keyPath: "id" });
+      if (!db.objectStoreNames.contains(SYNC_STATE)) db.createObjectStore(SYNC_STATE, { keyPath: "id" });
+      if (db.objectStoreNames.contains(LEGACY_ENTRY_MUTATIONS)) {
+        const legacyStore = request.transaction!.objectStore(LEGACY_ENTRY_MUTATIONS);
+        const outbox = db.createObjectStore(OUTBOX, { keyPath: "key" });
+        const legacyMutations = legacyStore.getAll();
+        legacyMutations.onsuccess = () => {
+          (legacyMutations.result as StoredEntryMutation[]).forEach((mutation) => {
+            outbox.put({
+              key: `${mutation.entryId}:${mutation.field}`,
+              entryId: mutation.entryId,
+              field: mutation.field,
+              value: mutation.value,
+              revision: mutation.revision,
+              state: mutation.state,
+              updatedAt: mutation.updatedAt,
+            });
+          });
+          db.deleteObjectStore(LEGACY_ENTRY_MUTATIONS);
+        };
+      } else if (!db.objectStoreNames.contains(OUTBOX)) {
+        db.createObjectStore(OUTBOX, { keyPath: "key" });
       }
       if (!db.objectStoreNames.contains(REMOTE_EVENTS)) {
         const store = db.createObjectStore(REMOTE_EVENTS, { keyPath: "key" });
@@ -309,12 +325,6 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
-async function entryCacheScope(config: ConnectionConfig) {
-  const value = new TextEncoder().encode(`${config.url.replace(/\/+$/, "")}\n${config.apiKey}`);
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", value));
-  return bytesToBase64(digest);
-}
-
 function transactionComplete(transaction: IDBTransaction) {
   return new Promise<void>((resolve, reject) => {
     transaction.oncomplete = () => resolve();
@@ -323,71 +333,98 @@ function transactionComplete(transaction: IDBTransaction) {
   });
 }
 
-export async function getCachedEntries<T extends CacheableEntry>(config: ConnectionConfig): Promise<T[]> {
-  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
-  const records = await requestResult(
-    db.transaction(ENTRY_CACHE).objectStore(ENTRY_CACHE).index("scope").getAll(scope),
-  ) as EntryCacheRecord<T>[];
+export async function getCachedEntries<T extends CacheableEntry>(): Promise<T[]> {
+  const db = await openDb();
+  const transaction = db.transaction([ARTICLES, ARTICLE_STATE]);
+  const [articles, states] = await Promise.all([
+    requestResult(transaction.objectStore(ARTICLES).getAll()) as Promise<ArticleRecord<T>[]>,
+    requestResult(transaction.objectStore(ARTICLE_STATE).getAll()) as Promise<ArticleStateRecord[]>,
+  ]);
   db.close();
-  return records.map((record) => record.entry);
+  const stateById = new Map(states.map((state) => [state.entryId, state]));
+  return articles.map(({ id, article }) => {
+    const state = stateById.get(id);
+    return {
+      ...article,
+      id,
+      status: state?.status ?? "unread",
+      starred: state?.starred ?? false,
+      ...(state?.updated ? { updated: true } : {}),
+    } as T;
+  });
 }
 
-export async function putCachedEntries<T extends CacheableEntry>(config: ConnectionConfig, entries: T[]) {
+export async function putCachedEntries<T extends CacheableEntry>(entries: T[]) {
   if (!entries.length) return;
-  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
-  const transaction = db.transaction(ENTRY_CACHE, "readwrite");
-  const store = transaction.objectStore(ENTRY_CACHE);
+  const db = await openDb();
+  const transaction = db.transaction([ARTICLES, ARTICLE_STATE], "readwrite");
+  const articleStore = transaction.objectStore(ARTICLES);
+  const stateStore = transaction.objectStore(ARTICLE_STATE);
   entries.forEach((entry) => {
-    const record: EntryCacheRecord<T> = { key: `${scope}:${entry.id}`, scope, entry };
-    store.put(record);
+    const { id, status, starred, updated, ...article } = entry;
+    articleStore.put({ id, article });
+    stateStore.put({ entryId: id, status, starred, updated: updated === true } satisfies ArticleStateRecord);
   });
   await transactionComplete(transaction);
   db.close();
 }
 
-export async function getEntryMutations(config: ConnectionConfig): Promise<StoredEntryMutation[]> {
-  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
-  const mutations = await requestResult(
-    db.transaction(ENTRY_MUTATIONS).objectStore(ENTRY_MUTATIONS).index("scope").getAll(scope),
-  ) as StoredEntryMutation[];
+export async function setArticleUpdated(entryIds: number[], updated: boolean) {
+  if (!entryIds.length) return;
+  const db = await openDb();
+  const transaction = db.transaction(ARTICLE_STATE, "readwrite");
+  const store = transaction.objectStore(ARTICLE_STATE);
+  await Promise.all(entryIds.map(async (entryId) => {
+    const current = await requestResult(store.get(entryId)) as ArticleStateRecord | undefined;
+    if (current) store.put({ ...current, updated });
+  }));
+  await transactionComplete(transaction);
+  db.close();
+}
+
+export async function getEntryMutations(): Promise<StoredEntryMutation[]> {
+  const db = await openDb();
+  const mutations = await requestResult(db.transaction(OUTBOX).objectStore(OUTBOX).getAll()) as StoredEntryMutation[];
   db.close();
   return mutations;
 }
 
 export async function queueEntryMutations<T extends CacheableEntry>(
-  config: ConnectionConfig,
   entries: T[],
   mutations: EntryMutation[],
 ) {
   if (!mutations.length) return [];
-  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
-  const transaction = db.transaction([ENTRY_CACHE, ENTRY_MUTATIONS], "readwrite");
-  const entryStore = transaction.objectStore(ENTRY_CACHE);
+  const db = await openDb();
+  const transaction = db.transaction([ARTICLE_STATE, OUTBOX], "readwrite");
+  const stateStore = transaction.objectStore(ARTICLE_STATE);
   entries.forEach((entry) => {
-    const record: EntryCacheRecord<T> = { key: `${scope}:${entry.id}`, scope, entry };
-    entryStore.put(record);
+    stateStore.put({
+      entryId: entry.id,
+      status: entry.status,
+      starred: entry.starred,
+      updated: entry.updated === true,
+    } satisfies ArticleStateRecord);
   });
   const now = new Date().toISOString();
   const records = mutations.map((mutation): StoredEntryMutation => ({
     ...mutation,
-    key: `${scope}:${mutation.entryId}:${mutation.field}`,
-    scope,
+    key: `${mutation.entryId}:${mutation.field}`,
     revision: crypto.randomUUID(),
     state: "pending",
     updatedAt: now,
   }));
-  const mutationStore = transaction.objectStore(ENTRY_MUTATIONS);
+  const mutationStore = transaction.objectStore(OUTBOX);
   records.forEach((record) => mutationStore.put(record));
   await transactionComplete(transaction);
   db.close();
   return records;
 }
 
-export async function claimEntryMutations(config: ConnectionConfig): Promise<StoredEntryMutation[]> {
-  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
-  const transaction = db.transaction(ENTRY_MUTATIONS, "readwrite");
-  const store = transaction.objectStore(ENTRY_MUTATIONS);
-  const records = await requestResult(store.index("scope").getAll(scope)) as StoredEntryMutation[];
+export async function claimEntryMutations(): Promise<StoredEntryMutation[]> {
+  const db = await openDb();
+  const transaction = db.transaction(OUTBOX, "readwrite");
+  const store = transaction.objectStore(OUTBOX);
+  const records = await requestResult(store.getAll()) as StoredEntryMutation[];
   const claimed = records.map((record) => ({ ...record, state: "sending" as const }));
   claimed.forEach((record) => store.put(record));
   await transactionComplete(transaction);
@@ -396,14 +433,13 @@ export async function claimEntryMutations(config: ConnectionConfig): Promise<Sto
 }
 
 async function updateClaimedEntryMutations(
-  config: ConnectionConfig,
   claimed: StoredEntryMutation[],
   action: "complete" | "retry",
 ) {
   if (!claimed.length) return;
   const db = await openDb();
-  const transaction = db.transaction(ENTRY_MUTATIONS, "readwrite");
-  const store = transaction.objectStore(ENTRY_MUTATIONS);
+  const transaction = db.transaction(OUTBOX, "readwrite");
+  const store = transaction.objectStore(OUTBOX);
   await Promise.all(claimed.map(async (mutation) => {
     const current = await requestResult(store.get(mutation.key)) as StoredEntryMutation | undefined;
     if (current?.revision !== mutation.revision) return;
@@ -414,122 +450,73 @@ async function updateClaimedEntryMutations(
   db.close();
 }
 
-export async function completeEntryMutations(config: ConnectionConfig, claimed: StoredEntryMutation[]) {
-  await updateClaimedEntryMutations(config, claimed, "complete");
+export async function completeEntryMutations(claimed: StoredEntryMutation[]) {
+  await updateClaimedEntryMutations(claimed, "complete");
 }
 
-export async function retryEntryMutations(config: ConnectionConfig, claimed: StoredEntryMutation[]) {
-  await updateClaimedEntryMutations(config, claimed, "retry");
+export async function retryEntryMutations(claimed: StoredEntryMutation[]) {
+  await updateClaimedEntryMutations(claimed, "retry");
 }
 
-export async function getCachedFeedIcons(config: ConnectionConfig): Promise<CachedFeedIcon[]> {
-  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
-  const records = await requestResult(
-    db.transaction(FEED_ICONS).objectStore(FEED_ICONS).index("scope").getAll(scope),
-  ) as FeedIconRecord[];
+export async function getCachedFeedIcons(): Promise<CachedFeedIcon[]> {
+  const db = await openDb();
+  const records = await requestResult(db.transaction(FEED_ICONS).objectStore(FEED_ICONS).getAll()) as CachedFeedIcon[];
   db.close();
-  return records.map(({ feedId, iconId, src }) => ({ feedId, iconId, src }));
+  return records;
 }
 
-export async function putCachedFeedIcons(config: ConnectionConfig, icons: CachedFeedIcon[]) {
+export async function putCachedFeedIcons(icons: CachedFeedIcon[]) {
   if (!icons.length) return;
-  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
+  const db = await openDb();
   const transaction = db.transaction(FEED_ICONS, "readwrite");
   const store = transaction.objectStore(FEED_ICONS);
-  icons.forEach((icon) => {
-    const record: FeedIconRecord = {
-      key: `${scope}:${icon.feedId}`,
-      scope,
-      ...icon,
-    };
-    store.put(record);
-  });
+  icons.forEach((icon) => store.put(icon));
   await transactionComplete(transaction);
   db.close();
 }
 
-export async function getCachedFeedCatalog<F, C>(
-  config: ConnectionConfig,
-): Promise<CachedFeedCatalog<F, C> | null> {
-  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
-  const value = await requestResult(
-    db.transaction(SETTINGS).objectStore(SETTINGS).get(`${FEED_CATALOG}:${scope}`),
-  );
+export async function getCachedFeedCatalog<F, C>(): Promise<CachedFeedCatalog<F, C> | null> {
+  const db = await openDb();
+  const value = await requestResult(db.transaction(FEED_CATALOG).objectStore(FEED_CATALOG).get("catalog"));
   db.close();
   if (!value || typeof value !== "object") return null;
-  const catalog = value as CachedFeedCatalog<F, C>;
+  const catalog = value as FeedCatalogRecord<F, C>;
   if (!Array.isArray(catalog.feeds) || !Array.isArray(catalog.categories)) return null;
-  // A corrupted timezone must not reach date formatting; drop it and let the
-  // caller fall back the same way it does when Miniflux omits one.
-  return typeof catalog.timeZone === "string" && catalog.timeZone
-    ? catalog
-    : { ...catalog, timeZone: undefined };
+  return { feeds: catalog.feeds, categories: catalog.categories, savedAt: catalog.savedAt };
 }
 
 export async function saveCachedFeedCatalog<F, C>(
-  config: ConnectionConfig,
   catalog: Omit<CachedFeedCatalog<F, C>, "savedAt">,
 ) {
-  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
-  const transaction = db.transaction(SETTINGS, "readwrite");
-  const record: CachedFeedCatalog<F, C> = { ...catalog, savedAt: new Date().toISOString() };
-  transaction.objectStore(SETTINGS).put(record, `${FEED_CATALOG}:${scope}`);
+  const db = await openDb();
+  const transaction = db.transaction(FEED_CATALOG, "readwrite");
+  const record: FeedCatalogRecord<F, C> = { id: "catalog", ...catalog, savedAt: new Date().toISOString() };
+  transaction.objectStore(FEED_CATALOG).put(record);
   await transactionComplete(transaction);
   db.close();
 }
 
-/**
- * Updates only the cached timezone, in one transaction, so a late-resolving
- * timezone request can never overwrite feeds or categories that a newer sync
- * has already stored. Does nothing when no catalog has been cached yet.
- */
-export async function saveCachedFeedCatalogTimeZone(config: ConnectionConfig, timeZone: string) {
-  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
-  const key = `${FEED_CATALOG}:${scope}`;
-  const transaction = db.transaction(SETTINGS, "readwrite");
-  const store = transaction.objectStore(SETTINGS);
-  const current = await requestResult(store.get(key));
-  if (current && typeof current === "object") {
-    store.put({ ...(current as CachedFeedCatalog), timeZone }, key);
-  }
-  await transactionComplete(transaction);
-  db.close();
-}
-
-export async function getEntrySyncState(config: ConnectionConfig): Promise<EntrySyncState | null> {
-  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
-  const value = await requestResult(
-    db.transaction(SETTINGS).objectStore(SETTINGS).get(`entry-sync-state:${scope}`),
-  );
+export async function getEntrySyncState(): Promise<EntrySyncState | null> {
+  const db = await openDb();
+  const value = await requestResult(db.transaction(SYNC_STATE).objectStore(SYNC_STATE).get("sync"));
   db.close();
   return value && typeof value === "object" ? value as EntrySyncState : null;
 }
 
-export async function saveEntrySyncState(config: ConnectionConfig, state: EntrySyncState) {
-  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
-  const transaction = db.transaction(SETTINGS, "readwrite");
-  transaction.objectStore(SETTINGS).put(state, `entry-sync-state:${scope}`);
+export async function saveEntrySyncState(state: EntrySyncState) {
+  const db = await openDb();
+  const transaction = db.transaction(SYNC_STATE, "readwrite");
+  transaction.objectStore(SYNC_STATE).put({ id: "sync", ...state });
   await transactionComplete(transaction);
   db.close();
 }
 
-export async function resetEntrySync(config: ConnectionConfig) {
-  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
-  const transaction = db.transaction([ENTRY_CACHE, ENTRY_LABELS, FEED_ICONS, SETTINGS], "readwrite");
-  for (const storeName of [ENTRY_CACHE, ENTRY_LABELS, FEED_ICONS]) {
-    const cursorRequest = transaction.objectStore(storeName)
-      .index("scope")
-      .openCursor(IDBKeyRange.only(scope));
-    cursorRequest.onsuccess = () => {
-      const cursor = cursorRequest.result;
-      if (!cursor) return;
-      cursor.delete();
-      cursor.continue();
-    };
-    cursorRequest.onerror = () => transaction.abort();
-  }
-  transaction.objectStore(SETTINGS).delete(`entry-sync-state:${scope}`);
-  transaction.objectStore(SETTINGS).delete(`${FEED_CATALOG}:${scope}`);
+export async function resetEntrySync() {
+  const db = await openDb();
+  const transaction = db.transaction([ARTICLES, ARTICLE_STATE, FEED_ICONS, FEED_CATALOG, SYNC_STATE], "readwrite");
+  [ARTICLES, ARTICLE_STATE, FEED_ICONS, FEED_CATALOG, SYNC_STATE].forEach((storeName) => {
+    transaction.objectStore(storeName).clear();
+  });
   await transactionComplete(transaction);
   db.close();
 }
@@ -846,11 +833,19 @@ export async function clearRemoteRankingExposures() {
 }
 
 export async function getProfileSettings(): Promise<ProfileSettings> {
+  if (typeof window !== "undefined") {
+    try {
+      const value = localStorage.getItem(PREFERENCES);
+      if (value) return normalizeProfileSettings(JSON.parse(value));
+    } catch {
+      localStorage.removeItem(PREFERENCES);
+    }
+  }
   const db = await openDb();
   const value = await requestResult(db.transaction(SETTINGS).objectStore(SETTINGS).get("profile"));
   db.close();
   const settings = normalizeProfileSettings(value);
-  if (hasLegacyWebDavSettings(value) || hasLegacyImageSettings(value)) await saveProfileSettings(settings);
+  await saveProfileSettings(settings);
   return settings;
 }
 
@@ -861,11 +856,6 @@ function storedProfileSettings(value: unknown): StoredProfileSettings | undefine
 export function hasLegacyWebDavSettings(value: unknown) {
   const stored = storedProfileSettings(value);
   return stored !== undefined && "webdav" in stored;
-}
-
-function hasLegacyImageSettings(value: unknown) {
-  const stored = storedProfileSettings(value);
-  return stored !== undefined && "originReferrerFeeds" in stored;
 }
 
 function normalizeImageLoadingPreferences(value: unknown): ImageLoadingPreferences {
@@ -931,14 +921,7 @@ export function normalizeProfileSettings(value?: unknown): ProfileSettings {
 }
 
 export async function saveProfileSettings(settings: ProfileSettings) {
-  const db = await openDb();
-  const tx = db.transaction(SETTINGS, "readwrite");
-  tx.objectStore(SETTINGS).put(settings, "profile");
-  await new Promise<void>((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-  db.close();
+  localStorage.setItem(PREFERENCES, JSON.stringify(settings));
 }
 
 export function newReadingEvent(input: Omit<ReadingEvent, "id" | "openedAt" | "updatedAt" | "activeSeconds" | "scrollDepth" | "readingTime" | "listPosition"> & { readingTime?: number; listPosition?: number }): ReadingEvent {
@@ -951,48 +934,4 @@ export function newReadingEvent(input: Omit<ReadingEvent, "id" | "openedAt" | "u
     activeSeconds: 0,
     scrollDepth: 0,
   };
-}
-
-export async function getEntryLabels(config: ConnectionConfig): Promise<Map<number, string[]>> {
-  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
-  const records = await requestResult(
-    db.transaction(ENTRY_LABELS).objectStore(ENTRY_LABELS).index("scope").getAll(scope),
-  ) as EntryLabelRecord[];
-  db.close();
-  return new Map(records.filter((r) => r.labels.length).map((r) => [r.entryId, r.labels]));
-}
-
-export async function addEntryLabel(config: ConnectionConfig, entryId: number, label: string) {
-  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
-  const key = `${scope}:${entryId}`;
-  const transaction = db.transaction(ENTRY_LABELS, "readwrite");
-  const store = transaction.objectStore(ENTRY_LABELS);
-  const existing = await requestResult(store.get(key)) as EntryLabelRecord | undefined;
-  const labels = existing?.labels ?? [];
-  if (!labels.includes(label)) {
-    store.put({ key, scope, entryId, labels: [...labels, label] });
-  }
-  await transactionComplete(transaction);
-  db.close();
-}
-
-export async function removeEntryLabel(config: ConnectionConfig, entryId: number, label: string) {
-  const [db, scope] = await Promise.all([openDb(), entryCacheScope(config)]);
-  const key = `${scope}:${entryId}`;
-  const transaction = db.transaction(ENTRY_LABELS, "readwrite");
-  const store = transaction.objectStore(ENTRY_LABELS);
-  const existing = await requestResult(store.get(key)) as EntryLabelRecord | undefined;
-  if (existing) {
-    const labels = existing.labels.filter((l) => l !== label);
-    if (labels.length) store.put({ key, scope, entryId, labels });
-    else store.delete(key);
-  }
-  await transactionComplete(transaction);
-  db.close();
-}
-
-function bytesToBase64(bytes: Uint8Array) {
-  let binary = "";
-  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
-  return btoa(binary);
 }
