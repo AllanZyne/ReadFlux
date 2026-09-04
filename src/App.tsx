@@ -29,7 +29,6 @@ import { compareSmartFeedEntries, countSmartFeedEntries, formatStoryListDate, fo
 import { nextStoryRenderCount, STORY_RENDER_BATCH_SIZE, storyIdsPassedByScroll } from "./story-list";
 import { storyTextForEntry } from "./story-text";
 import {
-  addEntryLabel,
   CachedFeedIcon,
   clearConnection,
   clearRemoteRankingExposures,
@@ -47,7 +46,6 @@ import {
   getCachedFeedCatalog,
   getCachedFeedIcons,
   getConnection,
-  getEntryLabels,
   getEntrySyncState,
   getProfileSettings,
   getRankingExposures,
@@ -71,14 +69,13 @@ import {
   putReadingEvent,
   RankingExposure,
   ReadingEvent,
-  removeEntryLabel,
   resetEntrySync,
   saveCachedFeedCatalog,
-  saveCachedFeedCatalogTimeZone,
   saveConnection,
   saveEntrySyncState,
   saveProfileSettings,
   saveWebDavConfig,
+  setArticleUpdated,
   ThemeName,
   WebDavConfig,
   WebDavSyncInterval,
@@ -113,6 +110,7 @@ type Entry = {
   published_at: string;
   changed_at?: string;
   starred: boolean;
+  updated?: boolean;
   reading_time?: number;
   tags?: string[];
   feed?: Feed;
@@ -500,6 +498,10 @@ function sameEntryLabels(current: Map<number, string[]>, next: Map<number, strin
     if (!labels.every((label) => other.includes(label))) return false;
   }
   return true;
+}
+
+function updatedEntryLabels(entries: Entry[]) {
+  return new Map(entries.filter((entry) => entry.updated).map((entry) => [entry.id, ["updated"]]));
 }
 
 /**
@@ -1071,13 +1073,12 @@ function ConnectScreen({ onConnected }: { onConnected: (config: ConnectionConfig
   const { t } = useTranslation();
   const [url, setUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
-  const [remember, setRemember] = useState(true);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState<LocalizedError | null>(null);
 
   const connect = async (event: FormEvent) => {
     event.preventDefault();
-    const config = { url: url.trim().replace(/\/+$/, ""), apiKey: apiKey.trim(), remember };
+    const config = { url: url.trim().replace(/\/+$/, ""), apiKey: apiKey.trim() };
     setTesting(true);
     setError(null);
     try {
@@ -1105,7 +1106,6 @@ function ConnectScreen({ onConnected }: { onConnected: (config: ConnectionConfig
         <form onSubmit={connect}>
           <label><span>{t("connect.url")}</span><input type="url" required value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://rss.example.com" autoComplete="url" /></label>
           <label><span>{t("connect.apiKey")}</span><input type="password" required value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={t("connect.apiKeyPlaceholder")} autoComplete="off" /></label>
-          <label className="remember"><input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /><span>{t("connect.remember")}</span><small>{remember ? t("connect.storedBrowser") : t("connect.clearedTab")}</small></label>
           {error && <p className="formError">{t(error.key, { status: error.status })}</p>}
           <button className="connectButton" disabled={testing}>{testing ? t("connect.testing") : t("connect.submit")}</button>
         </form>
@@ -1161,13 +1161,7 @@ export default function App() {
     saved: false,
   });
   const hideRead = mode !== "updated" && hideReadByMode[mode];
-  const [listReadSnapshot, setListReadSnapshot] = useState<Map<number, Entry["status"]>>(() => {
-    try {
-      const stored = localStorage.getItem("readflux.listSnapshot");
-      if (stored) return new Map(JSON.parse(stored) as [number, Entry["status"]][]);
-    } catch { /* ignore */ }
-    return new Map();
-  });
+  const [listReadSnapshot, setListReadSnapshot] = useState<Map<number, Entry["status"]>>(new Map());
   const [sourceSnapshot, setSourceSnapshot] = useState<{
     statuses: Map<number, Entry["status"]>;
     labels: Map<number, string[]>;
@@ -1253,7 +1247,7 @@ export default function App() {
     window.setTimeout(() => setToast(""), 2200);
   }, []);
 
-  const rememberQueuedEntryMutations = useCallback((mutations: StoredEntryMutation[]) => {
+  const trackQueuedEntryMutations = useCallback((mutations: StoredEntryMutation[]) => {
     const queuedPatches = entryMutationPatches(mutations);
     const next = new Map(pendingEntryMutationsRef.current);
     queuedPatches.forEach((patch, entryId) => {
@@ -1270,7 +1264,7 @@ export default function App() {
     } finally {
       try {
         const generation = pendingEntryMutationGeneration.current;
-        const persistedPatches = await loadEntryMutationPatches(config);
+        const persistedPatches = await loadEntryMutationPatches();
         if (syncInFlight.current || pendingEntryMutationGeneration.current !== generation) {
           const protectedPatches = new Map(pendingEntryMutationsRef.current);
           persistedPatches.forEach((patch, entryId) => {
@@ -1478,14 +1472,6 @@ export default function App() {
   }, [collapsedCategories]);
 
   useEffect(() => {
-    if (listReadSnapshot.size) {
-      localStorage.setItem("readflux.listSnapshot", JSON.stringify([...listReadSnapshot]));
-    } else {
-      localStorage.removeItem("readflux.listSnapshot");
-    }
-  }, [listReadSnapshot]);
-
-  useEffect(() => {
     const refreshSettings = () => { void getProfileSettings().then((profile) => {
       setSettings(profile);
       if (profile.language) void i18n.changeLanguage(profile.language);
@@ -1509,8 +1495,8 @@ export default function App() {
     replaceEntries(mergedEntries);
     if (updatedIds.size) {
       try {
-        await Promise.all([...updatedIds].map((id) => addEntryLabel(config, id, "updated")));
-      } catch { /* label persistence is best-effort */ }
+        await setArticleUpdated([...updatedIds], true);
+      } catch { /* update-state persistence is best-effort */ }
       setEntryLabels((current) => {
         const next = new Map(current);
         updatedIds.forEach((id) => {
@@ -1563,7 +1549,7 @@ export default function App() {
         }
       }
     }
-    await putCachedEntries(config, mergedBatch);
+    await putCachedEntries(mergedBatch);
   }, [config, entryLabels, replaceEntries]);
 
   const load = useCallback(async (options?: EntrySyncOptions) => {
@@ -1581,12 +1567,12 @@ export default function App() {
       try {
         await flushPendingEntryMutations();
       } catch { /* pending local state remains protected while article refresh continues */ }
-      const [cached, storedState, labels, cachedCatalog] = await Promise.all([
-        getCachedEntries<Entry>(config),
-        getEntrySyncState(config),
-        getEntryLabels(config),
-        getCachedFeedCatalog<Feed, Category>(config).catch(() => null),
+      const [cached, storedState, cachedCatalog] = await Promise.all([
+        getCachedEntries<Entry>(),
+        getEntrySyncState(),
+        getCachedFeedCatalog<Feed, Category>().catch(() => null),
       ]);
+      const labels = updatedEntryLabels(cached);
       setEntryLabels((current) => sameEntryLabels(current, labels) ? current : labels);
       replaceEntries(cached);
       syncStateRef.current = storedState;
@@ -1610,8 +1596,8 @@ export default function App() {
         setCategories((current) => (
           sameCatalogList(current, cachedCatalog.categories) ? current : cachedCatalog.categories
         ));
-        if (cachedCatalog.timeZone) setMinifluxTimeZone(cachedCatalog.timeZone);
       }
+      if (config.timeZone) setMinifluxTimeZone(config.timeZone);
       setSelectedId((current) => current && cached.some((entry) => entry.id === current) ? current : null);
 
       const requestedMode = options?.mode ?? "auto";
@@ -1646,21 +1632,18 @@ export default function App() {
         setCategories((current) => sameCatalogList(current, nextCategories) ? current : nextCategories);
         // Persist before continuing so a following load reads the catalog
         // instead of racing this write and refetching the same metadata.
-        await saveCachedFeedCatalog<Feed, Category>(config, {
+        await saveCachedFeedCatalog<Feed, Category>({
           feeds: nextFeeds,
           categories: nextCategories,
-          timeZone: cachedCatalog?.timeZone,
         }).catch(() => undefined);
-        // The timezone request never blocks the sync; it upgrades the stored
-        // catalog once it settles. The revision guard drops the result when a
-        // newer load or a connection change has superseded this one, and the
-        // write touches only the timezone so it cannot clobber newer feeds.
+        // The timezone request never blocks the sync. The revision guard drops
+        // stale responses before they update the connection record.
         const revision = ++catalogRevision.current;
         void loadOptionalMinifluxTimeZone(() => minifluxFetch<MinifluxUser>(config, "/v1/me"))
           .then((timeZone) => {
             if (!timeZone || revision !== catalogRevision.current) return;
             setMinifluxTimeZone(timeZone);
-            return saveCachedFeedCatalogTimeZone(config, timeZone);
+            saveConnection({ ...config, timeZone });
           })
           .catch(() => undefined);
       }
@@ -1697,7 +1680,7 @@ export default function App() {
               phase: phase.id,
               offset: nextOffset,
             };
-            await saveEntrySyncState(config, nextState);
+            await saveEntrySyncState(nextState);
             syncStateRef.current = nextState;
           }, startOffset);
           const nextPhase = phases[index + 1]?.id;
@@ -1708,7 +1691,7 @@ export default function App() {
               phase: nextPhase,
               offset: 0,
             };
-            await saveEntrySyncState(config, nextState);
+            await saveEntrySyncState(nextState);
             syncStateRef.current = nextState;
           }
         }
@@ -1721,7 +1704,7 @@ export default function App() {
           lastFullSyncAt: completedAt,
           updatedAt: completedAt,
         };
-        await saveEntrySyncState(config, completedState);
+        await saveEntrySyncState(completedState);
         syncStateRef.current = completedState;
       } else {
         let incrementalCursor = storedState?.incrementalCursor ?? newestChangedAt(cached);
@@ -1744,7 +1727,7 @@ export default function App() {
           phase: undefined,
           offset: undefined,
         };
-        await saveEntrySyncState(config, completedState);
+        await saveEntrySyncState(completedState);
         syncStateRef.current = completedState;
       }
       setSyncedAt(new Date());
@@ -1763,7 +1746,7 @@ export default function App() {
       setSyncProgress(null);
       syncInFlight.current = false;
       const mutationGeneration = pendingEntryMutationGeneration.current;
-      void loadEntryMutationPatches(config).then((patches) => {
+      void loadEntryMutationPatches().then((patches) => {
         if (pendingEntryMutationGeneration.current === mutationGeneration) {
           pendingEntryMutationsRef.current = patches;
           return;
@@ -1867,7 +1850,7 @@ export default function App() {
     void (async () => {
       let cachedIcons: CachedFeedIcon[] = [];
       try {
-        cachedIcons = await getCachedFeedIcons(config);
+        cachedIcons = await getCachedFeedIcons();
       } catch { /* icon cache is best-effort */ }
       if (cancelled) return;
 
@@ -1890,7 +1873,7 @@ export default function App() {
       }))).filter((icon): icon is CachedFeedIcon => icon !== null);
 
       try {
-        await putCachedFeedIcons(config, loadedIcons);
+        await putCachedFeedIcons(loadedIcons);
       } catch { /* icon cache is best-effort */ }
       if (!cancelled && loadedIcons.length) {
         setFeedIcons(new Map([
@@ -2118,8 +2101,8 @@ export default function App() {
     const idSet = new Set(unreadIds);
     const after = replaceEntries((current) => current.map((entry) => (
       idSet.has(entry.id) && entry.status === "unread"
-        ? { ...entry, status: "read" as const }
-        : entry
+        ? { ...entry, status: "read" as const, ...(updatedIds.includes(entry.id) ? { updated: false } : {}) }
+        : updatedIds.includes(entry.id) ? { ...entry, updated: false } : entry
     )));
     if (updatedIds.length) {
       setEntryLabels((current) => {
@@ -2133,22 +2116,21 @@ export default function App() {
       });
     }
     try {
-      await Promise.all(updatedIds.map((id) => removeEntryLabel(config, id, "updated")));
+      await setArticleUpdated(updatedIds, false);
       if (unreadIds.length) {
         const queued = await queueEntryMutations(
-          config,
           after.filter((entry) => idSet.has(entry.id)),
           unreadIds.map((entryId) => ({ entryId, field: "status", value: "read" })),
         );
-        rememberQueuedEntryMutations(queued);
+        trackQueuedEntryMutations(queued);
         void flushPendingEntryMutations().catch(() => undefined);
       }
     } catch (cause) {
-      await Promise.all(updatedIds.map((id) => addEntryLabel(config, id, "updated"))).catch(() => undefined);
+      await setArticleUpdated(updatedIds, true).catch(() => undefined);
       replaceEntries((current) => current.map((entry) => (
         idSet.has(entry.id) && entry.status === "read"
-          ? { ...entry, status: "unread" as const }
-          : entry
+          ? { ...entry, status: "unread" as const, ...(updatedIds.includes(entry.id) ? { updated: true } : {}) }
+          : updatedIds.includes(entry.id) ? { ...entry, updated: true } : entry
       )));
       if (updatedIds.length) {
         setEntryLabels((current) => {
@@ -2164,7 +2146,7 @@ export default function App() {
     } finally {
       affectedIds.forEach((id) => autoReadPendingIds.current.delete(id));
     }
-  }, [config, entryLabels, flushPendingEntryMutations, notify, rememberQueuedEntryMutations, replaceEntries, t]);
+  }, [config, entryLabels, flushPendingEntryMutations, notify, trackQueuedEntryMutations, replaceEntries, t]);
 
   const handleStoryListScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
     const list = event.currentTarget;
@@ -2276,8 +2258,8 @@ export default function App() {
     const updated = { ...before, ...patch };
     replaceEntries((all) => all.map((entry) => entry.id === id ? { ...entry, ...patch } : entry));
     try {
-      const queued = await queueEntryMutations(config, [updated], [mutation]);
-      rememberQueuedEntryMutations(queued);
+      const queued = await queueEntryMutations([updated], [mutation]);
+      trackQueuedEntryMutations(queued);
       void flushPendingEntryMutations().catch(() => undefined);
       notify(success);
       return true;
@@ -2321,12 +2303,12 @@ export default function App() {
       const remote = await minifluxFetch<Entry>(config, `/v1/entries/${id}`);
       const local = entries.find((entry) => entry.id === id);
       const merged = local
-        ? { ...local, ...remote, status: local.status, starred: local.starred }
+        ? { ...local, ...remote, status: local.status, starred: local.starred, updated: local.updated }
         : remote;
       replaceEntries((all) => all.some((entry) => entry.id === id)
         ? all.map((entry) => entry.id === id ? merged : entry)
         : [...all, merged]);
-      await putCachedEntries(config, [merged]);
+      await putCachedEntries([merged]);
     } catch (cause) {
       setContentError({
         id,
@@ -2429,8 +2411,11 @@ export default function App() {
       }
     });
     if (config && entryLabels.get(story.id)?.includes("updated")) {
-      void removeEntryLabel(config, story.id, "updated");
+      void setArticleUpdated([story.id], false);
       startTransition(() => {
+        replaceEntries((current) => current.map((entry) => (
+          entry.id === story.id ? { ...entry, updated: false } : entry
+        )));
         setEntryLabels((current) => {
           const next = new Map(current);
           const labels = (next.get(story.id) ?? []).filter((l) => l !== "updated");
@@ -2505,7 +2490,10 @@ export default function App() {
     const idSet = new Set(ids);
     const before = entries;
     const labelsBefore = entryLabels;
-    const after = entries.map((entry) => idSet.has(entry.id) ? { ...entry, status: "read" as const } : entry);
+    const updatedIdSet = new Set(updatedIds);
+    const after = entries.map((entry) => idSet.has(entry.id)
+      ? { ...entry, status: "read" as const, ...(updatedIdSet.has(entry.id) ? { updated: false } : {}) }
+      : updatedIdSet.has(entry.id) ? { ...entry, updated: false } : entry);
     const labelsAfter = new Map(entryLabels);
     updatedIds.forEach((id) => {
       const labels = (labelsAfter.get(id) ?? []).filter((label) => label !== "updated");
@@ -2516,14 +2504,13 @@ export default function App() {
     setEntryLabels(labelsAfter);
     setListReadSnapshot(new Map(after.map((entry) => [entry.id, entry.status])));
     try {
-      await Promise.all(updatedIds.map((id) => removeEntryLabel(config, id, "updated")));
+      await setArticleUpdated(updatedIds, false);
       if (ids.length) {
         const queued = await queueEntryMutations(
-          config,
           after.filter((entry) => idSet.has(entry.id)),
           ids.map((entryId) => ({ entryId, field: "status", value: "read" })),
         );
-        rememberQueuedEntryMutations(queued);
+        trackQueuedEntryMutations(queued);
         void flushPendingEntryMutations().catch(() => undefined);
       }
       const currentExposure = latestExposure.current;
@@ -2539,13 +2526,13 @@ export default function App() {
       }
       notify(t("feed.markedRead", { count: affectedIds.size }));
     } catch (cause) {
-      await Promise.all(updatedIds.map((id) => addEntryLabel(config, id, "updated"))).catch(() => undefined);
+      await setArticleUpdated(updatedIds, true).catch(() => undefined);
       replaceEntries(before);
       setEntryLabels(labelsBefore);
       setListReadSnapshot(new Map(before.map((entry) => [entry.id, entry.status])));
       notify(errorMessage(cause, t, "errors.sync"));
     }
-  }, [config, entries, entryLabels, flushPendingEntryMutations, notify, rememberQueuedEntryMutations, replaceEntries, scheduleWebDavUpload, t, visible]);
+  }, [config, entries, entryLabels, flushPendingEntryMutations, notify, trackQueuedEntryMutations, replaceEntries, scheduleWebDavUpload, t, visible]);
 
   const positionMarkAllRead = useCallback(() => {
     const trigger = markAllReadButtonRef.current;
@@ -3102,7 +3089,7 @@ export default function App() {
             while (syncInFlight.current) {
               await new Promise((resolve) => window.setTimeout(resolve, 50));
             }
-            await resetEntrySync(config);
+            await resetEntrySync();
             syncStateRef.current = null;
             sourceSnapshotInitialized.current = false;
             setSourceSnapshot({ statuses: new Map(), labels: new Map() });

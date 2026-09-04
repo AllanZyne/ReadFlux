@@ -12,8 +12,7 @@ const client = await readFile(new URL("../src/readflux-client.ts", import.meta.u
 const sync = await readFile(new URL("../src/entry-mutation-sync.ts", import.meta.url), "utf8");
 
 const mutation = (entryId, field, value, updatedAt = "2026-08-17T00:00:00Z") => ({
-  key: `scope:${entryId}:${field}`,
-  scope: "scope",
+  key: `${entryId}:${field}`,
   revision: crypto.randomUUID(),
   state: "pending",
   updatedAt,
@@ -51,16 +50,16 @@ test("outbox uploads are grouped by field and target value in chunks of 1000", (
 });
 
 test("entry cache and outbox mutations are persisted atomically with revision-safe completion", () => {
-  assert.match(client, /db\.transaction\(\[ENTRY_CACHE,\s*ENTRY_MUTATIONS\],\s*"readwrite"\)/);
+  assert.match(client, /db\.transaction\(\[ARTICLE_STATE,\s*OUTBOX\],\s*"readwrite"\)/);
   assert.match(client, /revision:\s*crypto\.randomUUID\(\)/);
   assert.match(client, /current\?\.revision !== mutation\.revision/);
   assert.match(client, /state:\s*"pending"/);
 });
 
 test("local mutations retry without blocking article refresh", () => {
-  assert.match(sync, /claimEntryMutations\(config\)/);
-  assert.match(sync, /completeEntryMutations\(config,\s*group\)/);
-  assert.match(sync, /retryEntryMutations\(config,\s*group\)/);
+  assert.match(sync, /claimEntryMutations\(\)/);
+  assert.match(sync, /completeEntryMutations\(group\)/);
+  assert.match(sync, /retryEntryMutations\(group\)/);
   assert.match(app, /await flushPendingEntryMutations\(\);\s*\} catch \{ \/\* pending local state remains protected/);
   assert.match(app, /2 \* 60_000/);
   assert.doesNotMatch(app, /\/bookmark/);
@@ -68,7 +67,7 @@ test("local mutations retry without blocking article refresh", () => {
 });
 
 test("read, starred, and bulk-read actions enter the durable outbox", () => {
-  assert.match(app, /queueEntryMutations\(config,\s*\[updated\],\s*\[mutation\]\)/);
+  assert.match(app, /queueEntryMutations\(\[updated\],\s*\[mutation\]\)/);
   assert.match(app, /ids\.map\(\(entryId\) => \(\{ entryId, field: "status", value: "read" \}\)\)/);
   assert.match(sync, /\[mutation\.field\]:\s*mutation\.value/);
   assert.match(app, /else if \(patch\.starred !== undefined\)[\s\S]*?else return false;/);

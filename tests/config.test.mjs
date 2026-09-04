@@ -32,7 +32,7 @@ test("failed Miniflux requests expose a localizable status error", async () => {
   globalThis.fetch = async () => new Response(null, { status: 503 });
   try {
     await assert.rejects(
-      client.minifluxFetch({ url: "https://rss.example", apiKey: "test", remember: false }, "/v1/me"),
+      client.minifluxFetch({ url: "https://rss.example", apiKey: "test" }, "/v1/me"),
       (error) => error instanceof client.MinifluxRequestError && error.status === 503,
     );
   } finally {

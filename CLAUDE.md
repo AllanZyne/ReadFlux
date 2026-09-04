@@ -60,9 +60,9 @@ build variable unless the user explicitly changes the architecture.
 
 ## Browser data
 
-- Miniflux connection: localStorage or sessionStorage.
-- Local reading events, read-only remote event mirrors, settings, cached
-  entries, and sync progress: IndexedDB.
+- Miniflux connection and preferences: localStorage.
+- Local reading events, read-only remote event mirrors, article content and
+  state, feed metadata, sync progress, and the Miniflux outbox: IndexedDB.
 - Optional WebDAV connection and stable client identity: localStorage.
 - Category and subscriptions-section collapse state: localStorage.
 

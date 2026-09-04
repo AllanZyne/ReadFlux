@@ -65,7 +65,8 @@ test("article selection paints before deferred reader work and list mutations", 
   assert.match(app, /const deferredSelectedId = useDeferredValue\(selectedId\)/);
   assert.match(app, /const readerSelected = deferredSelectedId === selectedId \? selected : null/);
   assert.match(app, /readerSelected\?\.id !== selected\.id[\s\S]*?reader\.loadingContent/);
-  assert.match(app, /startTransition\(\(\) => \{\s*setEntryLabels/);
+  assert.match(app, /startTransition\(\(\) => \{\s*replaceEntries\(\(current\)/);
+  assert.match(app, /replaceEntries\(\(current\)[\s\S]*?setEntryLabels/);
   assert.match(app, /startTransition\(\(\) => \{\s*void updateEntry\(story\.id, \{ status: "read" \}/);
 });
 

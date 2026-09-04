@@ -22,10 +22,13 @@ test("full entry sync loads the complete Miniflux history in resumable phases", 
   assert.match(app, /const canResume = storedState\?\.initialSyncComplete === false/);
 });
 
-test("entry cache is connection-scoped and records resumable sync state", () => {
-  assert.match(client, /DB_VERSION\s*=\s*8/);
-  assert.match(client, /createIndex\("scope",\s*"scope"\)/);
-  assert.match(client, /ENTRY_LABELS\s*=\s*"entry-labels"/);
+test("entry content and mutable state use separate single-user stores", () => {
+  assert.match(client, /DB_VERSION\s*=\s*9/);
+  assert.match(client, /ARTICLES\s*=\s*"articles"/);
+  assert.match(client, /ARTICLE_STATE\s*=\s*"article-state"/);
+  assert.match(client, /SYNC_STATE\s*=\s*"sync-state"/);
+  assert.match(client, /OUTBOX\s*=\s*"outbox"/);
+  assert.doesNotMatch(client, /entryCacheScope/);
   assert.match(client, /initialSyncComplete:\s*boolean/);
   assert.match(client, /phase\?:\s*EntrySyncPhase/);
   assert.match(client, /offset\?:\s*number/);
@@ -70,41 +73,38 @@ test("manual intervals never become due", () => {
 
 test("sync data can be reset without deleting profile data or credentials", () => {
   assert.match(client, /export async function resetEntrySync/);
-  assert.match(client, /db\.transaction\(\[ENTRY_CACHE,\s*ENTRY_LABELS,\s*FEED_ICONS,\s*SETTINGS\],\s*"readwrite"\)/);
-  assert.match(client, /\.openCursor\(IDBKeyRange\.only\(scope\)\)/);
-  assert.doesNotMatch(client, /getAllKeys\(scope\)/);
-  assert.match(client, /delete\(`entry-sync-state:\$\{scope\}`\)/);
+  assert.match(client, /db\.transaction\(\[ARTICLES,\s*ARTICLE_STATE,\s*FEED_ICONS,\s*FEED_CATALOG,\s*SYNC_STATE\],\s*"readwrite"\)/);
+  assert.match(client, /\[ARTICLES,\s*ARTICLE_STATE,\s*FEED_ICONS,\s*FEED_CATALOG,\s*SYNC_STATE\]\.forEach/);
   assert.match(app, /t\("sync\.resetData"\)/);
   assert.match(app, /syncResetInProgress\.current\s*=\s*true/);
   assert.match(app, /while\s*\(syncInFlight\.current\)/);
-  assert.match(app, /await resetEntrySync\(config\)/);
+  assert.match(app, /await resetEntrySync\(\)/);
 });
 
-test("feed icons use a connection-scoped cache keyed by Miniflux icon version", () => {
+test("feed icons use a local cache keyed by Miniflux icon version", () => {
   assert.match(client, /FEED_ICONS\s*=\s*"feed-icons"/);
   assert.match(client, /export async function getCachedFeedIcons/);
   assert.match(client, /export async function putCachedFeedIcons/);
   assert.match(app, /currentIconIds\.get\(icon\.feedId\) === icon\.iconId/);
   assert.match(app, /const uncachedFeeds = withIcons\.filter/);
-  assert.match(app, /putCachedFeedIcons\(config,\s*loadedIcons\)/);
+  assert.match(app, /putCachedFeedIcons\(loadedIcons\)/);
 });
 
 test("sidebar metadata is cached locally and refreshed on the sync cadence", () => {
-  // The catalog reuses the existing settings store, so no schema bump is needed.
   assert.match(client, /FEED_CATALOG\s*=\s*"feed-catalog"/);
   assert.match(client, /export async function getCachedFeedCatalog/);
   assert.match(client, /export async function saveCachedFeedCatalog/);
-  assert.match(client, /objectStore\(SETTINGS\)\.delete\(`\$\{FEED_CATALOG\}:\$\{scope\}`\)/);
+  assert.match(client, /db\.transaction\(FEED_CATALOG,\s*"readwrite"\)/);
 
-  // A cold start renders feeds, categories, and the timezone from cache.
-  assert.match(app, /getCachedFeedCatalog<Feed, Category>\(config\)/);
+  // A cold start renders feeds and categories from cache.
+  assert.match(app, /getCachedFeedCatalog<Feed, Category>\(\)/);
   assert.match(app, /if \(cachedCatalog\) \{/);
-  assert.match(app, /if \(cachedCatalog\.timeZone\) setMinifluxTimeZone\(cachedCatalog\.timeZone\)/);
+  assert.match(app, /if \(config\.timeZone\) setMinifluxTimeZone\(config\.timeZone\)/);
 
   // Account, feed, and category requests only run when a sync is due, or when
   // there is no catalog yet to render the sidebar from.
   assert.match(app, /if \(syncMode \|\| !cachedCatalog\) \{/);
-  assert.match(app, /saveCachedFeedCatalog<Feed, Category>\(config, \{/);
+  assert.match(app, /saveCachedFeedCatalog<Feed, Category>\(\{/);
 });
 
 test("account, feed, and category requests are not issued on every load", () => {
@@ -156,23 +156,20 @@ test("synced data comparison ignores property order but respects array order", (
   assert.equal(sameJsonValue(1, "1"), false);
 });
 
-test("a corrupted cached timezone is discarded instead of formatting dates", () => {
-  assert.match(client, /typeof catalog\.timeZone === "string"/);
-  assert.match(client, /timeZone: undefined/);
+test("a corrupted stored timezone is discarded instead of formatting dates", () => {
+  assert.match(client, /typeof config\.timeZone === "string" && config\.timeZone/);
+  assert.match(client, /localStorage\.removeItem\(LOCAL_CONFIG\)/);
 });
 
-test("a late timezone response cannot overwrite a newer cached catalog", () => {
-  // The timezone request outlives its load, so it must not rewrite feeds or
-  // categories, and must be dropped once a newer load or connection supersedes it.
-  assert.match(client, /export async function saveCachedFeedCatalogTimeZone/);
-  assert.match(client, /const current = await requestResult\(store\.get\(key\)\)/);
+test("a late timezone response cannot overwrite a newer connection record", () => {
+  // The timezone request outlives its load, so it must not rewrite a later
+  // connection or the independent feed catalog.
   assert.match(app, /const revision = \+\+catalogRevision\.current/);
   assert.match(app, /revision !== catalogRevision\.current\) return/);
-  assert.match(app, /saveCachedFeedCatalogTimeZone\(config, timeZone\)/);
+  assert.match(app, /saveConnection\(\{ \.\.\.config, timeZone \}\)/);
   // A connection change invalidates any in-flight timezone write.
   assert.match(app, /catalogRevision\.current \+= 1;\s*\n\s*if \(config\) queueMicrotask/);
-  // The timezone path must no longer rewrite the whole catalog.
-  assert.doesNotMatch(app, /setMinifluxTimeZone\(timeZone\);\s*\n\s*return saveCachedFeedCatalog</);
+  assert.doesNotMatch(app, /saveCachedFeedCatalogTimeZone/);
 });
 
 test("repeated loads keep sidebar state identity when nothing changed", () => {
@@ -204,8 +201,8 @@ test("entry labels keep their identity when the cached labels are unchanged", ()
 
 test("on-demand content caches the same local status and starred state shown in the UI", () => {
   assert.match(app, /const merged = local[\s\S]*status:\s*local\.status,\s*starred:\s*local\.starred/);
-  assert.match(app, /putCachedEntries\(config,\s*\[merged\]\)/);
-  assert.doesNotMatch(app, /putCachedEntries\(config,\s*\[remote\]\)/);
+  assert.match(app, /putCachedEntries\(\[merged\]\)/);
+  assert.doesNotMatch(app, /putCachedEntries\(\[remote\]\)/);
 });
 
 test("article details are fetched only when cached content is empty", () => {
@@ -318,6 +315,6 @@ test("entry merging preserves cached content when a sync response omits it", () 
 
   assert.equal(result.entries[0].content, "<p>Cached</p>");
   assert.equal(result.mergedBatch[0].content, "<p>Cached</p>");
-  assert.match(app, /putCachedEntries\(config,\s*mergedBatch\)/);
-  assert.doesNotMatch(app, /putCachedEntries\(config,\s*batch\)/);
+  assert.match(app, /putCachedEntries\(mergedBatch\)/);
+  assert.doesNotMatch(app, /putCachedEntries\(batch\)/);
 });
