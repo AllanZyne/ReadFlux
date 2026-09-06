@@ -278,7 +278,10 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(SETTINGS)) db.createObjectStore(SETTINGS);
       if (db.objectStoreNames.contains(LEGACY_ENTRY_CACHE)) db.deleteObjectStore(LEGACY_ENTRY_CACHE);
       if (db.objectStoreNames.contains(LEGACY_ENTRY_LABELS)) db.deleteObjectStore(LEGACY_ENTRY_LABELS);
-      if (db.objectStoreNames.contains(FEED_ICONS)) db.deleteObjectStore(FEED_ICONS);
+      if (db.objectStoreNames.contains(FEED_ICONS)
+        && request.transaction!.objectStore(FEED_ICONS).keyPath !== "feedId") {
+        db.deleteObjectStore(FEED_ICONS);
+      }
       if (!db.objectStoreNames.contains(ARTICLES)) db.createObjectStore(ARTICLES, { keyPath: "id" });
       if (!db.objectStoreNames.contains(ARTICLE_STATE)) db.createObjectStore(ARTICLE_STATE, { keyPath: "entryId" });
       if (!db.objectStoreNames.contains(FEED_ICONS)) db.createObjectStore(FEED_ICONS, { keyPath: "feedId" });
@@ -943,6 +946,7 @@ export function normalizeProfileSettings(value?: unknown): ProfileSettings {
 }
 
 export async function saveProfileSettings(settings: ProfileSettings) {
+  if (typeof localStorage === "undefined") return;
   localStorage.setItem(PREFERENCES, JSON.stringify(settings));
 }
 

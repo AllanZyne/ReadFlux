@@ -5,10 +5,13 @@ import {
   claimEntryMutations,
   completeEntryMutations,
   getCachedEntries,
+  getCachedFeedIcons,
   getEntryMutations,
+  getProfileSettings,
   putCachedEntries,
   queueEntryMutations,
   retryEntryMutations,
+  saveProfileSettings,
   setArticleUpdated,
 } from "../src/readflux-client.ts";
 
@@ -16,6 +19,38 @@ beforeEach(() => { globalThis.indexedDB = new IDBFactory(); });
 
 const entry = (id, patch = {}) => ({ id, status: "unread", starred: false, content: "Cached body", ...patch });
 const read = (entryId, value = "read") => ({ entryId, field: "status", value });
+
+test("schema upgrades preserve compatible feed icons and replace only the legacy key layout", async () => {
+  const icon = { feedId: 1, iconId: 2, src: "data:image/png;base64,test" };
+  for (const keyPath of ["feedId", "key"]) {
+    globalThis.indexedDB = new IDBFactory();
+    await new Promise((resolve, reject) => {
+      const request = indexedDB.open("readflux-profile", 8);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore("feed-icons", { keyPath }).put(
+          keyPath === "key" ? { ...icon, key: "legacy:1", scope: "legacy" } : icon,
+        );
+      };
+      request.onsuccess = () => { request.result.close(); resolve(); };
+      request.onerror = () => reject(request.error);
+    });
+    assert.deepEqual(await getCachedFeedIcons(), keyPath === "feedId" ? [icon] : []);
+  }
+});
+
+test("profile settings can be loaded and normalized without browser localStorage", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: undefined });
+  try {
+    const settings = await getProfileSettings();
+    assert.equal(settings.theme, "day");
+    assert.equal(settings.markReadOnScroll, true);
+    await saveProfileSettings(settings);
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, "localStorage", descriptor);
+    else delete globalThis.localStorage;
+  }
+});
 
 test("Updated writes commit for single and multiple articles without changing other state", async () => {
   const entries = [entry(1, { status: "read", starred: true }), entry(2)];
