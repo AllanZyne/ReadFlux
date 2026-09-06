@@ -26,7 +26,7 @@ import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { loadOptionalMinifluxTimeZone } from "./miniflux-timezone.mjs";
 import { articleHash, parseAppRoute, type AppRoute } from "./routes";
 import { compareSmartFeedEntries, countSmartFeedEntries, formatStoryListDate, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, nextDayBoundary, selectTimeZone, smartFeedStatusPriority, smartFeedTimeBucket, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
-import { nextStoryRenderCount, STORY_RENDER_BATCH_SIZE, storyIdsPassedByScroll } from "./story-list";
+import { createStoryProjector, nextStoryRenderCount, STORY_RENDER_BATCH_SIZE, storyIdsPassedByScroll } from "./story-list";
 import { storyTextForEntry } from "./story-text";
 import {
   CachedFeedIcon,
@@ -1886,59 +1886,61 @@ export default function App() {
   }, [config, feeds]);
 
   const feedMap = useMemo(() => new Map(feeds.map((feed) => [feed.id, feed])), [feeds]);
+  // Match the list-order refresh boundary. Reading and background event updates
+  // must not derive a new interest profile or rescore the current list.
+  const recommendationSnapshot = useMemo(() => ({
+    entries,
+    events: recommendationEvents,
+    now: syncedAt?.getTime() ?? todayClock,
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [activeTimeZone, hideRead, listOrderVersion, listReadSnapshot, mode, query, topic]);
   const interest = useMemo(() => deriveInterestProfile(
-    recommendationEvents,
-    entries.filter((entry) => entry.starred).map((entry) => ({ feedId: entry.feed_id })),
-    syncedAt?.getTime() ?? todayClock,
-  ), [recommendationEvents, entries, syncedAt, todayClock]);
+    recommendationSnapshot.events,
+    recommendationSnapshot.entries.filter((entry) => entry.starred).map((entry) => ({ feedId: entry.feed_id })),
+    recommendationSnapshot.now,
+  ), [recommendationSnapshot]);
 
-  const baseStories = useMemo<BaseStory[]>(() => {
-    return entries.map((entry) => {
-      const feed = entry.feed ?? feedMap.get(entry.feed_id);
-      const source = feed?.title ?? t("feed.unknownSource");
-      const category = feed?.category?.title ?? t("settings.uncategorized");
-      const text = storyTextForEntry(entry);
-      return {
-        ...entry,
-        source,
-        category,
-        categoryId: feed?.category?.id,
-        mark: source.trim().slice(0, 1).toUpperCase() || "·",
-        summary: text.summary ? `${text.summary}${text.summary.length >= 160 ? "…" : ""}` : t("feed.noSummary"),
-        recommendationText: text.recommendationText,
-      };
+  const projectStories = useMemo(() => createStoryProjector<Entry, Story>((entry) => {
+    const feed = entry.feed ?? feedMap.get(entry.feed_id);
+    const source = feed?.title ?? t("feed.unknownSource");
+    const category = feed?.category?.title ?? t("settings.uncategorized");
+    const text = storyTextForEntry(entry);
+    const story: BaseStory = {
+      ...entry,
+      source,
+      category,
+      categoryId: feed?.category?.id,
+      mark: source.trim().slice(0, 1).toUpperCase() || "·",
+      summary: text.summary ? `${text.summary}${text.summary.length >= 160 ? "…" : ""}` : t("feed.noSummary"),
+      recommendationText: text.recommendationText,
+    };
+    const sourceAffinity = interest.sources.get(story.feed_id) ?? 0;
+    const scoreBreakdown = scoreRecommendation({
+      feedId: story.feed_id,
+      text: story.recommendationText,
+      publishedAt: story.published_at,
+      starred: story.starred,
+      now: recommendationSnapshot.now,
+      profile: interest,
     });
-  }, [entries, feedMap, t]);
-
-  const stories = useMemo<Story[]>(() => {
-    return baseStories.map((story) => {
-      const sourceAffinity = interest.sources.get(story.feed_id) ?? 0;
-      const scoreBreakdown = scoreRecommendation({
-        feedId: story.feed_id,
-        text: story.recommendationText,
-        publishedAt: story.published_at,
-        starred: story.starred,
-        now: syncedAt?.getTime() ?? todayClock,
-        profile: interest,
-      });
-      const terms = scoreBreakdown.matchedTerms.slice(0, 2).join(", ");
-      const reason = sourceAffinity >= 2
-        ? t("recommendation.reasonSource", { source: story.source, interest: scoreBreakdown.matchedTerms[0] ? t("recommendation.reasonSourceInterest", { terms }) : "" })
-        : scoreBreakdown.matchedTerms[0]
-          ? t("recommendation.reasonTerms", { terms })
-          : story.starred
-            ? t("recommendation.reasonSaved")
-            : recommendationEvents.length
-              ? t("recommendation.reasonCategory", { category: story.category })
-              : t("recommendation.reasonNew");
-      return {
-        ...story,
-        score: scoreBreakdown.score,
-        scoreBreakdown,
-        reason,
-      };
-    });
-  }, [baseStories, recommendationEvents.length, interest, syncedAt, todayClock, t]);
+    const terms = scoreBreakdown.matchedTerms.slice(0, 2).join(", ");
+    const reason = sourceAffinity >= 2
+      ? t("recommendation.reasonSource", { source: story.source, interest: scoreBreakdown.matchedTerms[0] ? t("recommendation.reasonSourceInterest", { terms }) : "" })
+      : scoreBreakdown.matchedTerms[0]
+        ? t("recommendation.reasonTerms", { terms })
+        : story.starred
+          ? t("recommendation.reasonSaved")
+          : recommendationSnapshot.events.length
+            ? t("recommendation.reasonCategory", { category: story.category })
+            : t("recommendation.reasonNew");
+    return {
+      ...story,
+      score: scoreBreakdown.score,
+      scoreBreakdown,
+      reason,
+    };
+  }), [feedMap, interest, recommendationSnapshot, t]);
+  const stories = useMemo<Story[]>(() => projectStories(entries), [entries, projectStories]);
 
   const persistActive = useCallback(async () => {
     if (!activeEvent.current) return;
@@ -2094,6 +2096,7 @@ export default function App() {
       entryLabels.get(id)?.includes("updated")
       && !autoReadPendingIds.current.has(id)
     ));
+    const updatedIdSet = new Set(updatedIds);
     const affectedIds = [...new Set([...unreadIds, ...updatedIds])];
     if (!affectedIds.length) return;
 
@@ -2101,8 +2104,8 @@ export default function App() {
     const idSet = new Set(unreadIds);
     const after = replaceEntries((current) => current.map((entry) => (
       idSet.has(entry.id) && entry.status === "unread"
-        ? { ...entry, status: "read" as const, ...(updatedIds.includes(entry.id) ? { updated: false } : {}) }
-        : updatedIds.includes(entry.id) ? { ...entry, updated: false } : entry
+        ? { ...entry, status: "read" as const, ...(updatedIdSet.has(entry.id) ? { updated: false } : {}) }
+        : updatedIdSet.has(entry.id) ? { ...entry, updated: false } : entry
     )));
     if (updatedIds.length) {
       setEntryLabels((current) => {
@@ -2129,8 +2132,8 @@ export default function App() {
       await setArticleUpdated(updatedIds, true).catch(() => undefined);
       replaceEntries((current) => current.map((entry) => (
         idSet.has(entry.id) && entry.status === "read"
-          ? { ...entry, status: "unread" as const, ...(updatedIds.includes(entry.id) ? { updated: true } : {}) }
-          : updatedIds.includes(entry.id) ? { ...entry, updated: true } : entry
+          ? { ...entry, status: "unread" as const, ...(updatedIdSet.has(entry.id) ? { updated: true } : {}) }
+          : updatedIdSet.has(entry.id) ? { ...entry, updated: true } : entry
       )));
       if (updatedIds.length) {
         setEntryLabels((current) => {

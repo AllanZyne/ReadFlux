@@ -28,7 +28,8 @@ The primary product contract is:
 - Recommendation scores affect ordering within each `Today` time and read-status
   tier only, and are not shown in the list.
 - Reading an entry updates its live state without removing it from the current
-  list snapshot.
+  list snapshot. Reuse recommendation scores and reasons until the next list
+  refresh or context change; scroll-to-read must not rescore existing articles.
 - Rebuild read filters only when the user changes the list, toggles
   `Unread only`, marks the current list read, or refreshes data. Midnight score
   decay must not rebuild the captured list or its read-status snapshot.

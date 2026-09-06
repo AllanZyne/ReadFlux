@@ -21,6 +21,8 @@ The complete synced history remains available in **All**.
   articles, with paginated progress
 - Full article history is cached locally through resumable paginated sync
 - Stable list snapshots, so articles do not disappear while being read
+- Read and saved state updates immediately; recommendation scores and ordering
+  are recalculated when the list is refreshed or its context changes
 - GitHub Pages-safe article permalinks using `#/article/:entryId`
 - Day and night themes
 - English, Simplified Chinese, and French interfaces selectable in Settings

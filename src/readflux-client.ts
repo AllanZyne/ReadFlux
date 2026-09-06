@@ -374,12 +374,19 @@ export async function setArticleUpdated(entryIds: number[], updated: boolean) {
   const db = await openDb();
   const transaction = db.transaction(ARTICLE_STATE, "readwrite");
   const store = transaction.objectStore(ARTICLE_STATE);
-  await Promise.all(entryIds.map(async (entryId) => {
-    const current = await requestResult(store.get(entryId)) as ArticleStateRecord | undefined;
-    if (current) store.put({ ...current, updated });
-  }));
-  await transactionComplete(transaction);
-  db.close();
+  const completed = transactionComplete(transaction);
+  entryIds.forEach((entryId) => {
+    const request = store.get(entryId);
+    request.onsuccess = () => {
+      const current = request.result as ArticleStateRecord | undefined;
+      if (current) store.put({ ...current, updated });
+    };
+  });
+  try {
+    await completed;
+  } finally {
+    db.close();
+  }
 }
 
 export async function getEntryMutations(): Promise<StoredEntryMutation[]> {
@@ -424,12 +431,20 @@ export async function claimEntryMutations(): Promise<StoredEntryMutation[]> {
   const db = await openDb();
   const transaction = db.transaction(OUTBOX, "readwrite");
   const store = transaction.objectStore(OUTBOX);
-  const records = await requestResult(store.getAll()) as StoredEntryMutation[];
-  const claimed = records.map((record) => ({ ...record, state: "sending" as const }));
-  claimed.forEach((record) => store.put(record));
-  await transactionComplete(transaction);
-  db.close();
-  return claimed;
+  const completed = transactionComplete(transaction);
+  let claimed: StoredEntryMutation[] = [];
+  const request = store.getAll();
+  request.onsuccess = () => {
+    const records = request.result as StoredEntryMutation[];
+    claimed = records.map((record) => ({ ...record, state: "sending" as const }));
+    claimed.forEach((record) => store.put(record));
+  };
+  try {
+    await completed;
+    return claimed;
+  } finally {
+    db.close();
+  }
 }
 
 async function updateClaimedEntryMutations(
@@ -440,14 +455,21 @@ async function updateClaimedEntryMutations(
   const db = await openDb();
   const transaction = db.transaction(OUTBOX, "readwrite");
   const store = transaction.objectStore(OUTBOX);
-  await Promise.all(claimed.map(async (mutation) => {
-    const current = await requestResult(store.get(mutation.key)) as StoredEntryMutation | undefined;
-    if (current?.revision !== mutation.revision) return;
-    if (action === "complete") store.delete(mutation.key);
-    else store.put({ ...current, state: "pending" });
-  }));
-  await transactionComplete(transaction);
-  db.close();
+  const completed = transactionComplete(transaction);
+  claimed.forEach((mutation) => {
+    const request = store.get(mutation.key);
+    request.onsuccess = () => {
+      const current = request.result as StoredEntryMutation | undefined;
+      if (current?.revision !== mutation.revision) return;
+      if (action === "complete") store.delete(mutation.key);
+      else store.put({ ...current, state: "pending" });
+    };
+  });
+  try {
+    await completed;
+  } finally {
+    db.close();
+  }
 }
 
 export async function completeEntryMutations(claimed: StoredEntryMutation[]) {
