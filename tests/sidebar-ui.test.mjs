@@ -19,9 +19,10 @@ test("primary sidebar navigation uses Bootstrap Icons", () => {
   assert.match(app, /\["all",\s*"bi-inbox",\s*t\("sidebar\.all"\),\s*navCounts\.all\]/);
   assert.match(app, /\["updated",\s*"bi-bell",\s*t\("sidebar\.updated"\),\s*navCounts\.updated\]/);
   assert.match(app, /\["saved",\s*"bi-star-fill",\s*t\("sidebar\.saved"\),\s*navCounts\.saved\]/);
-  assert.ok(app.indexOf('["today"') < app.indexOf('["all"'));
-  assert.ok(app.indexOf('["all"') < app.indexOf('["updated"'));
-  assert.ok(app.indexOf('["updated"') < app.indexOf('["saved"'));
+  const nav = app.slice(app.indexOf("const nav = ["), app.indexOf("] as const;", app.indexOf("const nav = [")));
+  assert.ok(nav.indexOf('["today"') < nav.indexOf('["all"'));
+  assert.ok(nav.indexOf('["all"') < nav.indexOf('["updated"'));
+  assert.ok(nav.indexOf('["updated"') < nav.indexOf('["saved"'));
   assert.doesNotMatch(app, /sidebar\.allUnread/);
   assert.match(app, /<i className=\{`bi \$\{icon\}`\} aria-hidden="true" \/>/);
   assert.doesNotMatch(app, /<b>\{icon\}<\/b>/);
@@ -155,7 +156,7 @@ test("scroll-to-read is enabled by default and configurable from General setting
   assert.match(app, /data-entry-id=\{story\.id\}/);
   assert.match(markEntriesReadFromScroll, /unreadIds\.map\(\(entryId\) => \(\{ entryId, field: "status", value: "read" \}\)\)/);
   assert.match(markEntriesReadFromScroll, /const updatedIds = candidateIds\.filter[\s\S]*?entryLabels\.get\(id\)\?\.includes\("updated"\)/);
-  assert.match(markEntriesReadFromScroll, /updatedIds\.map\(\(id\) => removeEntryLabel\(config, id, "updated"\)\)/);
+  assert.match(markEntriesReadFromScroll, /setArticleUpdated\(updatedIds,\s*false\)/);
 });
 
 test("opening an updated article preserves the current Today or Updated snapshot", () => {
@@ -174,7 +175,7 @@ test("mark all as read also clears Updated labels from the visible list", () => 
   assert.ok(start >= 0 && end > start);
   assert.match(markVisibleRead, /const updatedIds = visible[\s\S]*?entryLabels\.get\(story\.id\)\?\.includes\("updated"\)/);
   assert.match(markVisibleRead, /setEntryLabels\(labelsAfter\)/);
-  assert.match(markVisibleRead, /Promise\.all\(updatedIds\.map\(\(id\) => removeEntryLabel\(config, id, "updated"\)\)\)/);
+  assert.match(markVisibleRead, /setArticleUpdated\(updatedIds,\s*false\)/);
   assert.match(markVisibleRead, /setListReadSnapshot\(new Map\(after\.map/);
 });
 

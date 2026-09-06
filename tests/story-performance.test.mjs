@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  createStoryProjector,
   nextStoryRenderCount,
   STORY_RENDER_BATCH_SIZE,
   storyIdsPassedByScroll,
@@ -55,8 +56,42 @@ test("article text extraction is reused until title or content changes", () => {
   assert.equal(first.recommendationText, "A title Hello & goodbye");
 });
 
-test("story metadata and recommendation scoring have separate memoized stages", () => {
-  assert.match(app, /const baseStories = useMemo<BaseStory\[\]>/);
+test("live article updates reuse scores and untouched rows until list refresh", () => {
+  let evaluations = 0;
+  const derive = (entry) => {
+    evaluations += 1;
+    return { ...entry, score: entry.starred ? 100 : 10, reason: `score-${evaluations}` };
+  };
+  const entries = Array.from({ length: 10_000 }, (_, id) => ({ id, status: "unread", starred: false, updated: true }));
+  const project = createStoryProjector(derive);
+  const initial = project(entries);
+  const changed = entries.map((entry, index) => index === 0
+    ? { id: entry.id, status: "read", starred: true, content: "loaded" }
+    : entry);
+  const live = project(changed);
+  assert.equal(evaluations, entries.length);
+  assert.equal(live[0].status, "read");
+  assert.equal(live[0].starred, true);
+  assert.equal(live[0].updated, undefined);
+  assert.equal(live[0].content, "loaded");
+  assert.equal(live[0].score, initial[0].score);
+  assert.equal(live[0].reason, initial[0].reason);
+  live.slice(1).forEach((story, index) => assert.strictEqual(story, initial[index + 1]));
+  assert.strictEqual(project(changed)[0], live[0]);
+  assert.strictEqual(project(entries)[0], initial[0]); // rollback
+
+  const withNew = project([...changed, { id: 10_000, status: "unread", starred: false }]);
+  assert.equal(withNew.length, 10_001);
+  assert.equal(evaluations, 10_001);
+  const refreshed = createStoryProjector(derive)(changed);
+  assert.equal(refreshed[0].score, 100);
+  assert.equal(evaluations, 20_001);
+});
+
+test("recommendation inputs and list order share an explicit refresh boundary", () => {
+  const snapshot = app.slice(app.indexOf("const recommendationSnapshot ="), app.indexOf("const interest =", app.indexOf("const recommendationSnapshot =")));
+  assert.match(snapshot, /\[activeTimeZone, hideRead, listOrderVersion, listReadSnapshot, mode, query, topic\]/);
+  assert.match(app, /const projectStories = useMemo\(\(\) => createStoryProjector/);
   assert.match(app, /const stories = useMemo<Story\[\]>/);
   assert.match(app, /text: story\.recommendationText/);
 });
@@ -65,7 +100,8 @@ test("article selection paints before deferred reader work and list mutations", 
   assert.match(app, /const deferredSelectedId = useDeferredValue\(selectedId\)/);
   assert.match(app, /const readerSelected = deferredSelectedId === selectedId \? selected : null/);
   assert.match(app, /readerSelected\?\.id !== selected\.id[\s\S]*?reader\.loadingContent/);
-  assert.match(app, /startTransition\(\(\) => \{\s*setEntryLabels/);
+  assert.match(app, /startTransition\(\(\) => \{\s*replaceEntries\(\(current\)/);
+  assert.match(app, /replaceEntries\(\(current\)[\s\S]*?setEntryLabels/);
   assert.match(app, /startTransition\(\(\) => \{\s*void updateEntry\(story\.id, \{ status: "read" \}/);
 });
 
