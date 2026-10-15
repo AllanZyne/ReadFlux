@@ -81,7 +81,7 @@ import {
   WebDavSyncInterval,
 } from "./readflux-client";
 import { createRankingExposure, deriveInterestProfile, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, selectedTopicTermsByEntry, selectedTopicTermsForEntry, type RecommendationScoreBreakdown } from "./recommendation";
-import { buildRecommendationExport, recommendationExportFileName } from "./recommendation-export";
+import { buildRecommendationExport, recommendationExportFileName, withActiveReadingEvent } from "./recommendation-export";
 import { extractRecommendationCandidateTermsAsync, initializeChineseRecommendationTerms, normalizeRecommendationTerm, normalizeSelectedTopic, prioritizeFollowedTopicTerms } from "./recommendation-terms";
 import {
   clearWebDavEtagCache,
@@ -1960,7 +1960,7 @@ export default function App() {
       markReadOnScroll: settings.markReadOnScroll,
       entries,
       feeds,
-      events: recommendationEvents,
+      events: withActiveReadingEvent(recommendationEvents, activeEvent.current),
       exposures: recommendationExposures,
     });
     const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));

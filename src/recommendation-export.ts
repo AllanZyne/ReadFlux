@@ -105,6 +105,11 @@ export function buildRecommendationExport(input: {
   };
 }
 
+export function withActiveReadingEvent(events: ReadingEvent[], active: ReadingEvent | null) {
+  if (!active) return events;
+  return [...events.filter((event) => event.remoteClientId !== undefined || event.id !== active.id), { ...active }];
+}
+
 export function recommendationExportFileName(exportedAt: string, timeZone: string) {
   return `readflux-recommendation-${localDayKey(exportedAt, timeZone)}.json`;
 }

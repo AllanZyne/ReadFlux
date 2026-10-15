@@ -6,6 +6,7 @@ import {
   buildRecommendationExport,
   RECOMMENDATION_EXPORT_FORMAT,
   recommendationExportFileName,
+  withActiveReadingEvent,
 } from "../src/recommendation-export.ts";
 
 const now = Date.parse("2026-10-15T12:00:00.000Z");
@@ -97,6 +98,19 @@ test("recommendation export derives its profile from every exported event", () =
   assert.deepEqual(data.profile.terms, [{ term: "llvm", weight: 1 }]);
   assert.equal(data.profile.sources[0].weight, expected.sources.get(10));
   assert.equal(data.entries[0].currentScore.termScore > 0, true);
+});
+
+test("recommendation export includes the uncommitted active reading session", () => {
+  const stale = { ...event, activeSeconds: 10 };
+  const mirror = { ...event, remoteClientId: "other", activeSeconds: 40 };
+  const active = { ...event, activeSeconds: 95 };
+
+  const merged = withActiveReadingEvent([stale, mirror], active);
+  assert.deepEqual(merged.map((item) => [item.remoteClientId, item.activeSeconds]), [["other", 40], [undefined, 95]]);
+  assert.notEqual(merged[1], active);
+  assert.deepEqual(withActiveReadingEvent([mirror], { ...event, id: "event-new" }).map((item) => item.id), ["event-1", "event-new"]);
+  const events = [stale];
+  assert.equal(withActiveReadingEvent(events, null), events);
 });
 
 test("recommendation export file name uses the reader timezone day", () => {
