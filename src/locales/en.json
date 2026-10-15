@@ -129,6 +129,12 @@
   "recommendation": {
     "title": "Local recommendation profile",
     "description": "This shows raw reading events from this browser and WebDAV mirrors, plus weights derived from them and Miniflux saved articles. Scores are still used only to order Today.",
+    "export": "Export JSON",
+    "exportHint": "The export is a local unencrypted file with reading events, ranking exposures, derived weights, and titles and excerpts of related articles. It never contains Miniflux or WebDAV credentials.",
+    "webDavSyncing": "WebDAV is syncing. Export will be available when sync finishes.",
+    "webDavLastSynced": "WebDAV last synced: {{time}}. The export includes mirrored events from other clients.",
+    "webDavNeverSynced": "WebDAV has not synced yet. The export includes only this browser's events.",
+    "webDavExportStale": "The export uses the last successfully mirrored WebDAV data.",
     "readingEvents": "Reading events",
     "validEvents": "Valid interest events",
     "averageForeground": "Average foreground time",

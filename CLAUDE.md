@@ -38,8 +38,10 @@ The primary product contract is:
   feeds preserves that source scope and closes the current article; selecting
   the active smart feed again clears the source scope.
 - Day and night are the only themes.
-- Settings are an in-app dialog. Recommendation data is inspectable and raw
-  events can be added, edited, or deleted.
+- Settings are an in-app dialog. Recommendation data is inspectable, raw
+  events can be added, edited, or deleted, and the tab can export a local JSON
+  file for offline evaluation. The export omits full article content and all
+  credentials.
 - Category names, feed names, `Today`, `All`, `Updated`, and `Saved` use the same type
   size, weight, and row height. Hierarchy comes from disclosure controls, icons,
   and indentation.

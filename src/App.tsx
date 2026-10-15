@@ -81,6 +81,7 @@ import {
   WebDavSyncInterval,
 } from "./readflux-client";
 import { createRankingExposure, deriveInterestProfile, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, selectedTopicTermsByEntry, selectedTopicTermsForEntry, type RecommendationScoreBreakdown } from "./recommendation";
+import { buildRecommendationExport, recommendationExportFileName, withActiveReadingEvent } from "./recommendation-export";
 import { extractRecommendationCandidateTermsAsync, initializeChineseRecommendationTerms, normalizeRecommendationTerm, normalizeSelectedTopic, prioritizeFollowedTopicTerms } from "./recommendation-terms";
 import {
   clearWebDavEtagCache,
@@ -542,6 +543,7 @@ function SettingsDialog({
   onSettingsChange,
   onImageModeChange,
   onEventsChange,
+  onExportRecommendationData,
   webDavConfig,
   webDavStatus,
   onSaveWebDav,
@@ -569,6 +571,7 @@ function SettingsDialog({
   onSettingsChange: (settings: ProfileSettings) => void;
   onImageModeChange: (feedId?: number) => void;
   onEventsChange: (events: ReadingEvent[]) => void;
+  onExportRecommendationData: () => void;
   webDavConfig: WebDavConfig | null;
   webDavStatus: WebDavSyncStatus;
   onSaveWebDav: (config: WebDavConfig) => Promise<boolean>;
@@ -1003,8 +1006,15 @@ function SettingsDialog({
 
           {tab === "recommendation" && <div className="recommendationData">
             <section className="dataIntro">
-              <div><h3>{t("recommendation.title")}</h3><p>{t("recommendation.description")}</p></div>
+              <div><h3>{t("recommendation.title")}</h3><p>{t("recommendation.description")}</p><p>{t("recommendation.exportHint")}</p></div>
+              <div className="settingsActions"><button disabled={webDavStatus.state === "syncing"} aria-describedby={webDavConfig ? "recommendation-webdav-status" : undefined} onClick={onExportRecommendationData}><i className="bi bi-download" aria-hidden="true" /> {t("recommendation.export")}</button></div>
             </section>
+            {webDavConfig && <p id="recommendation-webdav-status" className={`webDavStatus ${webDavStatus.state}`} aria-live="polite">
+              {webDavStatus.state === "syncing" ? t("recommendation.webDavSyncing")
+                : webDavStatus.state === "error" ? `${webDavStatus.message ?? t("webdav.failed")} ${t("recommendation.webDavExportStale")}`
+                  : webDavStatus.syncedAt ? t("recommendation.webDavLastSynced", { time: formatZonedDateTime(webDavStatus.syncedAt, timeZone) })
+                    : t("recommendation.webDavNeverSynced")}
+            </p>}
             <section className="metricGrid">
               <div><strong>{events.length}</strong><span>{t("recommendation.readingEvents")}</span></div>
               <div><strong>{validEvents.length}</strong><span>{t("recommendation.validEvents")}</span></div>
@@ -1941,6 +1951,25 @@ export default function App() {
     };
   }), [feedMap, interest, recommendationSnapshot, t]);
   const stories = useMemo<Story[]>(() => projectStories(entries), [entries, projectStories]);
+
+  const exportRecommendationData = () => {
+    const exportedAt = new Date().toISOString();
+    const data = buildRecommendationExport({
+      exportedAt,
+      timeZone: activeTimeZone,
+      markReadOnScroll: settings.markReadOnScroll,
+      entries,
+      feeds,
+      events: withActiveReadingEvent(recommendationEvents, activeEvent.current),
+      exposures: recommendationExposures,
+    });
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = recommendationExportFileName(exportedAt, activeTimeZone);
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  };
 
   const persistActive = useCallback(async () => {
     if (!activeEvent.current) return;
@@ -3066,6 +3095,7 @@ export default function App() {
           }
           setEvents(next.filter((event) => !event.remoteClientId));
         }}
+        onExportRecommendationData={exportRecommendationData}
         webDavConfig={webDavConfig}
         webDavStatus={webDavStatus}
         onSaveWebDav={handleSaveWebDav}
