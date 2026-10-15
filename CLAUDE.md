@@ -106,18 +106,36 @@ An event records:
 - opened time
 - active foreground seconds
 - maximum scroll depth
+- the entry's Miniflux reading time, when available
 - entry path (`recommendation`, `feed`, `search`, or `saved`)
 - optional explicit feedback
 
+Today exposure items record the entry, rank, score components, and, for new
+records, the feed ID and publication time. Older items without a feed ID fall
+back to cached entries.
+
 Current derivation rules:
 
-- Interest contributions decay with a 28-day time scale.
-- Very short events are ignored unless explicit positive feedback exists.
-- Positive feedback gets a fixed strong contribution.
-- Negative feedback contributes only to negative term weights.
-- Starred entries add source and term affinity.
-- Ranking combines source affinity, positive term matches, freshness, a starred
-  bonus, and negative-term penalties, then clamps the internal score.
+- Event and exposure contributions decay with a 28-day time scale.
+- Each event's reading quality is foreground time divided by its reading time
+  (at least one minute), capped at 1. Scroll depth counts in proportion to
+  reading time, reaching full credit at 10 minutes.
+- Events under 5 seconds with little length-adjusted scroll have zero quality.
+  They still count as reads, which lowers the feed's average depth.
+- Positive feedback gives an event full quality.
+- Negative feedback removes the event from source affinity and open counts. It
+  does not produce negative term weights, and the negative penalty is zero.
+- Starred entries add `log1p(count)` pseudo-reads of full quality to their
+  feed. A star decays from `starredAt` when a reading event recorded one.
+  Starred entries add no term affinity.
+- Feed affinity is smoothed engagement (3-read prior) multiplied by a smoothed
+  Today open rate (20-impression prior). Impressions are weighted by
+  `1 / log2(rank + 1)`, and an open is an attributed event with `rankingId`
+  and `exposedRank`. The result is divided by the average feed's value, and
+  the source score is `20 * r / (1 + r)`. A feed with no data scores 10, and
+  every feed scores 0 before any profile data exists.
+- Ranking combines the source score, positive term matches, freshness, and a
+  starred bonus, then clamps the internal score.
 
 When changing ranking behavior:
 

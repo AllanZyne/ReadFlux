@@ -5,14 +5,18 @@ import test from "node:test";
 import {
   createRankingExposure,
   deriveInterestProfile,
+  deriveSourceAffinities,
   extractRecommendationTerms,
   foldTopicFeedback,
+  isEngagedReadingEvent,
   rankingAttribution,
+  readingEventQuality,
   recommendationDiagnostics,
   recordBulkDismissal,
   RECOMMENDATION_ALGORITHM_VERSION,
   scoreRecommendation,
   selectedTopicTermsByEntry,
+  sourceScoreForAffinity,
 } from "../src/recommendation.ts";
 import { extractRecommendationCandidateTerms, normalizeSelectedTopic, prioritizeFollowedTopicTerms } from "../src/recommendation-terms.ts";
 
@@ -138,7 +142,7 @@ test("reading and saving never imply topic interest", () => {
     { feedId: 2, text: "LLVM" },
   ], Date.parse("2026-08-14T00:00:00.000Z"));
   assert.equal(profile.words.size, 0);
-  assert.ok((profile.sources.get(2) ?? 0) > 0);
+  assert.ok((profile.sources.get(2)?.readingQuality ?? 0) > 0);
 });
 
 test("only the latest explicit per-article topic choice contributes", () => {
@@ -189,24 +193,154 @@ test("selected topics are folded once into an entry lookup", () => {
   assert.deepEqual([...selected.get(2) ?? []], ["rust"]);
 });
 
-test("log-scaled scoring retains discrimination at high affinity", () => {
-  const breakdown = scoreRecommendation({
-    feedId: 2,
+test("source scores map relative affinity onto a bounded scale and keep term discrimination", () => {
+  const profile = {
+    sources: new Map([[2, { feedId: 2, relativeAffinity: 10_000 }], [3, { feedId: 3, relativeAffinity: 0 }]]),
+    sourceBaseline: { engagement: 0.2, openRate: 0.5, affinity: 0.1 },
+    words: new Map([["llvm", 10_000]]),
+    negatives: new Map(),
+  };
+  const score = (feedId, currentProfile = profile) => scoreRecommendation({
+    feedId,
     text: "LLVM compiler internals",
     publishedAt: "2026-08-14T00:00:00.000Z",
     starred: false,
     now: Date.parse("2026-08-14T00:00:00.000Z"),
-    profile: {
-      sources: new Map([[2, 10_000]]),
-      words: new Map([["llvm", 10_000]]),
-      negatives: new Map(),
-    },
+    profile: currentProfile,
   });
-  assert.equal(breakdown.sourceScore, 20);
+  const breakdown = score(2);
+  assert.ok(breakdown.sourceScore > 19.9 && breakdown.sourceScore < 20);
+  assert.equal(score(3).sourceScore, 0);
+  assert.equal(score(99).sourceScore, 10);
+  assert.equal(score(99, { ...profile, sources: new Map(), sourceBaseline: null }).sourceScore, 0);
+  assert.equal(sourceScoreForAffinity(1), 10);
   assert.ok(breakdown.termScore > 20 && breakdown.termScore < 24);
   assert.ok(breakdown.unclampedScore < 99);
   assert.equal(breakdown.score, Math.round(breakdown.unclampedScore));
-  assert.equal(RECOMMENDATION_ALGORITHM_VERSION, "heuristic-v3-fixed-topic-weights");
+  assert.equal(RECOMMENDATION_ALGORITHM_VERSION, "heuristic-v4-engagement-affinity");
+});
+
+test("reading quality normalizes foreground time by expected length", () => {
+  assert.equal(readingEventQuality({ activeSeconds: 30, scrollDepth: 1, readingTime: 1 }), 0.5);
+  assert.equal(readingEventQuality({ activeSeconds: 120, scrollDepth: 0.2, readingTime: 10 }), 0.2);
+  assert.equal(readingEventQuality({ activeSeconds: 0, scrollDepth: 1, readingTime: 10 }), 1);
+  assert.equal(readingEventQuality({ activeSeconds: 600, scrollDepth: 0, readingTime: 4 }), 1);
+  assert.equal(readingEventQuality({ activeSeconds: 30, scrollDepth: 0 }), 0.5);
+  assert.equal(readingEventQuality({ activeSeconds: 0, scrollDepth: 0, feedback: "helpful" }), 1);
+});
+
+test("short-post scrolling is discounted and the bounce threshold suits quantized and precise seconds", () => {
+  assert.equal(readingEventQuality({ activeSeconds: 0, scrollDepth: 1, readingTime: 1 }), 0);
+  assert.equal(isEngagedReadingEvent({ activeSeconds: 0, scrollDepth: 1, readingTime: 1 }), false);
+  assert.equal(isEngagedReadingEvent({ activeSeconds: 4.9, scrollDepth: 0.5, readingTime: 1 }), false);
+  assert.equal(isEngagedReadingEvent({ activeSeconds: 5, scrollDepth: 0, readingTime: 1 }), true);
+  assert.equal(isEngagedReadingEvent({ activeSeconds: 0, scrollDepth: 0.3, readingTime: 6 }), true);
+});
+
+test("source affinity rewards depth rather than event volume", () => {
+  const now = Date.parse("2026-08-14T00:00:00.000Z");
+  const shallow = Array.from({ length: 100 }, (_, index) => event({
+    id: `shallow-${index}`,
+    entryId: 1000 + index,
+    feedId: 10,
+    activeSeconds: index % 2 ? 0 : 5,
+    scrollDepth: 1,
+    readingTime: 1,
+  }));
+  const deep = Array.from({ length: 5 }, (_, index) => event({
+    id: `deep-${index}`,
+    entryId: 2000 + index,
+    feedId: 20,
+    activeSeconds: 240,
+    scrollDepth: 1,
+    readingTime: 4,
+  }));
+  const { sources, baseline } = deriveSourceAffinities([...shallow, ...deep], [], now);
+  assert.ok(sources.get(20).relativeAffinity > 1);
+  assert.ok(sources.get(10).relativeAffinity < 1);
+  assert.ok(sources.get(20).engagement > sources.get(10).engagement);
+  assert.ok(baseline.engagement > 0 && baseline.engagement < 1);
+});
+
+test("feeds shown often but rarely opened lose affinity through smoothed open rates", () => {
+  const now = Date.parse("2026-08-14T00:00:00.000Z");
+  const item = (entryId, rank, feedId) => ({
+    entryId,
+    ...(feedId === undefined ? {} : { feedId }),
+    rank,
+    score: 50,
+    sourceScore: 0,
+    termScore: 0,
+    freshnessScore: 0,
+    savedBonus: 0,
+    negativePenalty: 0,
+    statusPriority: 1,
+    matchedTerms: [],
+  });
+  const exposures = Array.from({ length: 20 }, (_, index) => ({
+    id: `ranking-${index}`,
+    createdAt: "2026-08-13T00:00:00.000Z",
+    algorithmVersion: RECOMMENDATION_ALGORITHM_VERSION,
+    schemaVersion: 2,
+    surface: "today",
+    candidateCount: 2,
+    displayedCount: 2,
+    items: [item(index * 2 + 1, 1, 30), item(index * 2 + 2, 2)],
+  }));
+  const reads = [
+    ...Array.from({ length: 20 }, (_, index) => event({
+      id: `open-${index}`,
+      entryId: index * 2 + 2,
+      feedId: 40,
+      activeSeconds: 60,
+      readingTime: 1,
+      rankingId: `ranking-${index}`,
+      exposedRank: 2,
+    })),
+    ...Array.from({ length: 20 }, (_, index) => event({
+      id: `other-${index}`,
+      entryId: 500 + index,
+      feedId: 30,
+      activeSeconds: 60,
+      readingTime: 1,
+      origin: "feed",
+    })),
+  ];
+  const entryFeedIds = new Map(exposures.map((exposure) => [exposure.items[1].entryId, 40]));
+  const { sources } = deriveSourceAffinities(reads, [], now, { exposures, entryFeedIds });
+  const ignored = sources.get(30);
+  const opened = sources.get(40);
+  assert.equal(ignored.opens, 0);
+  assert.ok(ignored.impressions > opened.impressions);
+  assert.ok(opened.opens > 19 && opened.opens < 20);
+  assert.ok(ignored.openRate < opened.openRate);
+  assert.ok(ignored.relativeAffinity < opened.relativeAffinity);
+  assert.ok(ignored.openRate > 0);
+  const dismissed = reads.map((read) => read.rankingId ? { ...read, feedback: "not_interested" } : read);
+  assert.equal(deriveSourceAffinities(dismissed, [], now, { exposures, entryFeedIds }).sources.get(40).opens, 0);
+});
+
+test("saved articles add diminishing source credit and decay by recorded save time", () => {
+  const now = Date.parse("2026-08-14T00:00:00.000Z");
+  const reading = [event({ feedId: 50, activeSeconds: 6, readingTime: 1 }), event({ id: "b", entryId: 9, feedId: 60, activeSeconds: 6, readingTime: 1 })];
+  const many = Array.from({ length: 31 }, (_, index) => ({ feedId: 50, entryId: 100 + index }));
+  const { sources } = deriveSourceAffinities(reading, [...many, { feedId: 60, entryId: 200 }], now);
+  assert.equal(sources.get(50).stars, 31);
+  assert.equal(sources.get(50).starWeight, Math.log1p(31));
+  assert.ok(sources.get(50).starWeight < 4);
+  assert.ok(sources.get(50).engagement < 1);
+
+  const starredEvent = event({
+    id: "starred",
+    entryId: 300,
+    feedId: 70,
+    activeSeconds: 6,
+    readingTime: 1,
+    starred: true,
+    starredAt: "2026-06-19T00:00:00.000Z",
+  });
+  const decayed = deriveSourceAffinities([starredEvent], [{ feedId: 70, entryId: 300 }], now).sources.get(70);
+  assert.ok(Math.abs(decayed.stars - Math.exp(-2)) < 1e-9);
 });
 
 test("exposure capture bounds ordered items and attribution uses a one-based rank", () => {
@@ -234,9 +368,35 @@ test("exposure capture bounds ordered items and attribution uses a one-based ran
   assert.deepEqual(rankingAttribution(exposure, 100), {
     rankingId: "ranking-1",
     exposedRank: 1,
-    algorithmVersion: "heuristic-v3-fixed-topic-weights",
+    algorithmVersion: RECOMMENDATION_ALGORITHM_VERSION,
   });
   assert.deepEqual(rankingAttribution(exposure, 999), {});
+  assert.equal("feedId" in exposure.items[0], false);
+  assert.equal("publishedAt" in exposure.items[0], false);
+});
+
+test("new exposure items carry feed and publication metadata for open-rate attribution", () => {
+  const exposure = createRankingExposure({
+    id: "ranking-2",
+    createdAt: "2026-08-15T00:00:00.000Z",
+    candidateCount: 1,
+    candidates: [{
+      entryId: 7,
+      feedId: 3,
+      publishedAt: "2026-08-14T08:00:00+08:00",
+      statusPriority: 1,
+      breakdown: { score: 50, unclampedScore: 50, sourceScore: 1, termScore: 0, freshnessScore: 9, savedBonus: 0, negativePenalty: 0, matchedTerms: [] },
+    }],
+  });
+  assert.equal(exposure.schemaVersion, 2);
+  assert.equal(exposure.items[0].feedId, 3);
+  assert.equal(exposure.items[0].publishedAt, "2026-08-14T08:00:00+08:00");
+});
+
+test("the Today snapshot captures exposures with events so background pulls do not rescore", () => {
+  assert.match(appSource, /const recommendationSnapshot = useMemo\(\(\) => \(\{[\s\S]*?exposures: recommendationExposures,[\s\S]*?\}\), \[activeTimeZone, hideRead, listOrderVersion, listReadSnapshot, mode, query, topic\]\)/);
+  assert.match(appSource, /deriveInterestProfile\([\s\S]*?exposures: recommendationSnapshot\.exposures,[\s\S]*?entryFeedIds:/);
+  assert.match(appSource, /feedId: story\.feed_id,\s*publishedAt: story\.published_at,/);
 });
 
 test("bulk dismissal records only exposed Top 50 items without changing scores", () => {

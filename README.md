@@ -113,17 +113,24 @@ ReadFlux records the article, feed, title, keywords, open time, active
 foreground time, scroll depth, entry path, and explicit **Helpful** or
 **Not interested** feedback. Saved state remains managed by Miniflux.
 
-The recommendation profile gives more weight to recent behavior and combines:
+The recommendation profile gives more weight to recent behavior (28-day decay)
+and combines:
 
-- Feed affinity
+- Feed affinity: a feed's smoothed reading depth multiplied by its smoothed,
+  position-adjusted **Today** open rate, relative to the average feed. Reading
+  depth uses foreground time compared with the article's reading time, so a
+  short post does not count as a deep read. Scroll depth counts in proportion
+  to article length. Saved articles add credit with diminishing returns.
 - Explicitly followed topics selected from candidates, article titles, or article text; each topic has a fixed weight of 1 even when selected repeatedly
 - Publication time
-- Saved articles
-- Negative keywords
+- A bonus for saved articles
+
+**Not interested** feedback is recorded but does not currently lower any score.
 
 Recommendation scores order articles within each **Today** time and read-status
 tier and are not displayed in the article list. The **Recommendation data** tab
-in Settings exposes derived weights and the 30 most recent raw events by
+in Settings exposes derived feed affinity (reading depth, impressions, opens,
+open rate, and saved-article credit) and the 30 most recent raw events by
 default. Local records can be edited or deleted, and search still covers the
 complete event history.
 

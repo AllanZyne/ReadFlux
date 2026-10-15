@@ -71,6 +71,37 @@ test("malformed topic feedback is rejected without throwing", () => {
   assert.equal(syncModule.validReadingEvent(event), false);
 });
 
+test("ranking exposures stay readable with and without optional feed metadata", () => {
+  const item = {
+    entryId: 1,
+    rank: 1,
+    score: 50,
+    sourceScore: 10,
+    termScore: 0,
+    freshnessScore: 10,
+    savedBonus: 0,
+    negativePenalty: 0,
+    statusPriority: 1,
+    matchedTerms: [],
+  };
+  const exposure = (items) => ({
+    id: "ranking-1",
+    createdAt: "2026-08-14T00:00:00.000Z",
+    algorithmVersion: "heuristic-v3-fixed-topic-weights",
+    schemaVersion: 2,
+    surface: "today",
+    candidateCount: items.length,
+    displayedCount: items.length,
+    items,
+  });
+  assert.equal(syncModule.validRankingExposure(exposure([item])), true);
+  assert.equal(syncModule.validRankingExposure(exposure([{ ...item, feedId: 3, publishedAt: "2026-08-13T00:00:00Z" }])), true);
+  assert.equal(syncModule.validRankingExposure(exposure([{ ...item, feedId: "3" }])), false);
+  assert.equal(syncModule.validRankingExposure(exposure([{ ...item, publishedAt: 1 }])), false);
+  assert.doesNotThrow(() => syncModule.validRankingExposure(exposure([null])));
+  assert.equal(syncModule.validRankingExposure(exposure([null])), false);
+});
+
 test("WebDAV settings support the agreed automatic intervals and manual sync", () => {
   assert.match(clientSource, /WebDavSyncInterval\s*=\s*0\s*\|\s*5\s*\|\s*15\s*\|\s*30\s*\|\s*60/);
   assert.match(appSource, /onSyncWebDav/);

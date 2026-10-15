@@ -1,10 +1,39 @@
 import type { ReadingEvent, RankingExposure } from "./readflux-client.ts";
 import { normalizeRecommendationTerm } from "./recommendation-terms.ts";
 
-export const RECOMMENDATION_ALGORITHM_VERSION = "heuristic-v3-fixed-topic-weights";
+export const RECOMMENDATION_ALGORITHM_VERSION = "heuristic-v4-engagement-affinity";
+
+export const RECENCY_DAYS = 28;
+export const MIN_ENGAGED_SECONDS = 5;
+const MIN_ENGAGED_SCROLL = 0.15;
+const FULL_SCROLL_CREDIT_MINUTES = 10;
+const ENGAGEMENT_PRIOR_EVENTS = 3;
+const OPEN_RATE_PRIOR_IMPRESSIONS = 20;
+const MAX_SOURCE_SCORE = 20;
+
+export type SourceAffinity = {
+  feedId: number;
+  readingWeight: number;
+  readingQuality: number;
+  engagement: number;
+  impressions: number;
+  opens: number;
+  openRate: number;
+  stars: number;
+  starWeight: number;
+  affinity: number;
+  relativeAffinity: number;
+};
+
+export type SourceBaseline = {
+  engagement: number;
+  openRate: number;
+  affinity: number;
+};
 
 export type InterestProfile = {
-  sources: Map<number, number>;
+  sources: Map<number, SourceAffinity>;
+  sourceBaseline: SourceBaseline | null;
   words: Map<string, number>;
   negatives: Map<string, number>;
 };
@@ -30,13 +59,155 @@ const profileTermMatchers = new WeakMap<InterestProfile, WeightedTermMatcher[]>(
 
 export type RankingCandidate = {
   entryId: number;
+  feedId?: number;
+  publishedAt?: string;
   breakdown: RecommendationScoreBreakdown;
   statusPriority: number;
 };
 
 const round = (value: number) => Math.round(value * 1000) / 1000;
 
-type StarredDocument = { feedId: number };
+type StarredDocument = { feedId: number; entryId?: number };
+
+type SourceTotals = {
+  readingWeight: number;
+  readingQuality: number;
+  impressions: number;
+  opens: number;
+  stars: number;
+};
+
+export function recencyWeight(at: number, now: number) {
+  return Math.exp(-Math.max(0, (now - at) / 86_400_000) / RECENCY_DAYS);
+}
+
+export function readingEventQuality(
+  event: Pick<ReadingEvent, "activeSeconds" | "scrollDepth" | "readingTime" | "feedback">,
+) {
+  if (event.feedback === "helpful") return 1;
+  const minutes = Number.isFinite(event.readingTime) ? Math.max(1, event.readingTime ?? 1) : 1;
+  const activeSeconds = Math.max(0, event.activeSeconds);
+  const completion = Math.min(1, activeSeconds / (minutes * 60));
+  const scrollCredit = Math.max(0, Math.min(1, event.scrollDepth))
+    * Math.min(1, minutes / FULL_SCROLL_CREDIT_MINUTES);
+  if (activeSeconds < MIN_ENGAGED_SECONDS && scrollCredit < MIN_ENGAGED_SCROLL) return 0;
+  return Math.max(completion, scrollCredit);
+}
+
+export function isEngagedReadingEvent(
+  event: Pick<ReadingEvent, "activeSeconds" | "scrollDepth" | "readingTime" | "feedback">,
+) {
+  return readingEventQuality(event) > 0;
+}
+
+function attributedOpenKey(rankingId: string, entryId: number) {
+  return `${rankingId}\n${entryId}`;
+}
+
+export function deriveSourceAffinities(
+  events: ReadingEvent[],
+  starred: StarredDocument[],
+  now: number,
+  options: { exposures?: RankingExposure[]; entryFeedIds?: ReadonlyMap<number, number> } = {},
+): { sources: Map<number, SourceAffinity>; baseline: SourceBaseline | null } {
+  const totals = new Map<number, SourceTotals>();
+  const totalsFor = (feedId: number) => {
+    let current = totals.get(feedId);
+    if (!current) {
+      current = { readingWeight: 0, readingQuality: 0, impressions: 0, opens: 0, stars: 0 };
+      totals.set(feedId, current);
+    }
+    return current;
+  };
+  const latestStarMark = new Map<number, { at: number; starred: boolean }>();
+  const attributedOpens = new Set<string>();
+
+  events.forEach((event) => {
+    if (event.starredAt) {
+      const starredAt = new Date(event.starredAt).getTime();
+      const current = latestStarMark.get(event.entryId);
+      if (Number.isFinite(starredAt) && (!current || starredAt > current.at)) {
+        latestStarMark.set(event.entryId, { at: starredAt, starred: event.starred === true });
+      }
+    }
+    if (event.feedback === "not_interested") return;
+    if (event.rankingId && event.exposedRank !== undefined) {
+      attributedOpens.add(attributedOpenKey(event.rankingId, event.entryId));
+    }
+    const openedAt = new Date(event.openedAt).getTime();
+    if (!Number.isFinite(openedAt)) return;
+    const weight = recencyWeight(openedAt, now);
+    const current = totalsFor(event.feedId);
+    current.readingWeight += weight;
+    current.readingQuality += weight * readingEventQuality(event);
+  });
+
+  options.exposures?.forEach((exposure) => {
+    const createdAt = new Date(exposure.createdAt).getTime();
+    if (!Number.isFinite(createdAt)) return;
+    const weight = recencyWeight(createdAt, now);
+    exposure.items.forEach((item) => {
+      const feedId = item.feedId ?? options.entryFeedIds?.get(item.entryId);
+      if (feedId === undefined) return;
+      const current = totalsFor(feedId);
+      current.impressions += weight / Math.log2(Math.max(1, item.rank) + 1);
+      if (attributedOpens.has(attributedOpenKey(exposure.id, item.entryId))) current.opens += weight;
+    });
+  });
+
+  starred.forEach((document) => {
+    const mark = document.entryId === undefined ? undefined : latestStarMark.get(document.entryId);
+    totalsFor(document.feedId).stars += mark?.starred ? recencyWeight(mark.at, now) : 1;
+  });
+
+  const sources = new Map<number, SourceAffinity>();
+  if (!totals.size) return { sources, baseline: null };
+  let readingWeight = 0;
+  let readingQuality = 0;
+  let impressions = 0;
+  let opens = 0;
+  totals.forEach((current) => {
+    readingWeight += current.readingWeight;
+    readingQuality += current.readingQuality;
+    impressions += current.impressions;
+    opens += current.opens;
+  });
+  const engagementPrior = readingWeight > 0 ? readingQuality / readingWeight : 0.5;
+  const openRatePrior = impressions > 0 ? opens / impressions : 0.5;
+  const baseline = {
+    engagement: engagementPrior,
+    openRate: openRatePrior,
+    affinity: engagementPrior * openRatePrior,
+  };
+  totals.forEach((current, feedId) => {
+    const starWeight = Math.log1p(current.stars);
+    const engagement = (current.readingQuality + starWeight + ENGAGEMENT_PRIOR_EVENTS * engagementPrior)
+      / (current.readingWeight + starWeight + ENGAGEMENT_PRIOR_EVENTS);
+    const openRate = (current.opens + OPEN_RATE_PRIOR_IMPRESSIONS * openRatePrior)
+      / (current.impressions + OPEN_RATE_PRIOR_IMPRESSIONS);
+    const affinity = engagement * openRate;
+    sources.set(feedId, {
+      feedId,
+      ...current,
+      engagement,
+      openRate,
+      starWeight,
+      affinity,
+      relativeAffinity: baseline.affinity > 0 ? affinity / baseline.affinity : 1,
+    });
+  });
+  return { sources, baseline };
+}
+
+export function sourceScoreForAffinity(relativeAffinity: number) {
+  const relative = Math.max(0, relativeAffinity);
+  return round(MAX_SOURCE_SCORE * relative / (1 + relative));
+}
+
+export function isPreferredSource(profile: InterestProfile, feedId: number) {
+  const source = profile.sources.get(feedId);
+  return !!source && source.readingQuality > 0 && source.relativeAffinity >= 1.5;
+}
 
 export { extractRecommendationTerms } from "./recommendation-terms.ts";
 
@@ -82,32 +253,18 @@ export function deriveInterestProfile(
   events: ReadingEvent[],
   starred: StarredDocument[],
   now: number,
+  options: { exposures?: RankingExposure[]; entryFeedIds?: ReadonlyMap<number, number> } = {},
 ): InterestProfile {
-  const sources = new Map<number, number>();
+  const { sources, baseline } = deriveSourceAffinities(events, starred, now, options);
   const words = new Map<string, number>();
   const negatives = new Map<string, number>();
-  events.forEach((event) => {
-    const openedAt = new Date(event.openedAt).getTime();
-    if (!Number.isFinite(openedAt)) return;
-    const ageDays = Math.max(0, (now - openedAt) / 86_400_000);
-    const recency = Math.exp(-ageDays / 28);
-    const engaged = Math.min(4, event.activeSeconds / 30) + event.scrollDepth * 2;
-    const positive = event.feedback === "helpful" ? 5 : engaged;
-    if (event.feedback === "not_interested") return;
-    if (event.activeSeconds < 6 && event.scrollDepth < 0.15 && event.feedback !== "helpful") return;
-    const weight = Math.max(0.2, positive) * recency;
-    sources.set(event.feedId, (sources.get(event.feedId) ?? 0) + weight);
-  });
-  starred.forEach((document) => {
-    sources.set(document.feedId, (sources.get(document.feedId) ?? 0) + 5);
-  });
   foldTopicFeedback(events).forEach((operation) => {
     if (!operation.interested) return;
     const selectedAt = new Date(operation.updatedAt).getTime();
     if (!Number.isFinite(selectedAt)) return;
     words.set(operation.term, 1);
   });
-  return { sources, words, negatives };
+  return { sources, sourceBaseline: baseline, words, negatives };
 }
 
 export function scoreRecommendation(input: {
@@ -121,8 +278,8 @@ export function scoreRecommendation(input: {
   const normalizedText = normalizeRecommendationTerm(input.text);
   const hits = termMatchersForProfile(input.profile)
     .filter(({ matches }) => matches(normalizedText));
-  const sourceAffinity = input.profile.sources.get(input.feedId) ?? 0;
-  const sourceScore = round(Math.min(20, 20 * Math.log1p(sourceAffinity) / Math.log(201)));
+  const source = input.profile.sources.get(input.feedId);
+  const sourceScore = sourceScoreForAffinity(source ? source.relativeAffinity : input.profile.sourceBaseline ? 1 : 0);
   const termSignal = hits.reduce((sum, { weight }) => sum + Math.log1p(weight), 0);
   const termScore = round(Math.min(24, 9 * Math.log1p(termSignal)));
   const publishedAt = new Date(input.publishedAt).getTime();
@@ -183,6 +340,8 @@ export function createRankingExposure(input: {
     displayedCount: candidates.length,
     items: candidates.map((candidate, index) => ({
       entryId: candidate.entryId,
+      ...(candidate.feedId !== undefined ? { feedId: candidate.feedId } : {}),
+      ...(candidate.publishedAt ? { publishedAt: candidate.publishedAt } : {}),
       rank: index + 1,
       score: candidate.breakdown.score,
       sourceScore: candidate.breakdown.sourceScore,
@@ -232,7 +391,7 @@ export function recommendationDiagnostics(exposures: RankingExposure[], events: 
   }, 0);
   const exposureIds = new Set(exposures.map((exposure) => exposure.id));
   const attributed = events.filter((event) => event.rankingId && exposureIds.has(event.rankingId) && event.exposedRank !== undefined);
-  const engaged = attributed.filter((event) => event.activeSeconds >= 6 || event.scrollDepth >= 0.15 || event.feedback === "helpful");
+  const engaged = attributed.filter(isEngagedReadingEvent);
   const summarize = (values: number[]) => ({
     min: values.length ? Math.min(...values) : 0,
     average: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0,

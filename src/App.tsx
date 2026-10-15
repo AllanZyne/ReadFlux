@@ -80,7 +80,7 @@ import {
   WebDavConfig,
   WebDavSyncInterval,
 } from "./readflux-client";
-import { createRankingExposure, deriveInterestProfile, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, selectedTopicTermsByEntry, selectedTopicTermsForEntry, type RecommendationScoreBreakdown } from "./recommendation";
+import { createRankingExposure, deriveInterestProfile, isEngagedReadingEvent, isPreferredSource, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, selectedTopicTermsByEntry, selectedTopicTermsForEntry, sourceScoreForAffinity, type RecommendationScoreBreakdown, type SourceAffinity, type SourceBaseline } from "./recommendation";
 import { extractRecommendationCandidateTermsAsync, initializeChineseRecommendationTerms, normalizeRecommendationTerm, normalizeSelectedTopic, prioritizeFollowedTopicTerms } from "./recommendation-terms";
 import {
   clearWebDavEtagCache,
@@ -534,7 +534,8 @@ function SettingsDialog({
   settings,
   timeZone,
   timeZoneSource,
-  sourceWeights,
+  sourceAffinities,
+  sourceBaseline,
   wordWeights,
   exposures,
   starredCount,
@@ -561,7 +562,8 @@ function SettingsDialog({
   settings: ProfileSettings;
   timeZone: string;
   timeZoneSource: "miniflux" | "browser";
-  sourceWeights: Map<number, number>;
+  sourceAffinities: Map<number, SourceAffinity>;
+  sourceBaseline: SourceBaseline | null;
   wordWeights: Map<string, number>;
   exposures: RankingExposure[];
   starredCount: number;
@@ -773,8 +775,7 @@ function SettingsDialog({
     notify(t("recommendation.eventDeleted"));
   };
 
-  const validEvents = events.filter((event) =>
-    event.activeSeconds >= 6 || event.scrollDepth >= 0.15 || event.feedback === "helpful");
+  const validEvents = events.filter(isEngagedReadingEvent);
   const averageSeconds = events.length
     ? Math.round(events.reduce((sum, event) => sum + event.activeSeconds, 0) / events.length)
     : 0;
@@ -786,7 +787,9 @@ function SettingsDialog({
   const sourceName = new Map<number, string>();
   events.forEach((event) => sourceName.set(event.feedId, event.source));
   feeds.forEach((feed) => sourceName.set(feed.id, feed.title));
-  const topSources = [...sourceWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
+  const topSources = [...sourceAffinities.values()]
+    .sort((a, b) => b.relativeAffinity - a.relativeAffinity || a.feedId - b.feedId)
+    .slice(0, 12);
   const topWords = [...wordWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
   const diagnostics = recommendationDiagnostics(exposures, events);
   const selectedTermsByEntry = useMemo(() => selectedTopicTermsByEntry(events), [events]);
@@ -1022,8 +1025,26 @@ function SettingsDialog({
             </section>
             <section className="derivedData twoColumns">
               <div>
-                <header><h3>{t("recommendation.sourceWeights")}</h3><small>{t("recommendation.sourceWeightsHint")}</small></header>
-                <div className="weightList">{topSources.length ? topSources.map(([feedId, weight]) => <span key={feedId}><b>{sourceName.get(feedId) ?? `${t("common.feed")} ${feedId}`}</b><em>{weight.toFixed(2)}</em></span>) : <p>{t("recommendation.noWeights")}</p>}</div>
+                <header><h3>{t("recommendation.sourceWeights")}</h3><small>{t("recommendation.sourceWeightsHint")}</small>{sourceBaseline && <small>{t("recommendation.sourceBaseline", {
+                  engagement: Math.round(sourceBaseline.engagement * 100),
+                  openRate: Math.round(sourceBaseline.openRate * 100),
+                })}</small>}</header>
+                <div className="weightList">{topSources.length ? topSources.map((source) => <span key={source.feedId}>
+                  <b>{sourceName.get(source.feedId) ?? `${t("common.feed")} ${source.feedId}`}</b>
+                  <em>{t("recommendation.sourceAffinityValue", {
+                    affinity: source.relativeAffinity.toFixed(2),
+                    score: sourceScoreForAffinity(source.relativeAffinity).toFixed(1),
+                  })}</em>
+                  <small>{t("recommendation.sourceAffinityDetail", {
+                    engagement: Math.round(source.engagement * 100),
+                    reads: source.readingWeight.toFixed(1),
+                    opens: source.opens.toFixed(1),
+                    impressions: source.impressions.toFixed(1),
+                    openRate: Math.round(source.openRate * 100),
+                    stars: source.stars.toFixed(1),
+                    starWeight: source.starWeight.toFixed(2),
+                  })}</small>
+                </span>) : <p>{t("recommendation.noWeights")}</p>}</div>
               </div>
               <div>
                 <header><h3>{t("recommendation.positiveTerms")}</h3><small>{t("recommendation.positiveTermsHint")}</small></header>
@@ -1891,13 +1912,18 @@ export default function App() {
   const recommendationSnapshot = useMemo(() => ({
     entries,
     events: recommendationEvents,
+    exposures: recommendationExposures,
     now: syncedAt?.getTime() ?? todayClock,
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [activeTimeZone, hideRead, listOrderVersion, listReadSnapshot, mode, query, topic]);
   const interest = useMemo(() => deriveInterestProfile(
     recommendationSnapshot.events,
-    recommendationSnapshot.entries.filter((entry) => entry.starred).map((entry) => ({ feedId: entry.feed_id })),
+    recommendationSnapshot.entries.filter((entry) => entry.starred).map((entry) => ({ feedId: entry.feed_id, entryId: entry.id })),
     recommendationSnapshot.now,
+    {
+      exposures: recommendationSnapshot.exposures,
+      entryFeedIds: new Map(recommendationSnapshot.entries.map((entry) => [entry.id, entry.feed_id])),
+    },
   ), [recommendationSnapshot]);
 
   const projectStories = useMemo(() => createStoryProjector<Entry, Story>((entry) => {
@@ -1914,7 +1940,6 @@ export default function App() {
       summary: text.summary ? `${text.summary}${text.summary.length >= 160 ? "…" : ""}` : t("feed.noSummary"),
       recommendationText: text.recommendationText,
     };
-    const sourceAffinity = interest.sources.get(story.feed_id) ?? 0;
     const scoreBreakdown = scoreRecommendation({
       feedId: story.feed_id,
       text: story.recommendationText,
@@ -1924,7 +1949,7 @@ export default function App() {
       profile: interest,
     });
     const terms = scoreBreakdown.matchedTerms.slice(0, 2).join(", ");
-    const reason = sourceAffinity >= 2
+    const reason = isPreferredSource(interest, story.feed_id)
       ? t("recommendation.reasonSource", { source: story.source, interest: scoreBreakdown.matchedTerms[0] ? t("recommendation.reasonSourceInterest", { terms }) : "" })
       : scoreBreakdown.matchedTerms[0]
         ? t("recommendation.reasonTerms", { terms })
@@ -2188,6 +2213,8 @@ export default function App() {
         candidateCount: visible.length,
         candidates: visible.slice(0, 50).map((story) => ({
           entryId: story.id,
+          feedId: story.feed_id,
+          publishedAt: story.published_at,
           breakdown: story.scoreBreakdown,
           statusPriority: smartFeedStatusPriority(story, entryLabels),
         })),
@@ -3048,7 +3075,8 @@ export default function App() {
         settings={settings}
         timeZone={activeTimeZone}
         timeZoneSource={timeZoneSelection.source}
-        sourceWeights={interest.sources}
+        sourceAffinities={interest.sources}
+        sourceBaseline={interest.sourceBaseline}
         wordWeights={interest.words}
         exposures={recommendationExposures}
         starredCount={savedCount}
