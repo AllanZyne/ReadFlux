@@ -9,10 +9,12 @@ import {
   extractRecommendationTerms,
   foldTopicFeedback,
   isEngagedReadingEvent,
+  RANKING_EXPOSURE_LIMIT,
   rankingAttribution,
   readingEventQuality,
   recommendationDiagnostics,
   recordBulkDismissal,
+  recordSeenEntries,
   RECOMMENDATION_ALGORITHM_VERSION,
   scoreRecommendation,
   selectedTopicTermsByEntry,
@@ -217,7 +219,7 @@ test("source scores map relative affinity onto a bounded scale and keep term dis
   assert.ok(breakdown.termScore > 20 && breakdown.termScore < 24);
   assert.ok(breakdown.unclampedScore < 99);
   assert.equal(breakdown.score, Math.round(breakdown.unclampedScore));
-  assert.equal(RECOMMENDATION_ALGORITHM_VERSION, "heuristic-v4-engagement-affinity");
+  assert.equal(RECOMMENDATION_ALGORITHM_VERSION, "heuristic-v5-seen-impressions");
 });
 
 test("reading quality normalizes foreground time by expected length", () => {
@@ -357,13 +359,15 @@ test("exposure capture bounds ordered items and attribution uses a one-based ran
   const exposure = createRankingExposure({
     id: "ranking-1",
     createdAt: "2026-08-15T00:00:00.000Z",
-    candidateCount: 50,
-    candidates: Array.from({ length: 55 }, (_, index) => ({ entryId: index + 100, breakdown, statusPriority: 1 })),
+    candidateCount: 120,
+    candidates: Array.from({ length: 120 }, (_, index) => ({ entryId: index + 100, breakdown, statusPriority: 1 })),
   });
   assert.equal(exposure.schemaVersion, 2);
-  assert.equal(exposure.displayedCount, 50);
+  assert.equal(RANKING_EXPOSURE_LIMIT, 100);
+  assert.equal(exposure.displayedCount, 100);
   assert.equal(exposure.items[0].rank, 1);
-  assert.equal(exposure.items[49].rank, 50);
+  assert.equal(exposure.items[99].rank, 100);
+  assert.deepEqual(exposure.seenEntryIds, []);
   assert.deepEqual(exposure.items[0].matchedTerms, ["llvm", "compiler", "extra"]);
   assert.deepEqual(rankingAttribution(exposure, 100), {
     rankingId: "ranking-1",
@@ -399,7 +403,74 @@ test("the Today snapshot captures exposures with events so background pulls do n
   assert.match(appSource, /feedId: story\.feed_id,\s*publishedAt: story\.published_at,/);
 });
 
-test("bulk dismissal records only exposed Top 50 items without changing scores", () => {
+test("seen tracking keeps only new exposed entries and returns the same exposure when unchanged", () => {
+  const breakdown = { score: 50, unclampedScore: 50, sourceScore: 10, termScore: 0, freshnessScore: 0, savedBonus: 0, negativePenalty: 0, matchedTerms: [] };
+  const exposure = createRankingExposure({
+    id: "ranking-seen",
+    createdAt: "2026-08-15T00:00:00.000Z",
+    candidateCount: 3,
+    candidates: [1, 2, 3].map((entryId) => ({ entryId, breakdown, statusPriority: 1 })),
+  });
+  const seen = recordSeenEntries(exposure, [2, 2, 999]);
+  assert.deepEqual(seen.seenEntryIds, [2]);
+  assert.deepEqual(recordSeenEntries(seen, [3, 2]).seenEntryIds, [2, 3]);
+  assert.equal(recordSeenEntries(seen, [2, 999]), seen);
+  assert.deepEqual(seen.items, exposure.items);
+});
+
+test("seen exposures count only seen or opened items as impressions", () => {
+  const now = Date.parse("2026-08-14T00:00:00.000Z");
+  const item = (entryId, rank, feedId) => ({ entryId, feedId, rank, score: 50, sourceScore: 0, termScore: 0, freshnessScore: 0, savedBonus: 0, negativePenalty: 0, statusPriority: 1, matchedTerms: [] });
+  const exposure = (seenEntryIds) => ({
+    id: "ranking-1",
+    createdAt: "2026-08-14T00:00:00.000Z",
+    algorithmVersion: RECOMMENDATION_ALGORITHM_VERSION,
+    schemaVersion: 2,
+    surface: "today",
+    candidateCount: 4,
+    displayedCount: 4,
+    items: [item(1, 1, 10), item(2, 2, 10), item(3, 3, 20), item(4, 4, 20)],
+    ...(seenEntryIds ? { seenEntryIds } : {}),
+  });
+  const open = event({ id: "open", entryId: 4, feedId: 20, rankingId: "ranking-1", exposedRank: 4, openedAt: "2026-08-14T00:00:00.000Z" });
+
+  const tracked = deriveSourceAffinities([open], [], now, { exposures: [exposure([1, 2])] }).sources;
+  assert.equal(tracked.get(10).impressions, 2);
+  assert.equal(tracked.get(20).impressions, 1);
+  assert.equal(tracked.get(20).opens, 1);
+
+  const untracked = deriveSourceAffinities([open], [], now, { exposures: [exposure()] }).sources;
+  assert.ok(Math.abs(untracked.get(10).impressions - (1 + 1 / Math.log2(3))) < 1e-9);
+
+  const nothingSeen = deriveSourceAffinities([], [], now, { exposures: [exposure([])] }).sources;
+  assert.equal(nothingSeen.get(10), undefined);
+});
+
+test("diagnostics report open rates among seen items, counting opened items as seen", () => {
+  const breakdown = { score: 50, unclampedScore: 50, sourceScore: 10, termScore: 0, freshnessScore: 0, savedBonus: 0, negativePenalty: 0, matchedTerms: [] };
+  const tracked = recordSeenEntries(createRankingExposure({
+    id: "tracked",
+    createdAt: "2026-08-15T00:00:00.000Z",
+    candidateCount: 4,
+    candidates: [1, 2, 3, 4].map((entryId) => ({ entryId, breakdown, statusPriority: 1 })),
+  }), [1, 2]);
+  const untracked = { ...tracked, id: "untracked", seenEntryIds: undefined };
+  const events = [
+    event({ id: "a", entryId: 2, rankingId: "tracked", exposedRank: 2 }),
+    event({ id: "b", entryId: 4, rankingId: "tracked", exposedRank: 4, activeSeconds: 0, scrollDepth: 0 }),
+  ];
+  const { seen, evaluationAtK } = recommendationDiagnostics([tracked, untracked], events);
+  assert.deepEqual(seen, { trackedExposures: 1, impressions: 3, opens: 2, engagedOpens: 1, openPercent: 2 / 3 * 100, engagedOpenPercent: 1 / 3 * 100 });
+  assert.deepEqual(evaluationAtK.map(({ k }) => k), [5, 10, 20, 50, 100]);
+});
+
+test("the list flushes viewport-seen entries into the exposure before a new exposure replaces it", () => {
+  assert.match(appSource, /new IntersectionObserver\([\s\S]*?\{ root: list, threshold: SEEN_VISIBLE_RATIO \}\)/);
+  assert.match(appSource, /capturedVisibleOrder\.current = frozenVisibleOrder\.ids;\s*flushSeenEntries\(\);/);
+  assert.match(appSource, /visible\.slice\(0, RANKING_EXPOSURE_LIMIT\)/);
+});
+
+test("bulk dismissal records only exposed Top 100 items without changing scores", () => {
   const breakdown = {
     score: 80,
     unclampedScore: 80,
@@ -413,11 +484,11 @@ test("bulk dismissal records only exposed Top 50 items without changing scores",
   const exposure = createRankingExposure({
     id: "ranking-1",
     createdAt: "2026-08-15T00:00:00.000Z",
-    candidateCount: 60,
-    candidates: Array.from({ length: 60 }, (_, index) => ({ entryId: index + 1, breakdown, statusPriority: 1 })),
+    candidateCount: 110,
+    candidates: Array.from({ length: 110 }, (_, index) => ({ entryId: index + 1, breakdown, statusPriority: 1 })),
   });
-  const updated = recordBulkDismissal(exposure, [2, 50, 51, 999], "2026-08-15T01:00:00.000Z");
-  assert.deepEqual(updated.bulkDismissedEntryIds, [2, 50]);
+  const updated = recordBulkDismissal(exposure, [2, 100, 101, 999], "2026-08-15T01:00:00.000Z");
+  assert.deepEqual(updated.bulkDismissedEntryIds, [2, 100]);
   assert.equal(updated.bulkDismissedAt, "2026-08-15T01:00:00.000Z");
   assert.deepEqual(updated.items, exposure.items);
 });

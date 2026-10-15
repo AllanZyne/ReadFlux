@@ -81,7 +81,7 @@ import {
   WebDavConfig,
   WebDavSyncInterval,
 } from "./readflux-client";
-import { createRankingExposure, deriveInterestProfile, isEngagedReadingEvent, isPreferredSource, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, selectedTopicTermsByEntry, selectedTopicTermsForEntry, sourceScoreForAffinity, type RecommendationScoreBreakdown, type SourceAffinity, type SourceBaseline } from "./recommendation";
+import { createRankingExposure, deriveInterestProfile, isEngagedReadingEvent, isPreferredSource, RANKING_EXPOSURE_LIMIT, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, recordSeenEntries, scoreRecommendation, selectedTopicTermsByEntry, selectedTopicTermsForEntry, sourceScoreForAffinity, type RecommendationScoreBreakdown, type SourceAffinity, type SourceBaseline } from "./recommendation";
 import { buildRecommendationExport, recommendationExportFileName, withActiveReadingEvent } from "./recommendation-export";
 import { extractRecommendationCandidateTermsAsync, initializeChineseRecommendationTerms, normalizeRecommendationTerm, normalizeSelectedTopic, prioritizeFollowedTopicTerms } from "./recommendation-terms";
 import {
@@ -150,6 +150,9 @@ type EntrySyncMode = "auto" | "full" | "incremental";
 type EntrySyncOptions = { background?: boolean; mode?: EntrySyncMode };
 
 const ENTRY_PAGE_SIZE = 100;
+const SEEN_VISIBLE_RATIO = 0.5;
+const SEEN_DWELL_MS = 500;
+const SEEN_FLUSH_MS = 2000;
 
 type LocalizedError = { key: string; status?: number };
 
@@ -1027,6 +1030,8 @@ function SettingsDialog({
               <div><strong>{diagnostics.engagedOpenCount}</strong><span>{t("recommendation.engagedOpens")}</span></div>
               <div><strong>{diagnostics.clampedPercent.toFixed(1)}%</strong><span>{t("recommendation.saturation")}</span></div>
               <div><strong>{diagnostics.tiePercent.toFixed(1)}%</strong><span>{t("recommendation.tieRate")}</span></div>
+              <div><strong>{diagnostics.seen.impressions}</strong><span>{t("recommendation.seenImpressions")}</span></div>
+              <div><strong>{diagnostics.seen.openPercent.toFixed(1)}%</strong><span>{t("recommendation.seenOpenRate")}</span></div>
             </section>
             <section className="derivedData twoColumns">
               <div>
@@ -1242,6 +1247,8 @@ export default function App() {
   const markAllReadConfirmRef = useRef<HTMLButtonElement | null>(null);
   const topicSelectionConfirmRef = useRef<HTMLButtonElement | null>(null);
   const autoReadFrame = useRef<number | undefined>(undefined);
+  const pendingSeenIds = useRef(new Set<number>());
+  const seenFlushTimer = useRef<number | undefined>(undefined);
   const autoReadPendingIds = useRef<Set<number>>(new Set());
   const previousStoryListScrollTop = useRef(0);
   const sourceSnapshotInitialized = useRef(false);
@@ -2244,15 +2251,76 @@ export default function App() {
     if (autoReadFrame.current !== undefined) window.cancelAnimationFrame(autoReadFrame.current);
   }, []);
 
+  const flushSeenEntries = useCallback(() => {
+    if (seenFlushTimer.current !== undefined) window.clearTimeout(seenFlushTimer.current);
+    seenFlushTimer.current = undefined;
+    const ids = pendingSeenIds.current;
+    pendingSeenIds.current = new Set();
+    const exposure = latestExposure.current;
+    if (!exposure || !ids.size) return;
+    const updatedExposure = recordSeenEntries(exposure, ids);
+    if (updatedExposure === exposure) return;
+    latestExposure.current = updatedExposure;
+    void putRankingExposure(updatedExposure).then(() => {
+      setExposures((current) => current.map((item) => item.id === updatedExposure.id ? updatedExposure : item));
+      scheduleWebDavUpload();
+    }).catch(() => undefined);
+  }, [scheduleWebDavUpload]);
+
+  useEffect(() => {
+    const list = storyListRef.current;
+    if (!list || typeof IntersectionObserver === "undefined") return;
+    const dwellTimers = new Map<number, number>();
+    const observer = new IntersectionObserver((records) => {
+      records.forEach((record) => {
+        const id = Number((record.target as HTMLElement).dataset.entryId);
+        if (!Number.isSafeInteger(id)) return;
+        if (!record.isIntersecting) {
+          window.clearTimeout(dwellTimers.get(id));
+          dwellTimers.delete(id);
+          return;
+        }
+        if (dwellTimers.has(id)) return;
+        dwellTimers.set(id, window.setTimeout(() => {
+          dwellTimers.delete(id);
+          if (document.visibilityState !== "visible") return;
+          pendingSeenIds.current.add(id);
+          if (seenFlushTimer.current === undefined) {
+            seenFlushTimer.current = window.setTimeout(flushSeenEntries, SEEN_FLUSH_MS);
+          }
+        }, SEEN_DWELL_MS));
+      });
+    }, { root: list, threshold: SEEN_VISIBLE_RATIO });
+    list.querySelectorAll<HTMLElement>(".story[data-entry-id]").forEach((row) => observer.observe(row));
+    return () => {
+      observer.disconnect();
+      dwellTimers.forEach((timer) => window.clearTimeout(timer));
+    };
+  }, [flushSeenEntries, renderedStories]);
+
+  useEffect(() => {
+    const flushWhenHidden = () => {
+      if (document.visibilityState !== "visible") flushSeenEntries();
+    };
+    window.addEventListener("pagehide", flushSeenEntries);
+    document.addEventListener("visibilitychange", flushWhenHidden);
+    return () => {
+      window.removeEventListener("pagehide", flushSeenEntries);
+      document.removeEventListener("visibilitychange", flushWhenHidden);
+      flushSeenEntries();
+    };
+  }, [flushSeenEntries]);
+
   useEffect(() => {
     if (capturedVisibleOrder.current === frozenVisibleOrder.ids) return;
     capturedVisibleOrder.current = frozenVisibleOrder.ids;
+    flushSeenEntries();
     if (mode === "today" && !query.trim() && visible.length) {
       const exposure = createRankingExposure({
         id: crypto.randomUUID(),
         createdAt: new Date().toISOString(),
         candidateCount: visible.length,
-        candidates: visible.slice(0, 50).map((story) => ({
+        candidates: visible.slice(0, RANKING_EXPOSURE_LIMIT).map((story) => ({
           entryId: story.id,
           feedId: story.feed_id,
           publishedAt: story.published_at,
@@ -2268,7 +2336,7 @@ export default function App() {
     } else {
       latestExposure.current = null;
     }
-  }, [visible, frozenVisibleOrder, mode, query, entryLabels, scheduleWebDavUpload]);
+  }, [visible, frozenVisibleOrder, mode, query, entryLabels, flushSeenEntries, scheduleWebDavUpload]);
 
   useEffect(() => { visibleEmptyRef.current = !visible.length; }, [visible]);
 

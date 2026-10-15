@@ -320,7 +320,9 @@ export function validRankingExposure(value: unknown): value is RankingExposure {
       && item.matchedTerms.every((term) => typeof term === "string"))
     && (exposure.bulkDismissedAt === undefined || typeof exposure.bulkDismissedAt === "string")
     && (exposure.bulkDismissedEntryIds === undefined || (Array.isArray(exposure.bulkDismissedEntryIds)
-      && exposure.bulkDismissedEntryIds.every(Number.isFinite)));
+      && exposure.bulkDismissedEntryIds.every(Number.isFinite)))
+    && (exposure.seenEntryIds === undefined || (Array.isArray(exposure.seenEntryIds)
+      && exposure.seenEntryIds.every(Number.isFinite)));
 }
 
 function validExposureMonthFile(value: unknown): value is ExposureMonthFile {

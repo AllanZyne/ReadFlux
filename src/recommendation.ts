@@ -1,7 +1,8 @@
 import type { ReadingEvent, RankingExposure } from "./readflux-client.ts";
 import { normalizeRecommendationTerm } from "./recommendation-terms.ts";
 
-export const RECOMMENDATION_ALGORITHM_VERSION = "heuristic-v4-engagement-affinity";
+export const RECOMMENDATION_ALGORITHM_VERSION = "heuristic-v5-seen-impressions";
+export const RANKING_EXPOSURE_LIMIT = 100;
 
 export const RECENCY_DAYS = 28;
 export const MIN_ENGAGED_SECONDS = 5;
@@ -146,12 +147,16 @@ export function deriveSourceAffinities(
     const createdAt = new Date(exposure.createdAt).getTime();
     if (!Number.isFinite(createdAt)) return;
     const weight = recencyWeight(createdAt, now);
+    const seen = exposure.seenEntryIds ? new Set(exposure.seenEntryIds) : null;
     exposure.items.forEach((item) => {
       const feedId = item.feedId ?? options.entryFeedIds?.get(item.entryId);
       if (feedId === undefined) return;
+      const opened = attributedOpens.has(attributedOpenKey(exposure.id, item.entryId));
+      if (seen && !opened && !seen.has(item.entryId)) return;
       const current = totalsFor(feedId);
-      current.impressions += weight / Math.log2(Math.max(1, item.rank) + 1);
-      if (attributedOpens.has(attributedOpenKey(exposure.id, item.entryId))) current.opens += weight;
+      // Exposures without viewport tracking estimate examination from rank.
+      current.impressions += seen ? weight : weight / Math.log2(Math.max(1, item.rank) + 1);
+      if (opened) current.opens += weight;
     });
   });
 
@@ -329,7 +334,7 @@ export function createRankingExposure(input: {
   candidates: RankingCandidate[];
   limit?: number;
 }): RankingExposure {
-  const candidates = input.candidates.slice(0, input.limit ?? 50);
+  const candidates = input.candidates.slice(0, input.limit ?? RANKING_EXPOSURE_LIMIT);
   return {
     id: input.id,
     createdAt: input.createdAt,
@@ -352,7 +357,16 @@ export function createRankingExposure(input: {
       statusPriority: candidate.statusPriority,
       matchedTerms: candidate.breakdown.matchedTerms.slice(0, 3),
     })),
+    seenEntryIds: [],
   };
+}
+
+export function recordSeenEntries(exposure: RankingExposure, entryIds: Iterable<number>): RankingExposure {
+  const seen = new Set(exposure.seenEntryIds ?? []);
+  const exposed = new Set(exposure.items.map((item) => item.entryId));
+  const added = [...entryIds].filter((entryId) => exposed.has(entryId) && !seen.has(entryId));
+  if (!added.length) return exposure;
+  return { ...exposure, seenEntryIds: [...seen, ...new Set(added)] };
 }
 
 export function recordBulkDismissal(
@@ -417,7 +431,23 @@ export function recommendationDiagnostics(exposures: RankingExposure[], events: 
       engagedOpenPercent: impressions ? engagedOpens / impressions * 100 : 0,
     };
   });
-  const evaluationAtK = [5, 10, 20, 50].map((k) => {
+  const attributedKeys = new Set(attributed.map((event) => `${event.rankingId}:${event.entryId}`));
+  const engagedKeySet = new Set(engaged.map((event) => `${event.rankingId}:${event.entryId}`));
+  const seenTracked = exposures.filter((exposure) => exposure.seenEntryIds);
+  const seenKeys = new Set(seenTracked.flatMap((exposure) => exposure.items
+    .filter((item) => exposure.seenEntryIds?.includes(item.entryId) || attributedKeys.has(`${exposure.id}:${item.entryId}`))
+    .map((item) => `${exposure.id}:${item.entryId}`)));
+  const seenOpens = [...seenKeys].filter((key) => attributedKeys.has(key)).length;
+  const seenEngaged = [...seenKeys].filter((key) => engagedKeySet.has(key)).length;
+  const seen = {
+    trackedExposures: seenTracked.length,
+    impressions: seenKeys.size,
+    opens: seenOpens,
+    engagedOpens: seenEngaged,
+    openPercent: seenKeys.size ? seenOpens / seenKeys.size * 100 : 0,
+    engagedOpenPercent: seenKeys.size ? seenEngaged / seenKeys.size * 100 : 0,
+  };
+  const evaluationAtK = [5, 10, 20, 50, 100].map((k) => {
     const impressionKeys = new Set(exposures.flatMap((exposure) => exposure.items
       .filter((item) => item.rank <= k)
       .map((item) => `${exposure.id}:${item.entryId}`)));
@@ -469,5 +499,6 @@ export function recommendationDiagnostics(exposures: RankingExposure[], events: 
     },
     rankEngagement,
     evaluationAtK,
+    seen,
   };
 }

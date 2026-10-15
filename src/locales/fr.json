@@ -148,6 +148,8 @@
     "engagedOpens": "Ouvertures engagées",
     "saturation": "Scores plafonnés à 99",
     "tieRate": "Taux d’égalité",
+    "seenImpressions": "Vus dans la liste",
+    "seenOpenRate": "Taux d’ouverture une fois vus",
     "sourceWeights": "Affinité des flux",
     "sourceWeightsHint": "Profondeur de lecture lissée (favoris à rendement décroissant) × taux d’ouverture d’Aujourd’hui ajusté à la position, relative au flux moyen, avec décroissance temporelle",
     "sourceBaseline": "Flux moyen : {{engagement}} % de profondeur de lecture",

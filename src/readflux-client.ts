@@ -133,6 +133,7 @@ export type RankingExposure = {
   items: RankingExposureItem[];
   bulkDismissedAt?: string;
   bulkDismissedEntryIds?: number[];
+  seenEntryIds?: number[];
   remoteClientId?: string;
   remoteClientName?: string;
 };

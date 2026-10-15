@@ -148,6 +148,8 @@
     "engagedOpens": "Engaged opens",
     "saturation": "Scores clamped at 99",
     "tieRate": "Score tie rate",
+    "seenImpressions": "Seen in list",
+    "seenOpenRate": "Open rate when seen",
     "sourceWeights": "Feed affinity",
     "sourceWeightsHint": "Smoothed reading depth (with diminishing credit for saved articles) × position-adjusted Today open rate, relative to the average feed, with time decay",
     "sourceBaseline": "Average feed: {{engagement}}% reading depth",
