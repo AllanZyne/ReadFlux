@@ -27,6 +27,7 @@ import { loadOptionalMinifluxTimeZone } from "./miniflux-timezone.mjs";
 import { articleHash, parseAppRoute, type AppRoute } from "./routes";
 import { compareSmartFeedEntries, countSmartFeedEntries, formatStoryListDate, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, nextDayBoundary, selectTimeZone, smartFeedStatusPriority, smartFeedTimeBucket, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
 import { createStoryProjector, nextStoryRenderCount, STORY_RENDER_BATCH_SIZE, storyIdsPassedByScroll } from "./story-list";
+import { advanceReadingClock, READING_PERSIST_MS, READING_TICK_MS, readingForegroundActive, type ReadingClock } from "./reading-time";
 import { storyTextForEntry } from "./story-text";
 import {
   CachedFeedIcon,
@@ -439,23 +440,25 @@ function ArticleMetadata({
   feedIcon?: string;
   timeZone: string;
   initialReadingSeconds: number;
-  onReadingTick: () => boolean;
+  onReadingTick: () => number;
   onTextSelection: (text: string, rect: DOMRect) => void;
   t: TFunction;
 }) {
   const [readingSeconds, setReadingSeconds] = useState(initialReadingSeconds);
+  const shownSeconds = Math.floor(readingSeconds);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      if (onReadingTick()) setReadingSeconds((seconds) => seconds + 5);
-    }, 5000);
+      const elapsedSeconds = onReadingTick();
+      if (elapsedSeconds > 0) setReadingSeconds((seconds) => seconds + elapsedSeconds);
+    }, READING_TICK_MS);
     return () => window.clearInterval(timer);
   }, [onReadingTick]);
 
   return <header className="articleHead"><div><h2
     onMouseUp={(event) => captureTextSelection(event.currentTarget, onTextSelection)}
     onTouchEnd={(event) => captureTextSelection(event.currentTarget, onTextSelection)}
-  >{story.title}</h2><p><SourceIcon src={feedIcon}>{story.mark}</SourceIcon>{story.author || story.source} · {formatZonedDateTime(story.published_at, timeZone)} · {t("feed.minutes", { count: story.reading_time || 1 })}{readingSeconds > 0 && <span className="articleReadingTime">· {Math.floor(readingSeconds / 60)}:{String(readingSeconds % 60).padStart(2, "0")}</span>}</p></div></header>;
+  >{story.title}</h2><p><SourceIcon src={feedIcon}>{story.mark}</SourceIcon>{story.author || story.source} · {formatZonedDateTime(story.published_at, timeZone)} · {t("feed.minutes", { count: story.reading_time || 1 })}{shownSeconds > 0 && <span className="articleReadingTime">· {Math.floor(shownSeconds / 60)}:{String(shownSeconds % 60).padStart(2, "0")}</span>}</p></div></header>;
 }
 
 const ArticleBody = memo(function ArticleBody({
@@ -1229,6 +1232,8 @@ export default function App() {
   const catalogRevision = useRef(0);
   const entriesRef = useRef<Entry[]>([]);
   const activeEvent = useRef<ReadingEvent | null>(null);
+  const readingClock = useRef<ReadingClock>(null);
+  const lastReadingPersist = useRef(0);
   const latestExposure = useRef<RankingExposure | null>(null);
   const storyListRef = useRef<HTMLDivElement | null>(null);
   const readerRef = useRef<HTMLDivElement | null>(null);
@@ -1974,7 +1979,23 @@ export default function App() {
     scheduleWebDavUpload();
   }, [scheduleWebDavUpload]);
 
+  const syncReadingClock = useCallback(() => {
+    const current = activeEvent.current;
+    const { clock, elapsedSeconds } = advanceReadingClock(
+      readingClock.current,
+      current?.id ?? null,
+      !!current && readingForegroundActive(document),
+      performance.now(),
+    );
+    readingClock.current = clock;
+    if (current && elapsedSeconds > 0) {
+      current.activeSeconds = Math.round((current.activeSeconds + elapsedSeconds) * 1000) / 1000;
+    }
+    return elapsedSeconds;
+  }, []);
+
   const commitActiveEvent = useCallback(() => {
+    syncReadingClock();
     if (!activeEvent.current) return;
     const snapshot = { ...activeEvent.current };
     startTransition(() => {
@@ -1983,7 +2004,7 @@ export default function App() {
         return index < 0 ? [...all, snapshot] : all.map((event, i) => i === index ? snapshot : event);
       });
     });
-  }, []);
+  }, [syncReadingClock]);
 
   const resetRenderedStories = useCallback(() => {
     setRenderedStoryCount(STORY_RENDER_BATCH_SIZE);
@@ -2264,18 +2285,38 @@ export default function App() {
     : "direct-no-referrer";
 
   const recordReadingTick = useCallback(() => {
-    if (!activeEvent.current || document.visibilityState !== "visible" || !document.hasFocus()) return false;
-    if (document.querySelector("[aria-modal='true']")) return false;
-    activeEvent.current.activeSeconds += 5;
-    void persistActive();
-    return true;
-  }, [persistActive]);
+    const elapsedSeconds = syncReadingClock();
+    const now = performance.now();
+    if (elapsedSeconds > 0 && now - lastReadingPersist.current >= READING_PERSIST_MS) {
+      lastReadingPersist.current = now;
+      void persistActive();
+    }
+    return elapsedSeconds;
+  }, [persistActive, syncReadingClock]);
 
   useEffect(() => {
     const flush = () => { commitActiveEvent(); void persistActive(); };
+    const pause = () => {
+      if (syncReadingClock() > 0) void persistActive();
+    };
+    const resume = () => { syncReadingClock(); };
+    const visibilityChange = () => {
+      if (document.visibilityState === "visible") resume();
+      else pause();
+    };
     window.addEventListener("pagehide", flush);
-    return () => { window.removeEventListener("pagehide", flush); commitActiveEvent(); void persistActive(); };
-  }, [persistActive, commitActiveEvent]);
+    window.addEventListener("blur", pause);
+    window.addEventListener("focus", resume);
+    document.addEventListener("visibilitychange", visibilityChange);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      window.removeEventListener("blur", pause);
+      window.removeEventListener("focus", resume);
+      document.removeEventListener("visibilitychange", visibilityChange);
+      commitActiveEvent();
+      void persistActive();
+    };
+  }, [persistActive, commitActiveEvent, syncReadingClock]);
 
   const updateEntry = async (id: number, patch: EntryMutationPatch, success: string) => {
     if (!config) return false;
@@ -2396,6 +2437,7 @@ export default function App() {
       ...attribution,
     });
     activeEvent.current = readingEvent;
+    syncReadingClock();
     setActiveCandidates({ entryId: story.id, terms: [], loading: true });
     const initialPersistence = putReadingEvent(readingEvent);
     void extractRecommendationCandidateTermsAsync(story.title, story.summary).then(async (extracted) => {
@@ -2461,7 +2503,7 @@ export default function App() {
       });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, mode, query, visible, persistActive, commitActiveEvent, loadEntryContent, entryLabels, interest, navigateToArticle, t]);
+  }, [config, mode, query, visible, persistActive, commitActiveEvent, syncReadingClock, loadEntryContent, entryLabels, interest, navigateToArticle, t]);
 
   useEffect(() => {
     if (route.kind === "article") {

@@ -104,7 +104,9 @@ An event records:
 - entry and feed identifiers
 - title, source, and extracted terms
 - opened time
-- active foreground seconds
+- active foreground seconds, accumulated from real elapsed time while the page
+  is visible and focused and no modal is open (events from older versions are
+  quantized to 5-second steps)
 - maximum scroll depth
 - the entry's Miniflux reading time, when available
 - entry path (`recommendation`, `feed`, `search`, or `saved`)

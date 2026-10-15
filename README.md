@@ -113,6 +113,11 @@ ReadFlux records the article, feed, title, keywords, open time, active
 foreground time, scroll depth, entry path, and explicit **Helpful** or
 **Not interested** feedback. Saved state remains managed by Miniflux.
 
+Active foreground time is measured from real elapsed time while the page is
+visible and focused and no dialog is open. It is flushed when reading pauses,
+when the article changes or the page is left, and on visibility changes.
+Events recorded by older versions were counted in 5-second steps.
+
 The recommendation profile gives more weight to recent behavior (28-day decay)
 and combines:
 
