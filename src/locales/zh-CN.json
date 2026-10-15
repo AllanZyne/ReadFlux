@@ -129,6 +129,12 @@
   "recommendation": {
     "title": "本地推荐画像",
     "description": "这里展示当前浏览器及 WebDAV 同步的原始阅读事件，以及算法由它们和 Miniflux 收藏派生出的权重。推荐分数仍只用于“今天”的排序。",
+    "export": "导出 JSON",
+    "exportHint": "导出文件保存在本地且未加密，包含阅读事件、排序曝光记录、派生权重，以及相关文章的标题和摘要；不包含 Miniflux 或 WebDAV 凭据。",
+    "webDavSyncing": "WebDAV 正在同步，同步完成后即可导出。",
+    "webDavLastSynced": "WebDAV 上次同步：{{time}}。导出将包含其他客户端的镜像事件。",
+    "webDavNeverSynced": "WebDAV 尚未同步，导出仅包含此浏览器的事件。",
+    "webDavExportStale": "导出将使用上次成功同步的 WebDAV 镜像数据。",
     "readingEvents": "阅读事件",
     "validEvents": "有效兴趣事件",
     "averageForeground": "平均前台停留",

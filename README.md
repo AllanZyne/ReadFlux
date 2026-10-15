@@ -139,6 +139,15 @@ open rate, and saved-article credit) and the 30 most recent raw events by
 default. Local records can be edited or deleted, and search still covers the
 complete event history.
 
+**Export JSON** in the same tab downloads an unencrypted local file for offline
+evaluation. It contains all local and mirrored reading events, ranking
+exposures, the derived profile, diagnostics, feed and category names, and
+metadata for referenced, unread, updated, and saved articles: title, URL,
+publication time, state, the title-plus-excerpt text used for scoring, and the
+current score breakdown. It never includes full article content or Miniflux and
+WebDAV credentials. When WebDAV is configured, the tab shows its sync status and
+disables export while a sync is running.
+
 When an article is opened, followed topics found in its title or summary are
 prioritized in the five candidate-topic slots. Chinese topics use substring
 matching, while Latin-script words and phrases require complete word boundaries;

@@ -129,6 +129,12 @@
   "recommendation": {
     "title": "Profil local de recommandation",
     "description": "Cette page présente les événements de ce navigateur et des miroirs WebDAV, ainsi que les poids dérivés de ceux-ci et des favoris Miniflux. Les scores servent toujours uniquement à classer Aujourd’hui.",
+    "export": "Exporter en JSON",
+    "exportHint": "L’export est un fichier local non chiffré contenant les événements de lecture, les expositions de classement, les poids dérivés ainsi que les titres et extraits des articles concernés. Il ne contient jamais d’identifiants Miniflux ou WebDAV.",
+    "webDavSyncing": "Synchronisation WebDAV en cours. L’export sera disponible une fois la synchronisation terminée.",
+    "webDavLastSynced": "Dernière synchronisation WebDAV : {{time}}. L’export inclut les événements reflétés des autres clients.",
+    "webDavNeverSynced": "WebDAV n’a pas encore été synchronisé. L’export ne contient que les événements de ce navigateur.",
+    "webDavExportStale": "L’export utilise les dernières données WebDAV reflétées avec succès.",
     "readingEvents": "Événements de lecture",
     "validEvents": "Événements d’intérêt valides",
     "averageForeground": "Temps moyen au premier plan",
