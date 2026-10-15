@@ -121,8 +121,11 @@ Events recorded by older versions were counted in 5-second steps.
 The recommendation profile gives more weight to recent behavior (28-day decay)
 and combines:
 
-- Feed affinity: a feed's smoothed reading depth multiplied by its smoothed,
-  position-adjusted **Today** open rate, relative to the average feed. Reading
+- Feed affinity: a feed's smoothed reading depth multiplied by its smoothed
+  **Today** open rate, relative to the average feed. The open rate counts
+  articles you actually saw in the list (at least half visible for half a
+  second), so articles you scroll past without opening lower it. Older records
+  without this data estimate visibility from list position. Reading
   depth uses foreground time compared with the article's reading time, so a
   short post does not count as a deep read. Scroll depth counts in proportion
   to article length. Saved articles add credit with diminishing returns.
@@ -147,6 +150,20 @@ publication time, state, the title-plus-excerpt text used for scoring, and the
 current score breakdown. It never includes full article content or Miniflux and
 WebDAV credentials. When WebDAV is configured, the tab shows its sync status and
 disables export while a sync is running.
+
+Each **Today** list records its top 100 articles and which of them you saw. To
+evaluate the current algorithm against an export, run:
+
+```bash
+npm run eval -- path/to/readflux-recommendation-YYYY-MM-DD.json
+```
+
+The command replays each recorded **Today** list using only data from before
+it, then reports pairwise AUC within each time and read-status tier for opens,
+engaged reads, and reads of 30 seconds or more. It prints aggregates only. Run
+it on two branches to compare algorithm changes. The recorded score decided
+the on-screen order, so its open AUC is inflated by position bias and is not a
+fair baseline. Keep exports outside the repository.
 
 When an article is opened, followed topics found in its title or summary are
 prioritized in the five candidate-topic slots. Chinese topics use substring

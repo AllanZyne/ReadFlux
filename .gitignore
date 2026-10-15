@@ -10,5 +10,6 @@ dist/
 npm-debug.log*
 
 # Local tooling artifacts
+readflux-recommendation-*.json
 .vite-dev.log
 .playwright-mcp/

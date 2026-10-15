@@ -114,9 +114,11 @@ An event records:
 - entry path (`recommendation`, `feed`, `search`, or `saved`)
 - optional explicit feedback
 
-Today exposure items record the entry, rank, score components, and, for new
-records, the feed ID and publication time. Older items without a feed ID fall
-back to cached entries.
+Today exposures record the top 100 items: entry, rank, score components, and,
+for new records, the feed ID and publication time. Older items without a feed
+ID fall back to cached entries. New exposures also record `seenEntryIds`:
+items at least half visible in the article list for 0.5 seconds while the page
+is visible. This does not depend on the mark-read-on-scroll setting.
 
 Current derivation rules:
 
@@ -133,9 +135,11 @@ Current derivation rules:
   feed. A star decays from `starredAt` when a reading event recorded one.
   Starred entries add no term affinity.
 - Feed affinity is smoothed engagement (3-read prior) multiplied by a smoothed
-  Today open rate (20-impression prior). Impressions are weighted by
-  `1 / log2(rank + 1)`, and an open is an attributed event with `rankingId`
-  and `exposedRank`. The result is divided by the average feed's value, and
+  Today open rate (20-impression prior). In exposures with `seenEntryIds`,
+  each seen or opened item is one impression, so seen-but-skipped items lower
+  the feed's open rate. Older exposures weight every item by
+  `1 / log2(rank + 1)`. An open is an attributed event with `rankingId` and
+  `exposedRank`. The result is divided by the average feed's value, and
   the source score is `20 * r / (1 + r)`. A feed with no data scores 10, and
   every feed scores 0 before any profile data exists.
 - Ranking combines the source score, positive term matches, freshness, and a
@@ -149,6 +153,10 @@ When changing ranking behavior:
 3. Add focused tests for the new pure calculation where practical.
 4. Update README and this file.
 5. Do not surface the numeric score in the article list.
+6. Compare the change offline with `npm run eval -- <export.json>` on the base
+   branch and the change branch. Compare replayed columns with each other. The
+   recorded score shaped the on-screen order, so its open AUC is inflated by
+   position bias. Never commit exports or evaluation output.
 
 ## Commands
 
@@ -158,6 +166,7 @@ npm run lint
 npm test
 npm run build
 npm run preview
+npm run eval -- <readflux-recommendation-export.json> [--json]
 ```
 
 Run lint, tests, and build before publishing.
