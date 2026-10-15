@@ -446,6 +446,34 @@ test("seen exposures count only seen or opened items as impressions", () => {
   assert.equal(nothingSeen.get(10), undefined);
 });
 
+test("feeds keep depth and saved-article differences when no Today item was ever opened", () => {
+  const now = Date.parse("2026-08-14T00:00:00.000Z");
+  const item = (entryId, rank, feedId) => ({ entryId, feedId, rank, score: 50, sourceScore: 0, termScore: 0, freshnessScore: 0, savedBonus: 0, negativePenalty: 0, statusPriority: 1, matchedTerms: [] });
+  const exposures = [{
+    id: "unopened",
+    createdAt: "2026-08-13T00:00:00.000Z",
+    algorithmVersion: RECOMMENDATION_ALGORITHM_VERSION,
+    schemaVersion: 2,
+    surface: "today",
+    candidateCount: 4,
+    displayedCount: 4,
+    items: [item(1, 1, 10), item(2, 2, 10), item(3, 3, 20), item(4, 4, 20)],
+  }];
+  const reads = [
+    event({ id: "deep", entryId: 50, feedId: 10, origin: "feed", activeSeconds: 120, readingTime: 2 }),
+    event({ id: "bounce", entryId: 60, feedId: 20, origin: "feed", activeSeconds: 0, scrollDepth: 0, readingTime: 5 }),
+  ];
+  const { sources, baseline } = deriveSourceAffinities(reads, [], now, { exposures });
+  assert.equal(baseline.openRate, 1);
+  assert.equal(sources.get(10).openRate, 1);
+  assert.ok(sources.get(10).relativeAffinity > sources.get(20).relativeAffinity);
+  assert.ok(sourceScoreForAffinity(sources.get(10).relativeAffinity) > sourceScoreForAffinity(sources.get(20).relativeAffinity));
+
+  const bouncedOnly = deriveSourceAffinities([reads[1]], [{ feedId: 30, entryId: 70 }], now, { exposures });
+  assert.ok(bouncedOnly.baseline.affinity > 0);
+  assert.ok(bouncedOnly.sources.get(30).relativeAffinity > bouncedOnly.sources.get(20).relativeAffinity);
+});
+
 test("diagnostics report open rates among seen items, counting opened items as seen", () => {
   const breakdown = { score: 50, unclampedScore: 50, sourceScore: 10, termScore: 0, freshnessScore: 0, savedBonus: 0, negativePenalty: 0, matchedTerms: [] };
   const tracked = recordSeenEntries(createRankingExposure({

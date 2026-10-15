@@ -139,7 +139,9 @@ Current derivation rules:
   each seen or opened item is one impression, so seen-but-skipped items lower
   the feed's open rate. Older exposures weight every item by
   `1 / log2(rank + 1)`. An open is an attributed event with `rankingId` and
-  `exposedRank`. The result is divided by the average feed's value, and
+  `exposedRank`. Until any attributed open exists, every feed's open rate is a
+  neutral 1, and the average-depth baseline never drops below 0.01, so depth
+  and saved-article differences still rank feeds. The result is divided by the average feed's value, and
   the source score is `20 * r / (1 + r)`. A feed with no data scores 10, and
   every feed scores 0 before any profile data exists.
 - Ranking combines the source score, positive term matches, freshness, and a

@@ -9,6 +9,7 @@ export const MIN_ENGAGED_SECONDS = 5;
 const MIN_ENGAGED_SCROLL = 0.15;
 const FULL_SCROLL_CREDIT_MINUTES = 10;
 const ENGAGEMENT_PRIOR_EVENTS = 3;
+const MIN_ENGAGEMENT_PRIOR = 0.01;
 const OPEN_RATE_PRIOR_IMPRESSIONS = 20;
 const MAX_SOURCE_SCORE = 20;
 
@@ -177,8 +178,12 @@ export function deriveSourceAffinities(
     impressions += current.impressions;
     opens += current.opens;
   });
-  const engagementPrior = readingWeight > 0 ? readingQuality / readingWeight : 0.5;
-  const openRatePrior = impressions > 0 ? opens / impressions : 0.5;
+  const engagementPrior = readingWeight > 0
+    ? Math.max(MIN_ENGAGEMENT_PRIOR, readingQuality / readingWeight)
+    : 0.5;
+  // Without any attributed opens, open rate carries no signal and must not zero every feed.
+  const openRateKnown = opens > 0;
+  const openRatePrior = openRateKnown ? opens / impressions : 1;
   const baseline = {
     engagement: engagementPrior,
     openRate: openRatePrior,
@@ -188,8 +193,9 @@ export function deriveSourceAffinities(
     const starWeight = Math.log1p(current.stars);
     const engagement = (current.readingQuality + starWeight + ENGAGEMENT_PRIOR_EVENTS * engagementPrior)
       / (current.readingWeight + starWeight + ENGAGEMENT_PRIOR_EVENTS);
-    const openRate = (current.opens + OPEN_RATE_PRIOR_IMPRESSIONS * openRatePrior)
-      / (current.impressions + OPEN_RATE_PRIOR_IMPRESSIONS);
+    const openRate = openRateKnown
+      ? (current.opens + OPEN_RATE_PRIOR_IMPRESSIONS * openRatePrior) / (current.impressions + OPEN_RATE_PRIOR_IMPRESSIONS)
+      : 1;
     const affinity = engagement * openRate;
     sources.set(feedId, {
       feedId,
@@ -198,7 +204,7 @@ export function deriveSourceAffinities(
       openRate,
       starWeight,
       affinity,
-      relativeAffinity: baseline.affinity > 0 ? affinity / baseline.affinity : 1,
+      relativeAffinity: affinity / baseline.affinity,
     });
   });
   return { sources, baseline };
