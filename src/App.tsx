@@ -432,7 +432,6 @@ function ArticleMetadata({
   story,
   feedIcon,
   timeZone,
-  initialReadingSeconds,
   onReadingTick,
   onTextSelection,
   t,
@@ -440,26 +439,19 @@ function ArticleMetadata({
   story: Story;
   feedIcon?: string;
   timeZone: string;
-  initialReadingSeconds: number;
   onReadingTick: () => number;
   onTextSelection: (text: string, rect: DOMRect) => void;
   t: TFunction;
 }) {
-  const [readingSeconds, setReadingSeconds] = useState(initialReadingSeconds);
-  const shownSeconds = Math.floor(readingSeconds);
-
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      const elapsedSeconds = onReadingTick();
-      if (elapsedSeconds > 0) setReadingSeconds((seconds) => seconds + elapsedSeconds);
-    }, READING_TICK_MS);
+    const timer = window.setInterval(onReadingTick, READING_TICK_MS);
     return () => window.clearInterval(timer);
   }, [onReadingTick]);
 
   return <header className="articleHead"><div><h2
     onMouseUp={(event) => captureTextSelection(event.currentTarget, onTextSelection)}
     onTouchEnd={(event) => captureTextSelection(event.currentTarget, onTextSelection)}
-  >{story.title}</h2><p><SourceIcon src={feedIcon}>{story.mark}</SourceIcon>{story.author || story.source} · {formatZonedDateTime(story.published_at, timeZone)} · {t("feed.minutes", { count: story.reading_time || 1 })}{shownSeconds > 0 && <span className="articleReadingTime">· {Math.floor(shownSeconds / 60)}:{String(shownSeconds % 60).padStart(2, "0")}</span>}</p></div></header>;
+  >{story.title}</h2><p><SourceIcon src={feedIcon}>{story.mark}</SourceIcon>{story.author || story.source} · {formatZonedDateTime(story.published_at, timeZone)} · {t("feed.minutes", { count: story.reading_time || 1 })}</p></div></header>;
 }
 
 const ArticleBody = memo(function ArticleBody({
@@ -2300,9 +2292,6 @@ export default function App() {
     ...selectedTopicTerms,
     ...extractedCandidateTerms.filter((term) => !selectedTopicTerms.has(term)),
   ].slice(0, Math.max(5, selectedTopicTerms.size));
-  const selectedReadingSeconds = readerSelected
-    ? recommendationEvents.reduce((sum, event) => event.entryId === readerSelected.id ? sum + event.activeSeconds : sum, 0)
-    : 0;
   const selectedImageMode = readerSelected
     ? resolveImageLoadingMode(
         settings.imageLoadingPreferences,
@@ -3075,11 +3064,10 @@ export default function App() {
               <div className="readerToolbar"><button className="mobileBack" onClick={() => { navigateToList(); setMobileView("list"); }}>‹ {t("reader.backToArticles")}</button><div><button onClick={() => toggleRead(selected)} title={t(selected.status === "read" ? "reader.markUnread" : "reader.markRead")}>{selected.status === "read" ? "○" : "●"}</button><button className={selected.starred ? "pressed" : ""} title={t(selected.starred ? "reader.unsave" : "reader.save")} onClick={() => void toggleStarred(selected)}>{selected.starred ? "★" : "☆"}</button><a href={selected.url} target="_blank" rel="noopener noreferrer" title={t("reader.openOriginal")}>↗</a><button title={t("reader.copyLink")} onClick={async () => { await navigator.clipboard.writeText(selected.url); notify(t("reader.linkCopied")); }}>⧉</button><button title={t("reader.notInterested")} onClick={() => void setFeedback("not_interested")}>−</button></div></div>
               <p className="crumb">{selected.category} · {selected.source}</p>
               <ArticleMetadata
-                key={`${selected.id}:${selectedReadingSeconds}`}
+                key={selected.id}
                 story={selected}
                 feedIcon={feedIcons.get(selected.feed_id)}
                 timeZone={activeTimeZone}
-                initialReadingSeconds={selectedReadingSeconds}
                 onReadingTick={recordReadingTick}
                 onTextSelection={requestTopicSelection}
                 t={t}

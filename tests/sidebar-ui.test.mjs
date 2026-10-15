@@ -393,15 +393,14 @@ test("reading-time ticks stay isolated from the memoized article body", () => {
   const metadata = app.slice(metadataStart, articleBodyStart);
   const articleBody = app.slice(articleBodyStart, eventDraftStart);
 
-  assert.match(metadata, /useState\(initialReadingSeconds\)/);
-  assert.match(metadata, /onReadingTick\(\)[\s\S]*?setReadingSeconds/);
-  assert.match(metadata, /className="articleReadingTime"/);
-  assert.match(app, /key=\{`\$\{selected\.id\}:\$\{selectedReadingSeconds\}`\}/);
+  assert.match(metadata, /setInterval\(onReadingTick, READING_TICK_MS\)/);
+  assert.doesNotMatch(metadata, /readingSeconds|articleReadingTime/);
+  assert.match(app, /<ArticleMetadata\s+key=\{selected\.id\}/);
   assert.match(app, /const updatedActiveEvent = next\.find[\s\S]*?activeEvent\.current = updatedActiveEvent \? \{ \.\.\.updatedActiveEvent \} : null/);
   assert.match(articleBody, /const markup = useMemo/);
   assert.match(articleBody, /dangerouslySetInnerHTML=\{markup\}/);
   assert.doesNotMatch(articleBody, /readingSeconds|onReadingTick/);
-  assert.match(styles, /\.articleReadingTime\s*\{[^}]*color:var\(--mint\);[^}]*font-variant-numeric:tabular-nums/);
+  assert.doesNotMatch(styles, /\.articleReadingTime/);
 });
 
 test("media loading settings offer scoped defaults and per-feed overrides", () => {
