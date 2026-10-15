@@ -1,5 +1,11 @@
 import type { RankingExposure, ReadingEvent } from "./readflux-client.ts";
-import { deriveInterestProfile, isEngagedReadingEvent, RECOMMENDATION_ALGORITHM_VERSION, scoreRecommendation } from "./recommendation.ts";
+import {
+  clampRecommendationScore,
+  deriveInterestProfile,
+  isEngagedReadingEvent,
+  RECOMMENDATION_ALGORITHM_VERSION,
+  scoreRecommendation,
+} from "./recommendation.ts";
 import { localDayKey } from "./smart-feeds.mjs";
 
 export const DEEP_READ_SECONDS = 30;
@@ -88,6 +94,21 @@ export function pairwiseAuc(rows: { group: string; label: boolean; score: number
   };
 }
 
+const timeOf = (value: string) => new Date(value).getTime();
+
+export function historicalEvents(events: ReadingEvent[], at: number) {
+  const opened = events
+    .filter((event) => timeOf(event.openedAt) < at)
+    .map((event) => event.topicFeedback
+      ? { ...event, topicFeedback: event.topicFeedback.filter((operation) => timeOf(operation.updatedAt) < at) }
+      : event);
+  return {
+    // Exports hold only each event's final state, so events changed after the cutoff are left out.
+    readingEvents: opened.filter((event) => timeOf(event.updatedAt) < at),
+    topicEvents: opened,
+  };
+}
+
 export function evaluateRecommendations(input: EvaluationInput) {
   const { exposures, aliases } = dedupeExposures(input.exposures);
   const entries = new Map(input.entries.map((entry) => [entry.id, entry]));
@@ -95,10 +116,6 @@ export function evaluateRecommendations(input: EvaluationInput) {
     const alias = event.rankingId ? aliases.get(event.rankingId) : undefined;
     return alias ? { ...event, rankingId: alias } : event;
   });
-  const events = remapped
-    .map((event) => ({ event, at: new Date(event.openedAt).getTime() }))
-    .filter(({ at }) => Number.isFinite(at))
-    .sort((a, b) => a.at - b.at);
   const attributed = new Map<string, ReadingEvent[]>();
   remapped.forEach((event) => {
     if (!event.rankingId || event.exposedRank === undefined) return;
@@ -113,20 +130,24 @@ export function evaluateRecommendations(input: EvaluationInput) {
   let knownText = 0;
   let activeExposures = 0;
   let seenTracked = 0;
-  exposures.forEach((exposure, exposureIndex) => {
+  exposures.forEach((exposure) => {
     const keyFor = (entryId: number) => `${exposure.id}\n${entryId}`;
     if (!exposure.items.some((item) => attributed.has(keyFor(item.entryId)))) return;
     activeExposures += 1;
     const at = new Date(exposure.createdAt).getTime();
     const seen = exposure.seenEntryIds ? new Set(exposure.seenEntryIds) : null;
     if (seen) seenTracked += 1;
-    const priorEvents = events.filter((item) => item.at < at).map(({ event }) => event);
-    const priorExposures = exposures.slice(0, exposureIndex);
+    const history = historicalEvents(input.events, at);
+    // De-duplicated records carry later observations, so profiles replay the original exposures.
+    const priorExposures = input.exposures.filter((prior) => new Date(prior.createdAt).getTime() < at);
     // Only the current starred set is exported; count entries published before the exposure.
     const stars = input.entries
       .filter((entry) => entry.starred && new Date(entry.publishedAt).getTime() < at)
       .map((entry) => ({ feedId: entry.feedId, entryId: entry.id }));
-    const profile = deriveInterestProfile(priorEvents, stars, at, { exposures: priorExposures, entryFeedIds });
+    const profile = {
+      ...deriveInterestProfile(history.readingEvents, stars, at, { exposures: priorExposures, entryFeedIds }),
+      words: deriveInterestProfile(history.topicEvents, [], at).words,
+    };
     exposure.items.forEach((item) => {
       const opened = attributed.get(keyFor(item.entryId)) ?? [];
       if (seen && !opened.length && !seen.has(item.entryId)) return;
@@ -154,8 +175,8 @@ export function evaluateRecommendations(input: EvaluationInput) {
           deep: opened.some((event) => event.activeSeconds >= DEEP_READ_SECONDS),
         },
         scores: {
-          recorded: item.sourceScore + item.termScore + item.freshnessScore + item.savedBonus,
-          replayed: replayed.sourceScore + termScore + replayed.freshnessScore + replayed.savedBonus,
+          recorded: item.score,
+          replayed: clampRecommendationScore(replayed.unclampedScore - replayed.termScore + termScore),
           replayedSource: replayed.sourceScore,
           replayedTerm: termScore,
           recordedTerm: item.termScore,

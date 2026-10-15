@@ -494,6 +494,8 @@ test("diagnostics report open rates among seen items, counting opened items as s
 
 test("the list flushes viewport-seen entries into the exposure before a new exposure replaces it", () => {
   assert.match(appSource, /new IntersectionObserver\([\s\S]*?\{ root: list, threshold: SEEN_VISIBLE_RATIO \}\)/);
+  assert.match(appSource, /record\.isIntersecting && record\.intersectionRatio >= SEEN_VISIBLE_RATIO/);
+  assert.match(appSource, /if \(document\.visibilityState === "visible"\) qualifying\.forEach\(startDwell\);\s*else \[\.\.\.dwellTimers\.keys\(\)\]\.forEach\(stopDwell\);/);
   assert.match(appSource, /capturedVisibleOrder\.current = frozenVisibleOrder\.ids;\s*flushSeenEntries\(\);/);
   assert.match(appSource, /visible\.slice\(0, RANKING_EXPOSURE_LIMIT\)/);
 });

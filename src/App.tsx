@@ -2270,31 +2270,46 @@ export default function App() {
   useEffect(() => {
     const list = storyListRef.current;
     if (!list || typeof IntersectionObserver === "undefined") return;
+    const qualifying = new Set<number>();
     const dwellTimers = new Map<number, number>();
+    const stopDwell = (id: number) => {
+      window.clearTimeout(dwellTimers.get(id));
+      dwellTimers.delete(id);
+    };
+    const startDwell = (id: number) => {
+      if (dwellTimers.has(id) || document.visibilityState !== "visible") return;
+      dwellTimers.set(id, window.setTimeout(() => {
+        dwellTimers.delete(id);
+        pendingSeenIds.current.add(id);
+        if (seenFlushTimer.current === undefined) {
+          seenFlushTimer.current = window.setTimeout(flushSeenEntries, SEEN_FLUSH_MS);
+        }
+      }, SEEN_DWELL_MS));
+    };
     const observer = new IntersectionObserver((records) => {
       records.forEach((record) => {
         const id = Number((record.target as HTMLElement).dataset.entryId);
         if (!Number.isSafeInteger(id)) return;
-        if (!record.isIntersecting) {
-          window.clearTimeout(dwellTimers.get(id));
-          dwellTimers.delete(id);
-          return;
+        // isIntersecting stays true below the threshold; only the ratio says the row is half visible.
+        if (record.isIntersecting && record.intersectionRatio >= SEEN_VISIBLE_RATIO) {
+          qualifying.add(id);
+          startDwell(id);
+        } else {
+          qualifying.delete(id);
+          stopDwell(id);
         }
-        if (dwellTimers.has(id)) return;
-        dwellTimers.set(id, window.setTimeout(() => {
-          dwellTimers.delete(id);
-          if (document.visibilityState !== "visible") return;
-          pendingSeenIds.current.add(id);
-          if (seenFlushTimer.current === undefined) {
-            seenFlushTimer.current = window.setTimeout(flushSeenEntries, SEEN_FLUSH_MS);
-          }
-        }, SEEN_DWELL_MS));
       });
     }, { root: list, threshold: SEEN_VISIBLE_RATIO });
+    const visibilityChange = () => {
+      if (document.visibilityState === "visible") qualifying.forEach(startDwell);
+      else [...dwellTimers.keys()].forEach(stopDwell);
+    };
     list.querySelectorAll<HTMLElement>(".story[data-entry-id]").forEach((row) => observer.observe(row));
+    document.addEventListener("visibilitychange", visibilityChange);
     return () => {
       observer.disconnect();
-      dwellTimers.forEach((timer) => window.clearTimeout(timer));
+      document.removeEventListener("visibilitychange", visibilityChange);
+      [...dwellTimers.keys()].forEach(stopDwell);
     };
   }, [flushSeenEntries, renderedStories]);
 

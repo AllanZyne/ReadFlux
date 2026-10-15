@@ -210,6 +210,10 @@ export function deriveSourceAffinities(
   return { sources, baseline };
 }
 
+export function clampRecommendationScore(unclampedScore: number) {
+  return Math.max(1, Math.min(99, Math.round(unclampedScore)));
+}
+
 export function sourceScoreForAffinity(relativeAffinity: number) {
   const relative = Math.max(0, relativeAffinity);
   return round(MAX_SOURCE_SCORE * relative / (1 + relative));
@@ -300,7 +304,7 @@ export function scoreRecommendation(input: {
   const negativePenalty = 0;
   const unclampedScore = round(40 + sourceScore + termScore + freshnessScore + savedBonus);
   return {
-    score: Math.max(1, Math.min(99, Math.round(unclampedScore))),
+    score: clampRecommendationScore(unclampedScore),
     unclampedScore,
     sourceScore,
     termScore,

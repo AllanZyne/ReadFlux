@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { RECOMMENDATION_ALGORITHM_VERSION } from "../src/recommendation.ts";
+import { clampRecommendationScore, RECOMMENDATION_ALGORITHM_VERSION } from "../src/recommendation.ts";
 import {
   dedupeExposures,
   DUPLICATE_EXPOSURE_WINDOW_MS,
   evaluateRecommendations,
+  historicalEvents,
   pairwiseAuc,
 } from "../src/recommendation-evaluation.ts";
 
@@ -109,6 +110,60 @@ test("evaluation replays only earlier data and restricts negatives to seen items
     events: [...base.events, event({ id: "later", entryId: 9, feedId: 20, openedAt: "2026-08-15T00:00:00.000Z", activeSeconds: 900 })],
   });
   assert.deepEqual(later.metrics, result.metrics);
+});
+
+test("replayed profiles use original exposures, not later observations merged into a duplicate", () => {
+  const at = (minutes) => new Date(Date.parse("2026-08-14T00:00:00.000Z") + minutes * 60_000).toISOString();
+  const pair = (first, second) => [item(first, 1, { feedId: 10 }), item(second, 2, { feedId: 20 })];
+  const result = evaluateRecommendations({
+    timeZone: "UTC",
+    entries: [entry(1, 10), entry(2, 20), entry(5, 10), entry(6, 20)],
+    exposures: [
+      exposure("a", at(0), pair(1, 2), { seenEntryIds: [1] }),
+      exposure("a-duplicate", at(5), pair(1, 2), { seenEntryIds: [2] }),
+      exposure("b", at(3), pair(5, 6), { remoteClientId: "other", seenEntryIds: [5, 6] }),
+    ],
+    events: [
+      event({ id: "a-open", rankingId: "a", exposedRank: 1, openedAt: at(1), updatedAt: at(1.5) }),
+      event({ id: "b-open", entryId: 6, feedId: 20, rankingId: "b", exposedRank: 2, openedAt: at(4), updatedAt: at(4) }),
+    ],
+  });
+  assert.equal(result.exposures.afterDeduplication, 2);
+  assert.equal(result.metrics.opened.replayedSource.pairs, 2);
+  assert.equal(result.metrics.opened.replayedSource.auc, 0.5);
+});
+
+test("historical events drop state changed after the cutoff and keep earlier topic selections", () => {
+  const cutoff = Date.parse("2026-08-14T02:00:00.000Z");
+  const updatedLater = event({
+    id: "later",
+    openedAt: "2026-08-14T01:00:00.000Z",
+    updatedAt: "2026-08-14T03:00:00.000Z",
+    topicFeedback: [
+      { id: "early", term: "llvm", interested: true, updatedAt: "2026-08-14T01:30:00.000Z" },
+      { id: "late", term: "rust", interested: true, updatedAt: "2026-08-14T02:30:00.000Z" },
+    ],
+  });
+  const settled = event({ id: "settled", openedAt: "2026-08-14T00:00:00.000Z", updatedAt: "2026-08-14T00:10:00.000Z" });
+  const future = event({ id: "future", openedAt: "2026-08-14T02:10:00.000Z", updatedAt: "2026-08-14T02:10:00.000Z" });
+  const { readingEvents, topicEvents } = historicalEvents([settled, updatedLater, future], cutoff);
+  assert.deepEqual(readingEvents.map(({ id }) => id), ["settled"]);
+  assert.deepEqual(topicEvents.map(({ id }) => id), ["settled", "later"]);
+  assert.deepEqual(topicEvents[1].topicFeedback.map(({ id }) => id), ["early"]);
+});
+
+test("recorded and replayed totals use the rounded, clamped production score", () => {
+  const result = evaluateRecommendations({
+    timeZone: "UTC",
+    entries: [entry(1, 10), entry(2, 20)],
+    exposures: [exposure("ranking-1", "2026-08-14T00:30:00.000Z", [
+      item(1, 1, { feedId: 10, score: 61, sourceScore: 10.4 }),
+      item(2, 2, { feedId: 20, score: 61, sourceScore: 10.2 }),
+    ])],
+    events: [event({ rankingId: "ranking-1", exposedRank: 1 })],
+  });
+  assert.equal(result.metrics.opened.recorded.tieShare, 1);
+  assert.ok(Number.isInteger(clampRecommendationScore(10.6)));
 });
 
 test("evaluation counts opens attributed to a de-duplicated exposure", () => {
