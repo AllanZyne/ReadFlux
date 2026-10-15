@@ -1030,7 +1030,6 @@ function SettingsDialog({
               <div>
                 <header><h3>{t("recommendation.sourceWeights")}</h3><small>{t("recommendation.sourceWeightsHint")}</small>{sourceBaseline && <small>{t("recommendation.sourceBaseline", {
                   engagement: Math.round(sourceBaseline.engagement * 100),
-                  openRate: Math.round(sourceBaseline.openRate * 100),
                 })}</small>}</header>
                 <div className="weightList">{topSources.length ? topSources.map((source) => <span key={source.feedId}>
                   <b>{sourceName.get(source.feedId) ?? `${t("common.feed")} ${source.feedId}`}</b>
@@ -1043,7 +1042,7 @@ function SettingsDialog({
                     reads: source.readingWeight.toFixed(1),
                     opens: source.opens.toFixed(1),
                     impressions: source.impressions.toFixed(1),
-                    openRate: Math.round(source.openRate * 100),
+                    openRate: (sourceBaseline?.openRate ? source.openRate / sourceBaseline.openRate : 1).toFixed(2),
                     stars: source.stars.toFixed(1),
                     starWeight: source.starWeight.toFixed(2),
                   })}</small>
