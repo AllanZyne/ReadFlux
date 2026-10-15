@@ -27,6 +27,7 @@ import { loadOptionalMinifluxTimeZone } from "./miniflux-timezone.mjs";
 import { articleHash, parseAppRoute, type AppRoute } from "./routes";
 import { compareSmartFeedEntries, countSmartFeedEntries, formatStoryListDate, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, nextDayBoundary, selectTimeZone, smartFeedStatusPriority, smartFeedTimeBucket, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
 import { createStoryProjector, nextStoryRenderCount, STORY_RENDER_BATCH_SIZE, storyIdsPassedByScroll } from "./story-list";
+import { advanceReadingClock, READING_PERSIST_MS, READING_TICK_MS, readingForegroundActive, type ReadingClock } from "./reading-time";
 import { storyTextForEntry } from "./story-text";
 import {
   CachedFeedIcon,
@@ -80,7 +81,7 @@ import {
   WebDavConfig,
   WebDavSyncInterval,
 } from "./readflux-client";
-import { createRankingExposure, deriveInterestProfile, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, scoreRecommendation, selectedTopicTermsByEntry, selectedTopicTermsForEntry, type RecommendationScoreBreakdown } from "./recommendation";
+import { createRankingExposure, deriveInterestProfile, isEngagedReadingEvent, isPreferredSource, RANKING_EXPOSURE_LIMIT, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, recordSeenEntries, scoreRecommendation, selectedTopicTermsByEntry, selectedTopicTermsForEntry, sourceScoreForAffinity, type RecommendationScoreBreakdown, type SourceAffinity, type SourceBaseline } from "./recommendation";
 import { buildRecommendationExport, recommendationExportFileName, withActiveReadingEvent } from "./recommendation-export";
 import { extractRecommendationCandidateTermsAsync, initializeChineseRecommendationTerms, normalizeRecommendationTerm, normalizeSelectedTopic, prioritizeFollowedTopicTerms } from "./recommendation-terms";
 import {
@@ -149,6 +150,9 @@ type EntrySyncMode = "auto" | "full" | "incremental";
 type EntrySyncOptions = { background?: boolean; mode?: EntrySyncMode };
 
 const ENTRY_PAGE_SIZE = 100;
+const SEEN_VISIBLE_RATIO = 0.5;
+const SEEN_DWELL_MS = 500;
+const SEEN_FLUSH_MS = 2000;
 
 type LocalizedError = { key: string; status?: number };
 
@@ -431,7 +435,6 @@ function ArticleMetadata({
   story,
   feedIcon,
   timeZone,
-  initialReadingSeconds,
   onReadingTick,
   onTextSelection,
   t,
@@ -439,24 +442,19 @@ function ArticleMetadata({
   story: Story;
   feedIcon?: string;
   timeZone: string;
-  initialReadingSeconds: number;
-  onReadingTick: () => boolean;
+  onReadingTick: () => number;
   onTextSelection: (text: string, rect: DOMRect) => void;
   t: TFunction;
 }) {
-  const [readingSeconds, setReadingSeconds] = useState(initialReadingSeconds);
-
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (onReadingTick()) setReadingSeconds((seconds) => seconds + 5);
-    }, 5000);
+    const timer = window.setInterval(onReadingTick, READING_TICK_MS);
     return () => window.clearInterval(timer);
   }, [onReadingTick]);
 
   return <header className="articleHead"><div><h2
     onMouseUp={(event) => captureTextSelection(event.currentTarget, onTextSelection)}
     onTouchEnd={(event) => captureTextSelection(event.currentTarget, onTextSelection)}
-  >{story.title}</h2><p><SourceIcon src={feedIcon}>{story.mark}</SourceIcon>{story.author || story.source} · {formatZonedDateTime(story.published_at, timeZone)} · {t("feed.minutes", { count: story.reading_time || 1 })}{readingSeconds > 0 && <span className="articleReadingTime">· {Math.floor(readingSeconds / 60)}:{String(readingSeconds % 60).padStart(2, "0")}</span>}</p></div></header>;
+  >{story.title}</h2><p><SourceIcon src={feedIcon}>{story.mark}</SourceIcon>{story.author || story.source} · {formatZonedDateTime(story.published_at, timeZone)} · {t("feed.minutes", { count: story.reading_time || 1 })}</p></div></header>;
 }
 
 const ArticleBody = memo(function ArticleBody({
@@ -535,7 +533,8 @@ function SettingsDialog({
   settings,
   timeZone,
   timeZoneSource,
-  sourceWeights,
+  sourceAffinities,
+  sourceBaseline,
   wordWeights,
   exposures,
   starredCount,
@@ -563,7 +562,8 @@ function SettingsDialog({
   settings: ProfileSettings;
   timeZone: string;
   timeZoneSource: "miniflux" | "browser";
-  sourceWeights: Map<number, number>;
+  sourceAffinities: Map<number, SourceAffinity>;
+  sourceBaseline: SourceBaseline | null;
   wordWeights: Map<string, number>;
   exposures: RankingExposure[];
   starredCount: number;
@@ -776,8 +776,7 @@ function SettingsDialog({
     notify(t("recommendation.eventDeleted"));
   };
 
-  const validEvents = events.filter((event) =>
-    event.activeSeconds >= 6 || event.scrollDepth >= 0.15 || event.feedback === "helpful");
+  const validEvents = events.filter(isEngagedReadingEvent);
   const averageSeconds = events.length
     ? Math.round(events.reduce((sum, event) => sum + event.activeSeconds, 0) / events.length)
     : 0;
@@ -789,7 +788,9 @@ function SettingsDialog({
   const sourceName = new Map<number, string>();
   events.forEach((event) => sourceName.set(event.feedId, event.source));
   feeds.forEach((feed) => sourceName.set(feed.id, feed.title));
-  const topSources = [...sourceWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
+  const topSources = [...sourceAffinities.values()]
+    .sort((a, b) => b.relativeAffinity - a.relativeAffinity || a.feedId - b.feedId)
+    .slice(0, 12);
   const topWords = [...wordWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
   const diagnostics = recommendationDiagnostics(exposures, events);
   const selectedTermsByEntry = useMemo(() => selectedTopicTermsByEntry(events), [events]);
@@ -1029,11 +1030,30 @@ function SettingsDialog({
               <div><strong>{diagnostics.engagedOpenCount}</strong><span>{t("recommendation.engagedOpens")}</span></div>
               <div><strong>{diagnostics.clampedPercent.toFixed(1)}%</strong><span>{t("recommendation.saturation")}</span></div>
               <div><strong>{diagnostics.tiePercent.toFixed(1)}%</strong><span>{t("recommendation.tieRate")}</span></div>
+              <div><strong>{diagnostics.seen.impressions}</strong><span>{t("recommendation.seenImpressions")}</span></div>
+              <div><strong>{diagnostics.seen.openPercent.toFixed(1)}%</strong><span>{t("recommendation.seenOpenRate")}</span></div>
             </section>
             <section className="derivedData twoColumns">
               <div>
-                <header><h3>{t("recommendation.sourceWeights")}</h3><small>{t("recommendation.sourceWeightsHint")}</small></header>
-                <div className="weightList">{topSources.length ? topSources.map(([feedId, weight]) => <span key={feedId}><b>{sourceName.get(feedId) ?? `${t("common.feed")} ${feedId}`}</b><em>{weight.toFixed(2)}</em></span>) : <p>{t("recommendation.noWeights")}</p>}</div>
+                <header><h3>{t("recommendation.sourceWeights")}</h3><small>{t("recommendation.sourceWeightsHint")}</small>{sourceBaseline && <small>{t("recommendation.sourceBaseline", {
+                  engagement: Math.round(sourceBaseline.engagement * 100),
+                })}</small>}</header>
+                <div className="weightList">{topSources.length ? topSources.map((source) => <span key={source.feedId}>
+                  <b>{sourceName.get(source.feedId) ?? `${t("common.feed")} ${source.feedId}`}</b>
+                  <em>{t("recommendation.sourceAffinityValue", {
+                    affinity: source.relativeAffinity.toFixed(2),
+                    score: sourceScoreForAffinity(source.relativeAffinity).toFixed(1),
+                  })}</em>
+                  <small>{t("recommendation.sourceAffinityDetail", {
+                    engagement: Math.round(source.engagement * 100),
+                    reads: source.readingWeight.toFixed(1),
+                    opens: source.opens.toFixed(1),
+                    impressions: source.impressions.toFixed(1),
+                    openRate: (sourceBaseline?.openRate ? source.openRate / sourceBaseline.openRate : 1).toFixed(2),
+                    stars: source.stars.toFixed(1),
+                    starWeight: source.starWeight.toFixed(2),
+                  })}</small>
+                </span>) : <p>{t("recommendation.noWeights")}</p>}</div>
               </div>
               <div>
                 <header><h3>{t("recommendation.positiveTerms")}</h3><small>{t("recommendation.positiveTermsHint")}</small></header>
@@ -1218,6 +1238,8 @@ export default function App() {
   const catalogRevision = useRef(0);
   const entriesRef = useRef<Entry[]>([]);
   const activeEvent = useRef<ReadingEvent | null>(null);
+  const readingClock = useRef<ReadingClock>(null);
+  const lastReadingPersist = useRef(0);
   const latestExposure = useRef<RankingExposure | null>(null);
   const storyListRef = useRef<HTMLDivElement | null>(null);
   const readerRef = useRef<HTMLDivElement | null>(null);
@@ -1225,6 +1247,8 @@ export default function App() {
   const markAllReadConfirmRef = useRef<HTMLButtonElement | null>(null);
   const topicSelectionConfirmRef = useRef<HTMLButtonElement | null>(null);
   const autoReadFrame = useRef<number | undefined>(undefined);
+  const pendingSeenIds = useRef(new Set<number>());
+  const seenFlushTimer = useRef<number | undefined>(undefined);
   const autoReadPendingIds = useRef<Set<number>>(new Set());
   const previousStoryListScrollTop = useRef(0);
   const sourceSnapshotInitialized = useRef(false);
@@ -1901,13 +1925,18 @@ export default function App() {
   const recommendationSnapshot = useMemo(() => ({
     entries,
     events: recommendationEvents,
+    exposures: recommendationExposures,
     now: syncedAt?.getTime() ?? todayClock,
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [activeTimeZone, hideRead, listOrderVersion, listReadSnapshot, mode, query, topic]);
   const interest = useMemo(() => deriveInterestProfile(
     recommendationSnapshot.events,
-    recommendationSnapshot.entries.filter((entry) => entry.starred).map((entry) => ({ feedId: entry.feed_id })),
+    recommendationSnapshot.entries.filter((entry) => entry.starred).map((entry) => ({ feedId: entry.feed_id, entryId: entry.id })),
     recommendationSnapshot.now,
+    {
+      exposures: recommendationSnapshot.exposures,
+      entryFeedIds: new Map(recommendationSnapshot.entries.map((entry) => [entry.id, entry.feed_id])),
+    },
   ), [recommendationSnapshot]);
 
   const projectStories = useMemo(() => createStoryProjector<Entry, Story>((entry) => {
@@ -1924,7 +1953,6 @@ export default function App() {
       summary: text.summary ? `${text.summary}${text.summary.length >= 160 ? "…" : ""}` : t("feed.noSummary"),
       recommendationText: text.recommendationText,
     };
-    const sourceAffinity = interest.sources.get(story.feed_id) ?? 0;
     const scoreBreakdown = scoreRecommendation({
       feedId: story.feed_id,
       text: story.recommendationText,
@@ -1934,7 +1962,7 @@ export default function App() {
       profile: interest,
     });
     const terms = scoreBreakdown.matchedTerms.slice(0, 2).join(", ");
-    const reason = sourceAffinity >= 2
+    const reason = isPreferredSource(interest, story.feed_id)
       ? t("recommendation.reasonSource", { source: story.source, interest: scoreBreakdown.matchedTerms[0] ? t("recommendation.reasonSourceInterest", { terms }) : "" })
       : scoreBreakdown.matchedTerms[0]
         ? t("recommendation.reasonTerms", { terms })
@@ -1978,7 +2006,23 @@ export default function App() {
     scheduleWebDavUpload();
   }, [scheduleWebDavUpload]);
 
+  const syncReadingClock = useCallback(() => {
+    const current = activeEvent.current;
+    const { clock, elapsedSeconds } = advanceReadingClock(
+      readingClock.current,
+      current?.id ?? null,
+      !!current && readingForegroundActive(document),
+      performance.now(),
+    );
+    readingClock.current = clock;
+    if (current && elapsedSeconds > 0) {
+      current.activeSeconds = Math.round((current.activeSeconds + elapsedSeconds) * 1000) / 1000;
+    }
+    return elapsedSeconds;
+  }, []);
+
   const commitActiveEvent = useCallback(() => {
+    syncReadingClock();
     if (!activeEvent.current) return;
     const snapshot = { ...activeEvent.current };
     startTransition(() => {
@@ -1987,7 +2031,7 @@ export default function App() {
         return index < 0 ? [...all, snapshot] : all.map((event, i) => i === index ? snapshot : event);
       });
     });
-  }, []);
+  }, [syncReadingClock]);
 
   const resetRenderedStories = useCallback(() => {
     setRenderedStoryCount(STORY_RENDER_BATCH_SIZE);
@@ -2207,16 +2251,94 @@ export default function App() {
     if (autoReadFrame.current !== undefined) window.cancelAnimationFrame(autoReadFrame.current);
   }, []);
 
+  const flushSeenEntries = useCallback(() => {
+    if (seenFlushTimer.current !== undefined) window.clearTimeout(seenFlushTimer.current);
+    seenFlushTimer.current = undefined;
+    const ids = pendingSeenIds.current;
+    pendingSeenIds.current = new Set();
+    const exposure = latestExposure.current;
+    if (!exposure || !ids.size) return;
+    const updatedExposure = recordSeenEntries(exposure, ids);
+    if (updatedExposure === exposure) return;
+    latestExposure.current = updatedExposure;
+    void putRankingExposure(updatedExposure).then(() => {
+      setExposures((current) => current.map((item) => item.id === updatedExposure.id ? updatedExposure : item));
+      scheduleWebDavUpload();
+    }).catch(() => undefined);
+  }, [scheduleWebDavUpload]);
+
+  useEffect(() => {
+    const list = storyListRef.current;
+    if (!list || typeof IntersectionObserver === "undefined") return;
+    const qualifying = new Set<number>();
+    const dwellTimers = new Map<number, number>();
+    const stopDwell = (id: number) => {
+      window.clearTimeout(dwellTimers.get(id));
+      dwellTimers.delete(id);
+    };
+    const startDwell = (id: number) => {
+      if (dwellTimers.has(id) || document.visibilityState !== "visible") return;
+      dwellTimers.set(id, window.setTimeout(() => {
+        dwellTimers.delete(id);
+        pendingSeenIds.current.add(id);
+        if (seenFlushTimer.current === undefined) {
+          seenFlushTimer.current = window.setTimeout(flushSeenEntries, SEEN_FLUSH_MS);
+        }
+      }, SEEN_DWELL_MS));
+    };
+    const observer = new IntersectionObserver((records) => {
+      records.forEach((record) => {
+        const id = Number((record.target as HTMLElement).dataset.entryId);
+        if (!Number.isSafeInteger(id)) return;
+        // isIntersecting stays true below the threshold; only the ratio says the row is half visible.
+        if (record.isIntersecting && record.intersectionRatio >= SEEN_VISIBLE_RATIO) {
+          qualifying.add(id);
+          startDwell(id);
+        } else {
+          qualifying.delete(id);
+          stopDwell(id);
+        }
+      });
+    }, { root: list, threshold: SEEN_VISIBLE_RATIO });
+    const visibilityChange = () => {
+      if (document.visibilityState === "visible") qualifying.forEach(startDwell);
+      else [...dwellTimers.keys()].forEach(stopDwell);
+    };
+    list.querySelectorAll<HTMLElement>(".story[data-entry-id]").forEach((row) => observer.observe(row));
+    document.addEventListener("visibilitychange", visibilityChange);
+    return () => {
+      observer.disconnect();
+      document.removeEventListener("visibilitychange", visibilityChange);
+      [...dwellTimers.keys()].forEach(stopDwell);
+    };
+  }, [flushSeenEntries, renderedStories]);
+
+  useEffect(() => {
+    const flushWhenHidden = () => {
+      if (document.visibilityState !== "visible") flushSeenEntries();
+    };
+    window.addEventListener("pagehide", flushSeenEntries);
+    document.addEventListener("visibilitychange", flushWhenHidden);
+    return () => {
+      window.removeEventListener("pagehide", flushSeenEntries);
+      document.removeEventListener("visibilitychange", flushWhenHidden);
+      flushSeenEntries();
+    };
+  }, [flushSeenEntries]);
+
   useEffect(() => {
     if (capturedVisibleOrder.current === frozenVisibleOrder.ids) return;
     capturedVisibleOrder.current = frozenVisibleOrder.ids;
+    flushSeenEntries();
     if (mode === "today" && !query.trim() && visible.length) {
       const exposure = createRankingExposure({
         id: crypto.randomUUID(),
         createdAt: new Date().toISOString(),
         candidateCount: visible.length,
-        candidates: visible.slice(0, 50).map((story) => ({
+        candidates: visible.slice(0, RANKING_EXPOSURE_LIMIT).map((story) => ({
           entryId: story.id,
+          feedId: story.feed_id,
+          publishedAt: story.published_at,
           breakdown: story.scoreBreakdown,
           statusPriority: smartFeedStatusPriority(story, entryLabels),
         })),
@@ -2229,7 +2351,7 @@ export default function App() {
     } else {
       latestExposure.current = null;
     }
-  }, [visible, frozenVisibleOrder, mode, query, entryLabels, scheduleWebDavUpload]);
+  }, [visible, frozenVisibleOrder, mode, query, entryLabels, flushSeenEntries, scheduleWebDavUpload]);
 
   useEffect(() => { visibleEmptyRef.current = !visible.length; }, [visible]);
 
@@ -2253,9 +2375,6 @@ export default function App() {
     ...selectedTopicTerms,
     ...extractedCandidateTerms.filter((term) => !selectedTopicTerms.has(term)),
   ].slice(0, Math.max(5, selectedTopicTerms.size));
-  const selectedReadingSeconds = readerSelected
-    ? recommendationEvents.reduce((sum, event) => event.entryId === readerSelected.id ? sum + event.activeSeconds : sum, 0)
-    : 0;
   const selectedImageMode = readerSelected
     ? resolveImageLoadingMode(
         settings.imageLoadingPreferences,
@@ -2266,18 +2385,38 @@ export default function App() {
     : "direct-no-referrer";
 
   const recordReadingTick = useCallback(() => {
-    if (!activeEvent.current || document.visibilityState !== "visible" || !document.hasFocus()) return false;
-    if (document.querySelector("[aria-modal='true']")) return false;
-    activeEvent.current.activeSeconds += 5;
-    void persistActive();
-    return true;
-  }, [persistActive]);
+    const elapsedSeconds = syncReadingClock();
+    const now = performance.now();
+    if (elapsedSeconds > 0 && now - lastReadingPersist.current >= READING_PERSIST_MS) {
+      lastReadingPersist.current = now;
+      void persistActive();
+    }
+    return elapsedSeconds;
+  }, [persistActive, syncReadingClock]);
 
   useEffect(() => {
     const flush = () => { commitActiveEvent(); void persistActive(); };
+    const pause = () => {
+      if (syncReadingClock() > 0) void persistActive();
+    };
+    const resume = () => { syncReadingClock(); };
+    const visibilityChange = () => {
+      if (document.visibilityState === "visible") resume();
+      else pause();
+    };
     window.addEventListener("pagehide", flush);
-    return () => { window.removeEventListener("pagehide", flush); commitActiveEvent(); void persistActive(); };
-  }, [persistActive, commitActiveEvent]);
+    window.addEventListener("blur", pause);
+    window.addEventListener("focus", resume);
+    document.addEventListener("visibilitychange", visibilityChange);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      window.removeEventListener("blur", pause);
+      window.removeEventListener("focus", resume);
+      document.removeEventListener("visibilitychange", visibilityChange);
+      commitActiveEvent();
+      void persistActive();
+    };
+  }, [persistActive, commitActiveEvent, syncReadingClock]);
 
   const updateEntry = async (id: number, patch: EntryMutationPatch, success: string) => {
     if (!config) return false;
@@ -2398,6 +2537,7 @@ export default function App() {
       ...attribution,
     });
     activeEvent.current = readingEvent;
+    syncReadingClock();
     setActiveCandidates({ entryId: story.id, terms: [], loading: true });
     const initialPersistence = putReadingEvent(readingEvent);
     void extractRecommendationCandidateTermsAsync(story.title, story.summary).then(async (extracted) => {
@@ -2463,7 +2603,7 @@ export default function App() {
       });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, mode, query, visible, persistActive, commitActiveEvent, loadEntryContent, entryLabels, interest, navigateToArticle, t]);
+  }, [config, mode, query, visible, persistActive, commitActiveEvent, syncReadingClock, loadEntryContent, entryLabels, interest, navigateToArticle, t]);
 
   useEffect(() => {
     if (route.kind === "article") {
@@ -3007,11 +3147,10 @@ export default function App() {
               <div className="readerToolbar"><button className="mobileBack" onClick={() => { navigateToList(); setMobileView("list"); }}>‹ {t("reader.backToArticles")}</button><div><button onClick={() => toggleRead(selected)} title={t(selected.status === "read" ? "reader.markUnread" : "reader.markRead")}>{selected.status === "read" ? "○" : "●"}</button><button className={selected.starred ? "pressed" : ""} title={t(selected.starred ? "reader.unsave" : "reader.save")} onClick={() => void toggleStarred(selected)}>{selected.starred ? "★" : "☆"}</button><a href={selected.url} target="_blank" rel="noopener noreferrer" title={t("reader.openOriginal")}>↗</a><button title={t("reader.copyLink")} onClick={async () => { await navigator.clipboard.writeText(selected.url); notify(t("reader.linkCopied")); }}>⧉</button><button title={t("reader.notInterested")} onClick={() => void setFeedback("not_interested")}>−</button></div></div>
               <p className="crumb">{selected.category} · {selected.source}</p>
               <ArticleMetadata
-                key={`${selected.id}:${selectedReadingSeconds}`}
+                key={selected.id}
                 story={selected}
                 feedIcon={feedIcons.get(selected.feed_id)}
                 timeZone={activeTimeZone}
-                initialReadingSeconds={selectedReadingSeconds}
                 onReadingTick={recordReadingTick}
                 onTextSelection={requestTopicSelection}
                 t={t}
@@ -3077,7 +3216,8 @@ export default function App() {
         settings={settings}
         timeZone={activeTimeZone}
         timeZoneSource={timeZoneSelection.source}
-        sourceWeights={interest.sources}
+        sourceAffinities={interest.sources}
+        sourceBaseline={interest.sourceBaseline}
         wordWeights={interest.words}
         exposures={recommendationExposures}
         starredCount={savedCount}

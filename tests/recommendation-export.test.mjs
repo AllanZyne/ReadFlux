@@ -96,7 +96,8 @@ test("recommendation export derives its profile from every exported event", () =
   const expected = deriveInterestProfile([event, mirrored], [], now);
 
   assert.deepEqual(data.profile.terms, [{ term: "llvm", weight: 1 }]);
-  assert.equal(data.profile.sources[0].weight, expected.sources.get(10));
+  assert.deepEqual(data.profile.sources[0], expected.sources.get(10));
+  assert.deepEqual(data.profile.sourceBaseline, expected.sourceBaseline);
   assert.equal(data.entries[0].currentScore.termScore > 0, true);
 });
 

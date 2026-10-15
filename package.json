@@ -11,7 +11,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "eval": "node scripts/evaluate-recommendations.mjs"
   },
   "dependencies": {
     "bootstrap-icons": "^1.13.1",

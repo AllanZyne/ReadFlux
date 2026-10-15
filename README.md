@@ -113,17 +113,32 @@ ReadFlux records the article, feed, title, keywords, open time, active
 foreground time, scroll depth, entry path, and explicit **Helpful** or
 **Not interested** feedback. Saved state remains managed by Miniflux.
 
-The recommendation profile gives more weight to recent behavior and combines:
+Active foreground time is measured from real elapsed time while the page is
+visible and focused and no dialog is open. It is flushed when reading pauses,
+when the article changes or the page is left, and on visibility changes.
+Events recorded by older versions were counted in 5-second steps.
 
-- Feed affinity
+The recommendation profile gives more weight to recent behavior (28-day decay)
+and combines:
+
+- Feed affinity: a feed's smoothed reading depth multiplied by its smoothed
+  **Today** open rate, relative to the average feed. The open rate counts
+  articles you actually saw in the list (at least half visible for half a
+  second), so articles you scroll past without opening lower it. Older records
+  without this data estimate visibility from list position. Reading
+  depth uses foreground time compared with the article's reading time, so a
+  short post does not count as a deep read. Scroll depth counts in proportion
+  to article length. Saved articles add credit with diminishing returns.
 - Explicitly followed topics selected from candidates, article titles, or article text; each topic has a fixed weight of 1 even when selected repeatedly
 - Publication time
-- Saved articles
-- Negative keywords
+- A bonus for saved articles
+
+**Not interested** feedback is recorded but does not currently lower any score.
 
 Recommendation scores order articles within each **Today** time and read-status
 tier and are not displayed in the article list. The **Recommendation data** tab
-in Settings exposes derived weights and the 30 most recent raw events by
+in Settings exposes derived feed affinity (reading depth, impressions, opens,
+open rate, and saved-article credit) and the 30 most recent raw events by
 default. Local records can be edited or deleted, and search still covers the
 complete event history.
 
@@ -135,6 +150,20 @@ publication time, state, the title-plus-excerpt text used for scoring, and the
 current score breakdown. It never includes full article content or Miniflux and
 WebDAV credentials. When WebDAV is configured, the tab shows its sync status and
 disables export while a sync is running.
+
+Each **Today** list records its top 100 articles and which of them you saw. To
+evaluate the current algorithm against an export, run:
+
+```bash
+npm run eval -- path/to/readflux-recommendation-YYYY-MM-DD.json
+```
+
+The command replays each recorded **Today** list using only data from before
+it, then reports pairwise AUC within each time and read-status tier for opens,
+engaged reads, and reads of 30 seconds or more. It prints aggregates only. Run
+it on two branches to compare algorithm changes. The recorded score decided
+the on-screen order, so its open AUC is inflated by position bias and is not a
+fair baseline. Keep exports outside the repository.
 
 When an article is opened, followed topics found in its title or summary are
 prioritized in the five candidate-topic slots. Chinese topics use substring

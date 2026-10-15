@@ -109,6 +109,8 @@ export type TopicFeedbackOperation = {
 
 export type RankingExposureItem = {
   entryId: number;
+  feedId?: number;
+  publishedAt?: string;
   rank: number;
   score: number;
   sourceScore: number;
@@ -131,6 +133,7 @@ export type RankingExposure = {
   items: RankingExposureItem[];
   bulkDismissedAt?: string;
   bulkDismissedEntryIds?: number[];
+  seenEntryIds?: number[];
   remoteClientId?: string;
   remoteClientName?: string;
 };

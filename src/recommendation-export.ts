@@ -9,7 +9,7 @@ import { localDayKey } from "./smart-feeds.mjs";
 import { storyTextForEntry } from "./story-text.ts";
 
 export const RECOMMENDATION_EXPORT_FORMAT = "readflux-recommendation-export";
-export const RECOMMENDATION_EXPORT_VERSION = 1;
+export const RECOMMENDATION_EXPORT_VERSION = 2;
 
 export type ExportableEntry = {
   id: number;
@@ -44,8 +44,12 @@ export function buildRecommendationExport(input: {
   const profileNow = new Date(input.exportedAt).getTime();
   const profile = deriveInterestProfile(
     input.events,
-    input.entries.filter((entry) => entry.starred).map((entry) => ({ feedId: entry.feed_id })),
+    input.entries.filter((entry) => entry.starred).map((entry) => ({ feedId: entry.feed_id, entryId: entry.id })),
     profileNow,
+    {
+      exposures: input.exposures,
+      entryFeedIds: new Map(input.entries.map((entry) => [entry.id, entry.feed_id])),
+    },
   );
   const referenced = new Set<number>();
   input.events.forEach((event) => referenced.add(event.entryId));
@@ -88,7 +92,9 @@ export function buildRecommendationExport(input: {
     settings: { markReadOnScroll: input.markReadOnScroll },
     profile: {
       derivedAt: input.exportedAt,
-      sources: byWeight(profile.sources).map(([feedId, weight]) => ({ feedId, weight })),
+      sourceBaseline: profile.sourceBaseline,
+      sources: [...profile.sources.values()]
+        .sort((a, b) => b.relativeAffinity - a.relativeAffinity || a.feedId - b.feedId),
       terms: byWeight(profile.words).map(([term, weight]) => ({ term, weight })),
       negatives: byWeight(profile.negatives).map(([term, weight]) => ({ term, weight })),
     },

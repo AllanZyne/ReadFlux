@@ -292,7 +292,7 @@ export function validReadingEvent(value: unknown): value is ReadingEvent {
     && (event.starredAt === undefined || typeof event.starredAt === "string");
 }
 
-function validRankingExposure(value: unknown): value is RankingExposure {
+export function validRankingExposure(value: unknown): value is RankingExposure {
   if (!value || typeof value !== "object") return false;
   const exposure = value as Partial<RankingExposure>;
   return typeof exposure.id === "string"
@@ -303,7 +303,11 @@ function validRankingExposure(value: unknown): value is RankingExposure {
     && Number.isSafeInteger(exposure.candidateCount)
     && Number.isSafeInteger(exposure.displayedCount)
     && Array.isArray(exposure.items)
-    && exposure.items.every((item) => Number.isFinite(item.entryId)
+    && exposure.items.every((item) => !!item
+      && typeof item === "object"
+      && Number.isFinite(item.entryId)
+      && (item.feedId === undefined || Number.isFinite(item.feedId))
+      && (item.publishedAt === undefined || typeof item.publishedAt === "string")
       && Number.isSafeInteger(item.rank)
       && Number.isFinite(item.score)
       && Number.isFinite(item.sourceScore)
@@ -316,7 +320,9 @@ function validRankingExposure(value: unknown): value is RankingExposure {
       && item.matchedTerms.every((term) => typeof term === "string"))
     && (exposure.bulkDismissedAt === undefined || typeof exposure.bulkDismissedAt === "string")
     && (exposure.bulkDismissedEntryIds === undefined || (Array.isArray(exposure.bulkDismissedEntryIds)
-      && exposure.bulkDismissedEntryIds.every(Number.isFinite)));
+      && exposure.bulkDismissedEntryIds.every(Number.isFinite)))
+    && (exposure.seenEntryIds === undefined || (Array.isArray(exposure.seenEntryIds)
+      && exposure.seenEntryIds.every(Number.isFinite)));
 }
 
 function validExposureMonthFile(value: unknown): value is ExposureMonthFile {

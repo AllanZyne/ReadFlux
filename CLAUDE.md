@@ -106,20 +106,46 @@ An event records:
 - entry and feed identifiers
 - title, source, and extracted terms
 - opened time
-- active foreground seconds
+- active foreground seconds, accumulated from real elapsed time while the page
+  is visible and focused and no modal is open (events from older versions are
+  quantized to 5-second steps)
 - maximum scroll depth
+- the entry's Miniflux reading time, when available
 - entry path (`recommendation`, `feed`, `search`, or `saved`)
 - optional explicit feedback
 
+Today exposures record the top 100 items: entry, rank, score components, and,
+for new records, the feed ID and publication time. Older items without a feed
+ID fall back to cached entries. New exposures also record `seenEntryIds`:
+items at least half visible in the article list for 0.5 seconds while the page
+is visible. This does not depend on the mark-read-on-scroll setting.
+
 Current derivation rules:
 
-- Interest contributions decay with a 28-day time scale.
-- Very short events are ignored unless explicit positive feedback exists.
-- Positive feedback gets a fixed strong contribution.
-- Negative feedback contributes only to negative term weights.
-- Starred entries add source and term affinity.
-- Ranking combines source affinity, positive term matches, freshness, a starred
-  bonus, and negative-term penalties, then clamps the internal score.
+- Event and exposure contributions decay with a 28-day time scale.
+- Each event's reading quality is foreground time divided by its reading time
+  (at least one minute), capped at 1. Scroll depth counts in proportion to
+  reading time, reaching full credit at 10 minutes.
+- Events under 5 seconds with little length-adjusted scroll have zero quality.
+  They still count as reads, which lowers the feed's average depth.
+- Positive feedback gives an event full quality.
+- Negative feedback removes the event from source affinity and open counts. It
+  does not produce negative term weights, and the negative penalty is zero.
+- Starred entries add `log1p(count)` pseudo-reads of full quality to their
+  feed. A star decays from `starredAt` when a reading event recorded one.
+  Starred entries add no term affinity.
+- Feed affinity is smoothed engagement (3-read prior) multiplied by a smoothed
+  Today open rate (20-impression prior). In exposures with `seenEntryIds`,
+  each seen or opened item is one impression, so seen-but-skipped items lower
+  the feed's open rate. Older exposures weight every item by
+  `1 / log2(rank + 1)`. An open is an attributed event with `rankingId` and
+  `exposedRank`. Until any attributed open exists, every feed's open rate is a
+  neutral 1, and the average-depth baseline never drops below 0.01, so depth
+  and saved-article differences still rank feeds. The result is divided by the average feed's value, and
+  the source score is `20 * r / (1 + r)`. A feed with no data scores 10, and
+  every feed scores 0 before any profile data exists.
+- Ranking combines the source score, positive term matches, freshness, and a
+  starred bonus, then clamps the internal score.
 
 When changing ranking behavior:
 
@@ -129,6 +155,10 @@ When changing ranking behavior:
 3. Add focused tests for the new pure calculation where practical.
 4. Update README and this file.
 5. Do not surface the numeric score in the article list.
+6. Compare the change offline with `npm run eval -- <export.json>` on the base
+   branch and the change branch. Compare replayed columns with each other. The
+   recorded score shaped the on-screen order, so its open AUC is inflated by
+   position bias. Never commit exports or evaluation output.
 
 ## Commands
 
@@ -138,6 +168,7 @@ npm run lint
 npm test
 npm run build
 npm run preview
+npm run eval -- <readflux-recommendation-export.json> [--json]
 ```
 
 Run lint, tests, and build before publishing.
