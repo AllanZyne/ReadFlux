@@ -1962,8 +1962,6 @@ export default function App() {
       feeds,
       events: recommendationEvents,
       exposures: recommendationExposures,
-      profile: interest,
-      profileNow: recommendationSnapshot.now,
     });
     const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
     const link = document.createElement("a");

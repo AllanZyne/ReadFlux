@@ -39,7 +39,6 @@ const event = {
 };
 
 test("recommendation export keeps referenced and candidate entries without full content", () => {
-  const profile = deriveInterestProfile([event], [], now);
   const exposure = createRankingExposure({
     id: "ranking-1",
     createdAt: "2026-10-14T07:00:00.000Z",
@@ -64,8 +63,6 @@ test("recommendation export keeps referenced and candidate entries without full 
     feeds: [{ id: 10, title: "Feed", category: { id: 7, title: "Tech" } }],
     events: [event],
     exposures: [exposure],
-    profile,
-    profileNow: now,
   });
 
   assert.equal(data.format, RECOMMENDATION_EXPORT_FORMAT);
@@ -77,6 +74,29 @@ test("recommendation export keeps referenced and candidate entries without full 
   assert.equal(data.profile.sources[0].feedId, 10);
   assert.equal(data.diagnostics.exposureCount, 1);
   assert.equal(JSON.stringify(data).includes("apiKey"), false);
+});
+
+test("recommendation export derives its profile from every exported event", () => {
+  const mirrored = {
+    ...event,
+    id: "event-2",
+    remoteClientId: "other",
+    topicFeedback: [{ id: "op-1", term: "LLVM", interested: true, updatedAt: "2026-10-14T08:00:00.000Z" }],
+  };
+  const data = buildRecommendationExport({
+    exportedAt: "2026-10-15T12:00:00.000Z",
+    timeZone: "UTC",
+    markReadOnScroll: false,
+    entries: [entry({ title: "LLVM news", status: "unread" })],
+    feeds: [],
+    events: [event, mirrored],
+    exposures: [],
+  });
+  const expected = deriveInterestProfile([event, mirrored], [], now);
+
+  assert.deepEqual(data.profile.terms, [{ term: "llvm", weight: 1 }]);
+  assert.equal(data.profile.sources[0].weight, expected.sources.get(10));
+  assert.equal(data.entries[0].currentScore.termScore > 0, true);
 });
 
 test("recommendation export file name uses the reader timezone day", () => {

@@ -1,9 +1,9 @@
 import type { ReadingEvent, RankingExposure } from "./readflux-client.ts";
 import {
+  deriveInterestProfile,
   RECOMMENDATION_ALGORITHM_VERSION,
   recommendationDiagnostics,
   scoreRecommendation,
-  type InterestProfile,
 } from "./recommendation.ts";
 import { localDayKey } from "./smart-feeds.mjs";
 import { storyTextForEntry } from "./story-text.ts";
@@ -39,9 +39,14 @@ export function buildRecommendationExport(input: {
   feeds: ExportableFeed[];
   events: ReadingEvent[];
   exposures: RankingExposure[];
-  profile: InterestProfile;
-  profileNow: number;
 }) {
+  // Derive from the export-time event set; the list's captured profile can predate WebDAV mirrors.
+  const profileNow = new Date(input.exportedAt).getTime();
+  const profile = deriveInterestProfile(
+    input.events,
+    input.entries.filter((entry) => entry.starred).map((entry) => ({ feedId: entry.feed_id })),
+    profileNow,
+  );
   const referenced = new Set<number>();
   input.events.forEach((event) => referenced.add(event.entryId));
   input.exposures.forEach((exposure) => exposure.items.forEach((item) => referenced.add(item.entryId)));
@@ -68,8 +73,8 @@ export function buildRecommendationExport(input: {
           text: recommendationText,
           publishedAt: entry.published_at,
           starred: entry.starred,
-          now: input.profileNow,
-          profile: input.profile,
+          now: profileNow,
+          profile,
         }),
       };
     });
@@ -82,10 +87,10 @@ export function buildRecommendationExport(input: {
     timeZone: input.timeZone,
     settings: { markReadOnScroll: input.markReadOnScroll },
     profile: {
-      derivedAt: new Date(input.profileNow).toISOString(),
-      sources: byWeight(input.profile.sources).map(([feedId, weight]) => ({ feedId, weight })),
-      terms: byWeight(input.profile.words).map(([term, weight]) => ({ term, weight })),
-      negatives: byWeight(input.profile.negatives).map(([term, weight]) => ({ term, weight })),
+      derivedAt: input.exportedAt,
+      sources: byWeight(profile.sources).map(([feedId, weight]) => ({ feedId, weight })),
+      terms: byWeight(profile.words).map(([term, weight]) => ({ term, weight })),
+      negatives: byWeight(profile.negatives).map(([term, weight]) => ({ term, weight })),
     },
     diagnostics: recommendationDiagnostics(input.exposures, input.events),
     feeds: input.feeds.map((feed) => ({
