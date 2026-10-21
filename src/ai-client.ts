@@ -66,6 +66,21 @@ export function aiResultKey(entryId: number, task: AiTask, language: AiTargetLan
   return `${entryId}:${task}:${language}`;
 }
 
+/**
+ * A cheap synchronous fingerprint (FNV-1a) of the article as displayed, used
+ * to scope in-memory results so a synced title or content change invalidates
+ * them. Saved results use the SHA-256 `aiContentHash` instead.
+ */
+export function aiArticleRevision(title: string, content: string) {
+  let hash = 0x811c9dc5;
+  const value = `${title}\n${content}`;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${value.length}:${(hash >>> 0).toString(16)}`;
+}
+
 export async function aiContentHash(value: string) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -188,7 +203,7 @@ export function tokenizeTaggedText(value: string): TaggedToken[] {
   return tokens;
 }
 
-export type AiErrorKind = "network" | "http" | "provider" | "refusal" | "empty";
+export type AiErrorKind = "network" | "http" | "provider" | "refusal" | "empty" | "truncated" | "incomplete";
 
 export class AiRequestError extends Error {
   readonly kind: AiErrorKind;
@@ -333,8 +348,10 @@ export async function* readServerSentEvents(body: ReadableStream<Uint8Array>): A
     while (true) {
       const { value, done } = await reader.read();
       buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
-      const lines = buffer.split(/\r\n|\r|\n/);
-      buffer = done ? "" : lines.pop() ?? "";
+      // A trailing CR may be the first half of a CRLF split across chunks.
+      const carry = !done && buffer.endsWith("\r") ? "\r" : "";
+      const lines = (carry ? buffer.slice(0, -1) : buffer).split(/\r\n|\r|\n/);
+      buffer = done ? "" : (lines.pop() ?? "") + carry;
       for (const line of lines) {
         if (!line) {
           const message = dispatch();
@@ -454,6 +471,7 @@ export async function streamAiCompletion(
     if (chunk.done) break;
   }
   if (stopReason === "refusal" || stopReason === "content_filter") throw new AiRequestError("refusal");
+  if (stopReason === "length" || stopReason === "max_tokens") throw new AiRequestError("truncated");
   const text = visibleCompletionText(raw);
   if (!text.trim()) throw new AiRequestError("empty");
   return { text, stopReason };

@@ -34,13 +34,21 @@ export type TranslationDocument = {
 
 const hasWords = (node: Node) => /\p{L}/u.test(node.textContent ?? "");
 
+const BLOCK_SELECTOR = [...BLOCK_TAGS].map((tag) => tag.toLowerCase()).join(",");
+
 function isBlock(node: Node): node is Element {
   return node instanceof Element && BLOCK_TAGS.has(node.tagName);
 }
 
+/** An inline element such as `<a>` that wraps a block such as `<h2>`. */
+function wrapsBlock(node: Node): node is Element {
+  return node instanceof Element && !BLOCK_TAGS.has(node.tagName) && !ATOMIC_TAGS.has(node.tagName)
+    && node.querySelector(BLOCK_SELECTOR) !== null;
+}
+
 function collectBlocks(container: Element, blocks: Element[]) {
   const children = [...container.childNodes];
-  if (!children.some(isBlock)) {
+  if (!children.some((child) => isBlock(child) || wrapsBlock(child))) {
     if (hasWords(container)) blocks.push(container);
     return;
   }
@@ -55,6 +63,11 @@ function collectBlocks(container: Element, blocks: Element[]) {
     run = [];
   };
   for (const child of children) {
+    if (wrapsBlock(child)) {
+      flush();
+      collectBlocks(child, blocks);
+      continue;
+    }
     if (!isBlock(child)) {
       run.push(child);
       continue;

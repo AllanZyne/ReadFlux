@@ -97,6 +97,12 @@ test("server-sent events are parsed across chunk boundaries and line endings", a
   ]);
 });
 
+test("a CRLF split across network chunks is one line ending, not an event boundary", async () => {
+  const events = [];
+  for await (const event of ai.readServerSentEvents(streamOf("data: {\"a\":\r", "\ndata: 1}\r\n\r\n"))) events.push(event);
+  assert.deepEqual(events, [{ data: "{\"a\":\n1}" }]);
+});
+
 test("stream chunks expose text, stop reasons, and provider errors", () => {
   assert.deepEqual(ai.aiStreamChunk("anthropic", { data: "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}" }), { text: "Hi" });
   assert.deepEqual(ai.aiStreamChunk("anthropic", { data: "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"\"}}" }), {});
@@ -148,6 +154,45 @@ test("failed completions raise typed errors", async () => {
   await withFetch(refusal, async () => {
     await assert.rejects(ai.streamAiCompletion(anthropic, prompt), (error) => error instanceof ai.AiRequestError && error.kind === "refusal");
   });
+});
+
+test("truncated completions are rejected instead of returned as results", async () => {
+  const openaiTruncated = new Response(streamOf(
+    `data: ${JSON.stringify({ choices: [{ delta: { content: "- Partial" }, finish_reason: null }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "length" }] })}\n\n`,
+    "data: [DONE]\n\n",
+  ), { status: 200 });
+  await withFetch(openaiTruncated, async () => {
+    await assert.rejects(ai.streamAiCompletion(openai, prompt), (error) => error instanceof ai.AiRequestError && error.kind === "truncated");
+  });
+  const anthropicTruncated = new Response(streamOf(
+    "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Partial\"}}\n\n",
+    "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\n",
+    "data: {\"type\":\"message_stop\"}\n\n",
+  ), { status: 200 });
+  await withFetch(anthropicTruncated, async () => {
+    await assert.rejects(ai.streamAiCompletion(anthropic, prompt), (error) => error instanceof ai.AiRequestError && error.kind === "truncated");
+  });
+});
+
+test("the article revision changes when a synced title or content changes", () => {
+  const base = ai.aiArticleRevision("Title", "<p>Body</p>");
+  assert.equal(ai.aiArticleRevision("Title", "<p>Body</p>"), base);
+  assert.notEqual(ai.aiArticleRevision("Title 2", "<p>Body</p>"), base);
+  assert.notEqual(ai.aiArticleRevision("Title", "<p>Body!</p>"), base);
+});
+
+test("results finished before a clear are not written after it", async () => {
+  const { IDBFactory } = await import("fake-indexeddb");
+  globalThis.indexedDB = new IDBFactory();
+  const record = (key) => ({ key, entryId: 1, task: "summary", language: "en", contentHash: "h", model: "m", text: "t", createdAt: "2026-10-21T00:00:00.000Z" });
+  const generation = client.currentAiResultsGeneration();
+  assert.equal(await client.putAiResult(record("1:summary:en"), generation), true);
+  await client.clearAiResults();
+  assert.equal(await client.putAiResult(record("1:summary:en"), generation), false, "a stale generation is dropped");
+  assert.equal(await client.getAiResult("1:summary:en"), null);
+  assert.equal(await client.putAiResult(record("2:summary:en")), true);
+  assert.equal((await client.getAiResult("2:summary:en"))?.text, "t");
 });
 
 test("model lists are requested from the configured base URL", () => {

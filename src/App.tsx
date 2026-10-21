@@ -194,6 +194,8 @@ function aiErrorMessage(cause: unknown, t: TFunction) {
   if (cause.kind === "network") return t("ai.errorNetwork");
   if (cause.kind === "refusal") return t("ai.errorRefusal");
   if (cause.kind === "empty") return t("ai.errorEmpty");
+  if (cause.kind === "truncated") return t("ai.errorTruncated");
+  if (cause.kind === "incomplete") return t("ai.errorIncomplete");
   if (cause.status === 401 || cause.status === 403) return t("ai.errorAuth");
   if (cause.kind === "http") return t("ai.errorStatus", { status: cause.status, detail: cause.detail ?? "" });
   return t("ai.errorProvider", { detail: cause.detail ?? "" });
@@ -635,7 +637,16 @@ function AiSummaryPanel({
 }) {
   const lines = summaryLines(summary.text);
   const pending = summary.status === "loading" || summary.status === "streaming";
-  return <section className="aiSummary" aria-labelledby="ai-summary-title" aria-busy={pending}>
+  return <section
+    className="aiSummary"
+    aria-labelledby="ai-summary-title"
+    aria-busy={pending}
+    onKeyDown={(event) => {
+      // Let Enter and Space activate the panel's own buttons without also
+      // reaching the reader's global shortcuts (open original, scroll).
+      if ((event.key === "Enter" || event.key === " ") && event.target instanceof HTMLButtonElement) event.stopPropagation();
+    }}
+  >
     <header>
       <i className="bi bi-stars" aria-hidden="true" />
       <strong id="ai-summary-title">{t("ai.summaryTitle")}</strong>
@@ -735,6 +746,7 @@ function SettingsDialog({
   aiLanguage,
   onSaveAi,
   onDisconnectAi,
+  onAiResultsCleared,
   onDisconnect,
   onSyncEntries,
   onResetSync,
@@ -768,6 +780,7 @@ function SettingsDialog({
   aiLanguage: AiTargetLanguage;
   onSaveAi: (config: AiConfig) => void;
   onDisconnectAi: () => Promise<void>;
+  onAiResultsCleared: () => void;
   onDisconnect: () => void;
   onSyncEntries: () => Promise<void>;
   onResetSync: () => Promise<void>;
@@ -1046,6 +1059,7 @@ function SettingsDialog({
     if (!window.confirm(t("ai.clearResultsConfirm"))) return;
     try {
       await clearAiResults();
+      onAiResultsCleared();
       setAiStats({ count: 0, bytes: 0 });
       setAiResultsStatus({ tone: "success", message: t("ai.resultsCleared") });
     } catch {
@@ -1573,6 +1587,7 @@ export default function App() {
   const [webDavConfig, setWebDavConfig] = useState<WebDavConfig | null>(null);
   const [webDavStatus, setWebDavStatus] = useState<WebDavSyncStatus>({ state: "idle" });
   const [aiConfig, setAiConfig] = useState<AiConfig | null>(() => getAiConfig());
+  const [aiResultsEpoch, setAiResultsEpoch] = useState(0);
   const [settings, setSettings] = useState<ProfileSettings>({
     theme: "day",
     showFeedArticleCount: false,
@@ -2797,7 +2812,7 @@ export default function App() {
   const aiArticle = readerSelected && contentLoadingId !== readerSelected.id && contentError?.id !== readerSelected.id
     ? readerSelected
     : null;
-  const articleAi = useArticleAi(aiConfig, aiArticle, aiLanguage, (cause) => notify(aiErrorMessage(cause, t)));
+  const articleAi = useArticleAi(aiConfig, aiArticle, aiLanguage, aiResultsEpoch, (cause) => notify(aiErrorMessage(cause, t)));
   const aiSummary = articleAi.summary;
   const aiTranslation = articleAi.translation;
   const aiSummaryBusy = aiSummary?.status === "loading" || aiSummary?.status === "streaming";
@@ -3695,7 +3710,9 @@ export default function App() {
           clearAiConfig();
           setAiConfig(null);
           await clearAiResults().catch(() => undefined);
+          setAiResultsEpoch((epoch) => epoch + 1);
         }}
+        onAiResultsCleared={() => setAiResultsEpoch((epoch) => epoch + 1)}
         onDisconnect={() => {
           clearConnection();
           setSettingsOpen(false);

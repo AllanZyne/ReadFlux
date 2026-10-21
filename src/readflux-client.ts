@@ -775,12 +775,28 @@ export async function getAiResult(key: string): Promise<AiResultRecord | null> {
   return value && typeof value === "object" ? value as AiResultRecord : null;
 }
 
-export async function putAiResult(record: AiResultRecord) {
+/**
+ * Bumped by `clearAiResults`. A result produced under an earlier generation
+ * is dropped, so a request that finishes after a clear cannot repopulate it.
+ */
+let aiResultsGeneration = 0;
+
+export function currentAiResultsGeneration() {
+  return aiResultsGeneration;
+}
+
+export async function putAiResult(record: AiResultRecord, generation = aiResultsGeneration) {
+  if (generation !== aiResultsGeneration) return false;
   const db = await openDb();
+  if (generation !== aiResultsGeneration) {
+    db.close();
+    return false;
+  }
   const transaction = db.transaction(AI_RESULTS, "readwrite");
   transaction.objectStore(AI_RESULTS).put(record);
   await transactionComplete(transaction);
   db.close();
+  return true;
 }
 
 export async function getAiResultStats() {
@@ -794,6 +810,7 @@ export async function getAiResultStats() {
 }
 
 export async function clearAiResults() {
+  aiResultsGeneration += 1;
   const db = await openDb();
   const transaction = db.transaction(AI_RESULTS, "readwrite");
   transaction.objectStore(AI_RESULTS).clear();
