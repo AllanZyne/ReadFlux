@@ -13,6 +13,21 @@ import {
   type ImageLoadingMode,
 } from "./article-images";
 import { articleMediaURL, isWeiboLivePhotoURL, youtubeEmbedURL } from "./article-content";
+import {
+  AI_PROVIDER_DEFAULTS,
+  AI_TARGET_LANGUAGES,
+  aiLanguageForInterface,
+  AiRequestError,
+  connectionTestPrompt,
+  listAiModels,
+  streamAiCompletion,
+  summaryLines,
+  type AiConfig,
+  type AiModelOption,
+  type AiProvider,
+  type AiTargetLanguage,
+} from "./ai-client";
+import { useArticleAi, type ArticleSummary, type ArticleTranslation } from "./article-ai";
 import { runExclusive } from "./async-lock";
 import { incrementalChangedAfter, mergeSyncedEntries, newestChangedAt, sameJsonValue, syncIntervalElapsed } from "./entry-sync";
 import {
@@ -31,6 +46,8 @@ import { advanceReadingClock, READING_PERSIST_MS, READING_TICK_MS, readingForegr
 import { storyTextForEntry } from "./story-text";
 import {
   CachedFeedIcon,
+  clearAiConfig,
+  clearAiResults,
   clearConnection,
   clearRemoteRankingExposures,
   clearRemoteReadingEvents,
@@ -43,6 +60,8 @@ import {
   EntrySyncState,
   type EntryMutation,
   type StoredEntryMutation,
+  getAiConfig,
+  getAiResultStats,
   getCachedEntries,
   getCachedFeedCatalog,
   getCachedFeedIcons,
@@ -71,6 +90,7 @@ import {
   RankingExposure,
   ReadingEvent,
   resetEntrySync,
+  saveAiConfig,
   saveCachedFeedCatalog,
   saveConnection,
   saveEntrySyncState,
@@ -164,6 +184,37 @@ function errorDetails(cause: unknown, fallback: string): LocalizedError {
 function errorMessage(cause: unknown, t: TFunction, fallback: string) {
   const error = errorDetails(cause, fallback);
   return t(error.key, { status: error.status });
+}
+
+function aiErrorMessage(cause: unknown, t: TFunction) {
+  if (!(cause instanceof AiRequestError)) return t("ai.errorUnknown");
+  if (cause.kind === "network") return t("ai.errorNetwork");
+  if (cause.kind === "refusal") return t("ai.errorRefusal");
+  if (cause.kind === "empty") return t("ai.errorEmpty");
+  if (cause.status === 401 || cause.status === 403) return t("ai.errorAuth");
+  if (cause.kind === "http") return t("ai.errorStatus", { status: cause.status, detail: cause.detail ?? "" });
+  return t("ai.errorProvider", { detail: cause.detail ?? "" });
+}
+
+/** Ctrl+click (⌘+click on Apple platforms) forces a fresh AI result. */
+const AI_FORCE_MODIFIER = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
+
+const aiForceRequested = (event: { ctrlKey: boolean; metaKey: boolean }) => event.ctrlKey || event.metaKey;
+
+function aiLanguageLabel(language: AiTargetLanguage, locale: string) {
+  try {
+    return new Intl.DisplayNames([locale], { type: "language" }).of(language) ?? language;
+  } catch {
+    return language;
+  }
+}
+
+function aiHost(baseURL: string) {
+  try {
+    return new URL(baseURL).host;
+  } catch {
+    return baseURL;
+  }
 }
 
 function readStoredBoolean(key: string) {
@@ -488,6 +539,118 @@ const ArticleBody = memo(function ArticleBody({
   />;
 });
 
+const ignoreTextSelection = () => undefined;
+
+/**
+ * Enter and Space activate the focused button natively; stopping them here
+ * keeps the reader's global shortcuts (open original, scroll) from also firing.
+ * Ctrl/⌘+Enter is the keyboard form of Ctrl/⌘+click.
+ */
+function aiActionKeyDown(action: (force: boolean) => void) {
+  return (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.stopPropagation();
+    if (event.key === "Enter" && aiForceRequested(event)) {
+      event.preventDefault();
+      action(true);
+    }
+  };
+}
+
+function AiReaderActions({
+  summary,
+  summaryBusy,
+  translation,
+  translating,
+  language,
+  disabled,
+  onSummary,
+  onTranslation,
+  t,
+}: {
+  summary: ArticleSummary | null;
+  summaryBusy: boolean;
+  translation: ArticleTranslation | null;
+  translating: boolean;
+  language: string;
+  disabled: boolean;
+  onSummary: (force: boolean) => void;
+  onTranslation: (force: boolean) => void;
+  t: TFunction;
+}) {
+  const modifier = AI_FORCE_MODIFIER;
+  const summaryLabel = summaryBusy
+    ? t("ai.cancelSummary")
+    : t(summary?.open ? "ai.hideSummary" : "ai.summarize", { modifier });
+  const translated = translation?.status === "done" && translation.showing;
+  const translationLabel = translation?.status === "translating"
+    ? t("ai.translatingProgress", { done: Math.min(translation.done + 1, translation.total), total: translation.total })
+    : translating
+      ? t("ai.cancelTranslation")
+      : t(translated ? "ai.showOriginal" : "ai.translate", { language, modifier });
+  const progress = translation?.total ? translation.done / translation.total * 100 : 0;
+  return <>
+    <span className="readerToolbarDivider" aria-hidden="true" />
+    <button
+      type="button"
+      className={`aiAction ${summary?.open ? "pressed" : ""} ${summaryBusy ? "busy" : ""}`}
+      disabled={disabled}
+      aria-pressed={summary?.open ?? false}
+      aria-label={summaryLabel}
+      title={summaryLabel}
+      onClick={(event) => onSummary(aiForceRequested(event))}
+      onKeyDown={aiActionKeyDown(onSummary)}
+    ><i className={`bi ${summaryBusy ? "bi-arrow-repeat" : "bi-stars"}`} aria-hidden="true" /></button>
+    <button
+      type="button"
+      className={`aiAction ${translated ? "pressed" : ""} ${translating ? "translating" : ""}`}
+      disabled={disabled}
+      aria-pressed={translated}
+      aria-label={translationLabel}
+      title={translationLabel}
+      style={{ "--ai-progress": `${progress}%` } as CSSProperties}
+      onClick={(event) => onTranslation(aiForceRequested(event))}
+      onKeyDown={aiActionKeyDown(onTranslation)}
+    >
+      <i className="bi bi-translate" aria-hidden="true" />
+      {translating && <span className="aiProgress" aria-hidden="true" />}
+      {translation?.status === "translating" && <span className="aiProgressCount" aria-hidden="true">{translation.done}/{translation.total}</span>}
+    </button>
+  </>;
+}
+
+function AiSummaryPanel({
+  summary,
+  onCopy,
+  onRetry,
+  t,
+}: {
+  summary: ArticleSummary;
+  onCopy: () => void;
+  onRetry: () => void;
+  t: TFunction;
+}) {
+  const lines = summaryLines(summary.text);
+  const pending = summary.status === "loading" || summary.status === "streaming";
+  return <section className="aiSummary" aria-labelledby="ai-summary-title" aria-busy={pending}>
+    <header>
+      <i className="bi bi-stars" aria-hidden="true" />
+      <strong id="ai-summary-title">{t("ai.summaryTitle")}</strong>
+      {summary.status === "done" && <button type="button" title={t("ai.copySummary")} aria-label={t("ai.copySummary")} onClick={onCopy}><i className="bi bi-clipboard" aria-hidden="true" /></button>}
+    </header>
+    {summary.status === "error"
+      ? <div className="aiSummaryError" role="alert">
+        <i className="bi bi-exclamation-triangle" aria-hidden="true" />
+        <span>{aiErrorMessage(summary.error, t)}</span>
+        <button type="button" onClick={onRetry}>{t("common.retry")}</button>
+      </div>
+      : <ul aria-live="polite">
+        {lines.map((line, index) => <li key={index}>{line}{pending && index === lines.length - 1 && <span className="aiSummaryCaret" aria-hidden="true" />}</li>)}
+        {pending && !lines.length && <li className="aiSummaryWaiting"><span className="sr-only">{t("ai.summarizing")}</span><span className="aiSummaryCaret" aria-hidden="true" /></li>}
+      </ul>}
+  </section>;
+}
+
 function sameEntryLabels(current: Map<number, string[]>, next: Map<number, string[]>) {
   if (current === next) return true;
   if (current.size !== next.size) return false;
@@ -548,6 +711,10 @@ function SettingsDialog({
   onSaveWebDav,
   onSyncWebDav,
   onDisconnectWebDav,
+  aiConfig,
+  aiLanguage,
+  onSaveAi,
+  onDisconnectAi,
   onDisconnect,
   onSyncEntries,
   onResetSync,
@@ -577,6 +744,10 @@ function SettingsDialog({
   onSaveWebDav: (config: WebDavConfig) => Promise<boolean>;
   onSyncWebDav: () => Promise<boolean>;
   onDisconnectWebDav: () => Promise<void>;
+  aiConfig: AiConfig | null;
+  aiLanguage: AiTargetLanguage;
+  onSaveAi: (config: AiConfig) => void;
+  onDisconnectAi: () => Promise<void>;
   onDisconnect: () => void;
   onSyncEntries: () => Promise<void>;
   onResetSync: () => Promise<void>;
@@ -584,7 +755,16 @@ function SettingsDialog({
   notify: (message: string) => void;
 }) {
   const { t, i18n } = useTranslation();
-  const [tab, setTab] = useState<"general" | "sync" | "feeds" | "recommendation">("general");
+  const [tab, setTab] = useState<"general" | "sync" | "feeds" | "recommendation" | "ai">("general");
+  const [aiDraft, setAiDraft] = useState<AiConfig>(() => aiConfig ?? {
+    provider: "openai",
+    ...AI_PROVIDER_DEFAULTS.openai,
+    apiKey: "",
+  });
+  const [aiTesting, setAiTesting] = useState(false);
+  const [aiModels, setAiModels] = useState<AiModelOption[]>([]);
+  const [aiModelsLoading, setAiModelsLoading] = useState(false);
+  const [aiStats, setAiStats] = useState<{ count: number; bytes: number } | null>(null);
   const [selectedFeedId, setSelectedFeedId] = useState<number | null>(null);
   const [resetting, setResetting] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
@@ -738,6 +918,108 @@ function SettingsDialog({
     });
   };
 
+  useEffect(() => {
+    if (tab !== "ai") return;
+    let cancelled = false;
+    void getAiResultStats().then((stats) => {
+      if (!cancelled) setAiStats(stats);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [tab]);
+
+  const changeAiProvider = (provider: AiProvider) => {
+    const previous = AI_PROVIDER_DEFAULTS[aiDraft.provider];
+    setAiModels([]);
+    setAiDraft({
+      ...aiDraft,
+      provider,
+      baseURL: !aiDraft.baseURL.trim() || aiDraft.baseURL === previous.baseURL ? AI_PROVIDER_DEFAULTS[provider].baseURL : aiDraft.baseURL,
+      model: !aiDraft.model.trim() || aiDraft.model === previous.model ? AI_PROVIDER_DEFAULTS[provider].model : aiDraft.model,
+    });
+  };
+
+  const validAiDraft = (requireModel = true) => {
+    const next = { ...aiDraft, baseURL: aiDraft.baseURL.trim(), apiKey: aiDraft.apiKey.trim(), model: aiDraft.model.trim() };
+    if (!next.baseURL || (requireModel && !next.model) || (next.provider === "anthropic" && !next.apiKey)) {
+      notify(t("ai.missingFields"));
+      return null;
+    }
+    return next;
+  };
+
+  /** Fills the model suggestions; `quiet` keeps failures silent for background refreshes. */
+  const loadAiModels = async (draftConfig: AiConfig, quiet = false) => {
+    setAiModelsLoading(true);
+    try {
+      const models = await listAiModels(draftConfig, AbortSignal.timeout(30_000));
+      setAiModels(models);
+      if (!quiet) notify(models.length ? t("ai.modelsLoaded", { count: models.length }) : t("ai.modelsEmpty"));
+    } catch (cause) {
+      if (quiet) return;
+      notify(cause instanceof AiRequestError && (cause.status === 404 || cause.status === 405)
+        ? t("ai.modelsUnavailable")
+        : aiErrorMessage(cause, t));
+    } finally {
+      setAiModelsLoading(false);
+    }
+  };
+
+  const requestAiModels = () => {
+    const next = validAiDraft(false);
+    if (next) void loadAiModels(next);
+  };
+
+  const saveAi = () => {
+    const next = validAiDraft();
+    if (!next) return;
+    onSaveAi(next);
+    setAiDraft(next);
+    notify(t("ai.saved"));
+  };
+
+  const testAi = async () => {
+    const next = validAiDraft();
+    if (!next) return;
+    setAiTesting(true);
+    if (!aiModels.length) void loadAiModels(next, true);
+    try {
+      await streamAiCompletion(next, connectionTestPrompt(), { signal: AbortSignal.timeout(60_000) });
+      notify(t("ai.testSucceeded"));
+    } catch (cause) {
+      notify(aiErrorMessage(cause, t));
+    } finally {
+      setAiTesting(false);
+    }
+  };
+
+  const disconnectAi = async () => {
+    if (!window.confirm(t("ai.disconnectConfirm"))) return;
+    await onDisconnectAi();
+    setAiDraft({ provider: "openai", ...AI_PROVIDER_DEFAULTS.openai, apiKey: "" });
+    setAiModels([]);
+    setAiStats({ count: 0, bytes: 0 });
+  };
+
+  const clearSavedAiResults = async () => {
+    if (!window.confirm(t("ai.clearResultsConfirm"))) return;
+    try {
+      await clearAiResults();
+      setAiStats({ count: 0, bytes: 0 });
+      notify(t("ai.resultsCleared"));
+    } catch {
+      notify(t("ai.clearResultsFailed"));
+    }
+  };
+
+  const setTranslationLanguage = async (value: string) => {
+    await saveProfileChange((current) => {
+      const next: ProfileSettings = { ...current, updatedAt: new Date().toISOString() };
+      if (value) next.translationLanguage = value as AiTargetLanguage;
+      else delete next.translationLanguage;
+      return next;
+    }, t("ai.languageSaveFailed"));
+  };
+
   const saveEvent = async () => {
     if (!draft || !draft.title.trim() || !draft.source.trim()) {
       notify(t("recommendation.missingFields"));
@@ -817,6 +1099,7 @@ function SettingsDialog({
           <button className={tab === "sync" ? "active" : ""} onClick={() => setTab("sync")}>{t("settings.sync")}</button>
           <button className={tab === "feeds" ? "active" : ""} onClick={() => setTab("feeds")}>{t("settings.feeds")}</button>
           <button className={tab === "recommendation" ? "active" : ""} onClick={() => setTab("recommendation")}>{t("settings.recommendation")} <span>{events.length}</span></button>
+          <button className={tab === "ai" ? "active" : ""} onClick={() => setTab("ai")}>{t("settings.ai")}</button>
         </nav>
 
         <div className="settingsDialogBody">
@@ -962,6 +1245,78 @@ function SettingsDialog({
               </div>
             </section>
           </>}
+
+          {tab === "ai" && <div className="aiSettings">
+            <section>
+              <div className="settingTitle">
+                <div><h3>{t("ai.providerTitle")}</h3><p>{t("ai.providerDescription")}</p></div>
+                <span>{aiConfig ? t("ai.connected") : t("ai.notConfigured")}</span>
+              </div>
+              <div className="settingsForm">
+                <label><span>{t("ai.provider")}</span><select value={aiDraft.provider} onChange={(event) => changeAiProvider(event.target.value as AiProvider)}>
+                  <option value="openai">{t("ai.providerOpenAI")}</option>
+                  <option value="anthropic">{t("ai.providerAnthropic")}</option>
+                </select></label>
+                <label><span>{t("ai.baseURL")}</span><input type="url" value={aiDraft.baseURL} placeholder={AI_PROVIDER_DEFAULTS[aiDraft.provider].baseURL} onChange={(event) => { setAiModels([]); setAiDraft({ ...aiDraft, baseURL: event.target.value }); }} /><small>{t(aiDraft.provider === "anthropic" ? "ai.baseURLHintAnthropic" : "ai.baseURLHintOpenAI")}</small></label>
+                <label><span>{t("ai.apiKey")}</span><input type="password" value={aiDraft.apiKey} autoComplete="off" placeholder={aiDraft.provider === "openai" ? t("ai.apiKeyOptional") : undefined} onChange={(event) => setAiDraft({ ...aiDraft, apiKey: event.target.value })} /><small>{t("ai.apiKeyHint")}</small></label>
+                <div className="aiModelField">
+                  <label htmlFor="ai-model"><span>{t("ai.model")}</span></label>
+                  <div>
+                    <input
+                      id="ai-model"
+                      value={aiDraft.model}
+                      list={aiModels.length ? "ai-model-options" : undefined}
+                      placeholder={aiDraft.provider === "anthropic" ? AI_PROVIDER_DEFAULTS.anthropic.model : "gpt-4.1-mini"}
+                      autoComplete="off"
+                      aria-describedby="ai-model-hint"
+                      onChange={(event) => setAiDraft({ ...aiDraft, model: event.target.value })}
+                    />
+                    <button type="button" disabled={aiModelsLoading} onClick={requestAiModels}>
+                      <i className={`bi ${aiModelsLoading ? "bi-arrow-repeat" : "bi-list-ul"}`} aria-hidden="true" /> {aiModelsLoading ? t("ai.loadingModels") : t("ai.loadModels")}
+                    </button>
+                  </div>
+                  <small id="ai-model-hint">{aiModels.length ? t("ai.modelsAvailable", { count: aiModels.length }) : t("ai.modelHint")}</small>
+                  {aiModels.length > 0 && <datalist id="ai-model-options">
+                    {aiModels.map((model) => <option key={model.id} value={model.id} label={model.label === model.id ? undefined : model.label} />)}
+                  </datalist>}
+                </div>
+                <div className="settingsActions">
+                  <button disabled={aiTesting} onClick={() => void testAi()}><i className="bi bi-plug" aria-hidden="true" /> {aiTesting ? t("ai.testing") : t("ai.test")}</button>
+                  <button className="primary" disabled={aiTesting} onClick={saveAi}>{t("ai.save")}</button>
+                </div>
+                {aiConfig && <button className="disconnect" disabled={aiTesting} onClick={() => void disconnectAi()}>{t("ai.disconnect")}</button>}
+              </div>
+            </section>
+            <section className="aiSettingsSection">
+              <div className="settingTitle"><div><h3>{t("ai.translationTitle")}</h3><p>{t("ai.translationDescription")}</p></div></div>
+              <div className="settingsForm">
+                <label>
+                  <span>{t("ai.targetLanguage")}</span>
+                  <select disabled={profileSaving} value={settings.translationLanguage ?? ""} onChange={(event) => void setTranslationLanguage(event.target.value)}>
+                    <option value="">{t("ai.interfaceLanguage", { language: aiLanguageLabel(aiLanguage, i18n.resolvedLanguage ?? "en") })}</option>
+                    {AI_TARGET_LANGUAGES.map((language) => <option key={language} value={language}>{aiLanguageLabel(language, i18n.resolvedLanguage ?? "en")}</option>)}
+                  </select>
+                  <small>{t("ai.targetLanguageHint")}</small>
+                </label>
+              </div>
+            </section>
+            <section className="aiSettingsSection">
+              <div className="settingTitle">
+                <div><h3>{t("ai.savedTitle")}</h3><p>{t("ai.savedDescription", { modifier: AI_FORCE_MODIFIER })}</p></div>
+                {aiStats && <span>{t("ai.savedStats", {
+                  count: aiStats.count,
+                  size: new Intl.NumberFormat(i18n.resolvedLanguage ?? "en", { style: "unit", unit: "kilobyte", maximumFractionDigits: 1 }).format(aiStats.bytes / 1024),
+                })}</span>}
+              </div>
+              <div className="settingsActions"><button disabled={!aiStats?.count} onClick={() => void clearSavedAiResults()}>{t("ai.clearResults")}</button></div>
+            </section>
+            <section className="privacyBox">
+              <strong>{t("ai.privacyTitle")}</strong>
+              <p>{t("ai.privacyContent", { host: aiHost(aiConfig?.baseURL ?? aiDraft.baseURL) })}</p>
+              <p>{t("ai.privacyKey")}</p>
+              <p>{t("ai.privacyNever")}</p>
+            </section>
+          </div>}
 
           {tab === "feeds" && <section className="feedSettingsSection">
             <div className="settingTitle"><div><h3>{t("settings.feedSettingsTitle")}</h3><p>{t("settings.feedSettingsHint")}</p></div></div>
@@ -1163,6 +1518,7 @@ export default function App() {
   const [remoteExposures, setRemoteExposures] = useState<RankingExposure[]>([]);
   const [webDavConfig, setWebDavConfig] = useState<WebDavConfig | null>(null);
   const [webDavStatus, setWebDavStatus] = useState<WebDavSyncStatus>({ state: "idle" });
+  const [aiConfig, setAiConfig] = useState<AiConfig | null>(() => getAiConfig());
   const [settings, setSettings] = useState<ProfileSettings>({
     theme: "day",
     showFeedArticleCount: false,
@@ -2383,6 +2739,22 @@ export default function App() {
         imageProxyAvailable,
       )
     : "direct-no-referrer";
+  const aiLanguage = settings.translationLanguage ?? aiLanguageForInterface(i18n.resolvedLanguage);
+  const aiArticle = readerSelected && contentLoadingId !== readerSelected.id && contentError?.id !== readerSelected.id
+    ? readerSelected
+    : null;
+  const articleAi = useArticleAi(aiConfig, aiArticle, aiLanguage, (cause) => notify(aiErrorMessage(cause, t)));
+  const aiSummary = articleAi.summary;
+  const aiTranslation = articleAi.translation;
+  const aiSummaryBusy = aiSummary?.status === "loading" || aiSummary?.status === "streaming";
+  const aiTranslating = aiTranslation !== null && aiTranslation.status !== "done";
+  const translatedContent = aiTranslation?.showing && aiTranslation.html ? aiTranslation.html : null;
+
+  const copyAiSummary = async () => {
+    if (!aiSummary) return;
+    await navigator.clipboard.writeText(summaryLines(aiSummary.text).map((line) => `- ${line}`).join("\n"));
+    notify(t("ai.summaryCopied"));
+  };
 
   const recordReadingTick = useCallback(() => {
     const elapsedSeconds = syncReadingClock();
@@ -3144,7 +3516,17 @@ export default function App() {
               const depth = target.scrollHeight <= target.clientHeight ? 1 : target.scrollTop / (target.scrollHeight - target.clientHeight);
               activeEvent.current.scrollDepth = Math.max(activeEvent.current.scrollDepth, Math.min(1, depth));
             }}>
-              <div className="readerToolbar"><button className="mobileBack" onClick={() => { navigateToList(); setMobileView("list"); }}>‹ {t("reader.backToArticles")}</button><div><button onClick={() => toggleRead(selected)} title={t(selected.status === "read" ? "reader.markUnread" : "reader.markRead")}>{selected.status === "read" ? "○" : "●"}</button><button className={selected.starred ? "pressed" : ""} title={t(selected.starred ? "reader.unsave" : "reader.save")} onClick={() => void toggleStarred(selected)}>{selected.starred ? "★" : "☆"}</button><a href={selected.url} target="_blank" rel="noopener noreferrer" title={t("reader.openOriginal")}>↗</a><button title={t("reader.copyLink")} onClick={async () => { await navigator.clipboard.writeText(selected.url); notify(t("reader.linkCopied")); }}>⧉</button><button title={t("reader.notInterested")} onClick={() => void setFeedback("not_interested")}>−</button></div></div>
+              <div className="readerToolbar"><button className="mobileBack" onClick={() => { navigateToList(); setMobileView("list"); }}>‹ {t("reader.backToArticles")}</button><div><button onClick={() => toggleRead(selected)} title={t(selected.status === "read" ? "reader.markUnread" : "reader.markRead")}>{selected.status === "read" ? "○" : "●"}</button><button className={selected.starred ? "pressed" : ""} title={t(selected.starred ? "reader.unsave" : "reader.save")} onClick={() => void toggleStarred(selected)}>{selected.starred ? "★" : "☆"}</button><a href={selected.url} target="_blank" rel="noopener noreferrer" title={t("reader.openOriginal")}>↗</a><button title={t("reader.copyLink")} onClick={async () => { await navigator.clipboard.writeText(selected.url); notify(t("reader.linkCopied")); }}>⧉</button><button title={t("reader.notInterested")} onClick={() => void setFeedback("not_interested")}>−</button>{aiConfig && <AiReaderActions
+                summary={aiSummary}
+                summaryBusy={aiSummaryBusy}
+                translation={aiTranslation}
+                translating={aiTranslating}
+                language={aiLanguageLabel(aiLanguage, i18n.resolvedLanguage ?? "en")}
+                disabled={!aiArticle || aiArticle.id !== selected.id}
+                onSummary={articleAi.toggleSummary}
+                onTranslation={articleAi.toggleTranslation}
+                t={t}
+              />}</div></div>
               <p className="crumb">{selected.category} · {selected.source}</p>
               <ArticleMetadata
                 key={selected.id}
@@ -3174,12 +3556,20 @@ export default function App() {
                 ? <div className="articleLoading" role="status"><b className="loadingMark">↻</b><p>{t("reader.loadingContent")}</p></div>
                 : contentError?.id === selected.id
                   ? <div className="articleLoading errorState"><b>!</b><p>{t(contentError.error.key, { status: contentError.error.status })}</p><button onClick={() => void loadEntryContent(selected.id)}>{t("common.retry")}</button></div>
-                  : <ArticleBody
-                      content={readerSelected.content}
+                  : <>
+                    {aiConfig && aiSummary?.open && <AiSummaryPanel
+                      summary={aiSummary}
+                      onCopy={() => void copyAiSummary()}
+                      onRetry={articleAi.retrySummary}
+                      t={t}
+                    />}
+                    <ArticleBody
+                      content={translatedContent ?? readerSelected.content}
                       minifluxURL={config.url}
                       imageMode={selectedImageMode}
-                      onTextSelection={requestTopicSelection}
-                    />}
+                      onTextSelection={translatedContent ? ignoreTextSelection : requestTopicSelection}
+                    />
+                  </>}
               <div className="feedback"><span>{t("recommendation.feedbackQuestion")}</span><button onClick={() => void setFeedback("helpful")}>{t("recommendation.helpful")}</button><button onClick={() => void setFeedback("not_interested")}>{t("recommendation.notInterested")}</button></div>
             </div>
             {topicSelection && <>
@@ -3241,6 +3631,17 @@ export default function App() {
         onSaveWebDav={handleSaveWebDav}
         onSyncWebDav={runWebDavSync}
         onDisconnectWebDav={handleDisconnectWebDav}
+        aiConfig={aiConfig}
+        aiLanguage={aiLanguage}
+        onSaveAi={(next) => {
+          saveAiConfig(next);
+          setAiConfig(next);
+        }}
+        onDisconnectAi={async () => {
+          clearAiConfig();
+          setAiConfig(null);
+          await clearAiResults().catch(() => undefined);
+        }}
         onDisconnect={() => {
           clearConnection();
           setSettingsOpen(false);

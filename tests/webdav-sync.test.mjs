@@ -110,9 +110,10 @@ test("WebDAV settings support the agreed automatic intervals and manual sync", (
 
 test("WebDAV disconnect matches the Miniflux disconnect treatment", () => {
   const disconnectButtons = appSource.match(/<button className="disconnect"[^>]*>[\s\S]*?<\/button>/g) ?? [];
-  assert.equal(disconnectButtons.length, 2);
+  assert.equal(disconnectButtons.length, 3);
   assert.ok(disconnectButtons.some((button) => button.includes('t("sync.disconnect")')));
   assert.ok(disconnectButtons.some((button) => button.includes('t("webdav.disconnect")')));
+  assert.ok(disconnectButtons.some((button) => button.includes('t("ai.disconnect")')));
 });
 
 test("WebDAV connection checks and syncs share serialization without UI lock resets", () => {

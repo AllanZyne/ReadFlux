@@ -3,6 +3,14 @@ import {
   type ImageLoadingMode,
   type ImageLoadingPreferences,
 } from "./article-images.ts";
+import {
+  AI_PROVIDER_DEFAULTS,
+  isAiProvider,
+  isAiTargetLanguage,
+  type AiConfig,
+  type AiTargetLanguage,
+  type AiTask,
+} from "./ai-client.ts";
 import { isSupportedLanguage, type SupportedLanguage } from "./languages.ts";
 
 export type ConnectionConfig = {
@@ -26,6 +34,8 @@ export type ProfileSettings = {
   imageLoadingPreferences: ImageLoadingPreferences;
   incrementalSyncIntervalMinutes: MinifluxSyncInterval;
   fullSyncIntervalMinutes: MinifluxSyncInterval;
+  /** Summary and translation language; the interface language when unset. */
+  translationLanguage?: AiTargetLanguage;
   updatedAt: string;
 };
 
@@ -138,6 +148,17 @@ export type RankingExposure = {
   remoteClientName?: string;
 };
 
+export type AiResultRecord = {
+  key: string;
+  entryId: number;
+  task: AiTask;
+  language: AiTargetLanguage;
+  contentHash: string;
+  model: string;
+  text: string;
+  createdAt: string;
+};
+
 export type WebDavSyncInterval = 0 | 5 | 15 | 30 | 60;
 
 export type WebDavConfig = {
@@ -151,7 +172,7 @@ export type WebDavConfig = {
 const LOCAL_CONFIG = "readflux.miniflux.local";
 const PREFERENCES = "readflux.preferences";
 const DB_NAME = "readflux-profile";
-const DB_VERSION = 9;
+const DB_VERSION = 10;
 const EVENTS = "reading-events";
 const SETTINGS = "settings";
 const ARTICLES = "articles";
@@ -171,6 +192,8 @@ const WEBDAV_CLIENT_ID = "readflux.webdav.client-id";
 const WEBDAV_CLIENT_CREATED_AT = "readflux.webdav.client-created-at";
 const WEBDAV_DIRTY_MONTHS = "webdav-dirty-months";
 const WEBDAV_DIRTY_EXPOSURE_MONTHS = "webdav-dirty-exposure-months";
+const AI_CONFIG = "readflux.ai";
+const AI_RESULTS = "ai-results";
 
 type CacheableEntry = {
   id: number;
@@ -325,6 +348,7 @@ function openDb(): Promise<IDBDatabase> {
         store.createIndex("sourceMonth", "sourceMonth");
         store.createIndex("clientId", "clientId");
       }
+      if (!db.objectStoreNames.contains(AI_RESULTS)) db.createObjectStore(AI_RESULTS, { keyPath: "key" });
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -713,6 +737,68 @@ export function clearWebDavConfig() {
   localStorage.removeItem(WEBDAV_CONFIG);
 }
 
+export function getAiConfig(): AiConfig | null {
+  if (typeof window === "undefined") return null;
+  const value = localStorage.getItem(AI_CONFIG);
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as Partial<AiConfig>;
+    if (!isAiProvider(parsed.provider) || typeof parsed.model !== "string" || !parsed.model.trim()) return null;
+    return {
+      provider: parsed.provider,
+      baseURL: typeof parsed.baseURL === "string" && parsed.baseURL.trim()
+        ? parsed.baseURL
+        : AI_PROVIDER_DEFAULTS[parsed.provider].baseURL,
+      apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : "",
+      model: parsed.model,
+    };
+  } catch {
+    localStorage.removeItem(AI_CONFIG);
+    return null;
+  }
+}
+
+export function saveAiConfig(config: AiConfig) {
+  localStorage.setItem(AI_CONFIG, JSON.stringify(config));
+}
+
+export function clearAiConfig() {
+  localStorage.removeItem(AI_CONFIG);
+}
+
+export async function getAiResult(key: string): Promise<AiResultRecord | null> {
+  const db = await openDb();
+  const value = await requestResult(db.transaction(AI_RESULTS).objectStore(AI_RESULTS).get(key));
+  db.close();
+  return value && typeof value === "object" ? value as AiResultRecord : null;
+}
+
+export async function putAiResult(record: AiResultRecord) {
+  const db = await openDb();
+  const transaction = db.transaction(AI_RESULTS, "readwrite");
+  transaction.objectStore(AI_RESULTS).put(record);
+  await transactionComplete(transaction);
+  db.close();
+}
+
+export async function getAiResultStats() {
+  const db = await openDb();
+  const records = await requestResult(db.transaction(AI_RESULTS).objectStore(AI_RESULTS).getAll()) as AiResultRecord[];
+  db.close();
+  return {
+    count: new Set(records.map((record) => record.entryId)).size,
+    bytes: records.reduce((sum, record) => sum + new Blob([record.text]).size, 0),
+  };
+}
+
+export async function clearAiResults() {
+  const db = await openDb();
+  const transaction = db.transaction(AI_RESULTS, "readwrite");
+  transaction.objectStore(AI_RESULTS).clear();
+  await transactionComplete(transaction);
+  db.close();
+}
+
 export function getWebDavClientId() {
   let id = localStorage.getItem(WEBDAV_CLIENT_ID);
   if (!id) {
@@ -944,6 +1030,7 @@ export function normalizeProfileSettings(value?: unknown): ProfileSettings {
       stored?.fullSyncIntervalMinutes,
       DEFAULT_FULL_SYNC_INTERVAL,
     ),
+    ...(isAiTargetLanguage(stored?.translationLanguage) ? { translationLanguage: stored.translationLanguage } : {}),
     updatedAt: stored?.updatedAt ?? new Date(0).toISOString(),
   };
 }

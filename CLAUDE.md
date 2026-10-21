@@ -42,6 +42,8 @@ The primary product contract is:
   events can be added, edited, or deleted, and the tab can export a local JSON
   file for offline evaluation. The export omits full article content and all
   credentials.
+- The reader can summarize or translate the open article with the user's own AI
+  provider. Clicking a button again reuses the saved result.
 - Category names, feed names, `Today`, `All`, `Updated`, and `Saved` use the same type
   size, weight, and row height. Hierarchy comes from disclosure controls, icons,
   and indentation.
@@ -51,6 +53,12 @@ The primary product contract is:
 - `src/App.tsx`: UI, Miniflux orchestration, list snapshots, reading tracker,
   and recommendation derivation.
 - `src/readflux-client.ts`: browser persistence and Miniflux requests.
+- `src/ai-client.ts`: AI provider requests, streaming, prompts, and pure
+  translation segment helpers.
+- `src/ai-translation.ts`: DOM block extraction and placeholder restoration for
+  translations.
+- `src/article-ai.ts`: per-article summary and translation state, saved-result
+  reuse, and cancellation.
 - `src/index.css`: all layout, themes, responsive behavior, and interaction
   states.
 - `src/main.tsx`: React entry point.
@@ -68,9 +76,33 @@ build variable unless the user explicitly changes the architecture.
   state, feed metadata, sync progress, and the Miniflux outbox: IndexedDB.
 - Optional WebDAV connection and stable client identity: localStorage.
 - Category and subscriptions-section collapse state: localStorage.
+- Optional AI provider connection: localStorage. Saved AI summaries and
+  translations: IndexedDB `ai-results`.
 
 Never log, commit, upload, or add analytics around API keys, article contents,
-or reading events.
+or reading events. The only exception is the explicit AI action below.
+
+## AI summaries and translations
+
+- AI is optional and browser-to-provider. Supported providers are
+  OpenAI-compatible `/chat/completions` endpoints and the Anthropic Messages
+  API. Do not add a proxy to work around provider CORS limits.
+- An article's title and text are sent only when the user clicks Summarize or
+  Translate, and only to the configured provider. Never send articles
+  automatically, and never send reading events, recommendation data, or
+  Miniflux credentials.
+- Results are saved per entry, task, and target language with a hash of the
+  title and content. A changed article generates a new result. Ctrl/⌘+click or
+  Ctrl/⌘+Enter forces regeneration.
+- Summaries render as plain text. Translations send block text with inline
+  markup replaced by numbered placeholders, are rebuilt from the original
+  nodes, and always render through the article sanitizer.
+- AI output does not affect recommendations, reading events, or topic terms.
+  Text selection on a translated body does not propose topics.
+- The target language is a profile preference that defaults to the interface
+  language. Disconnecting clears the provider settings and saved results.
+- The provider API key is intentionally unencrypted. Keep that boundary
+  explicit in the UI and documentation.
 
 ## WebDAV recommendation sync
 

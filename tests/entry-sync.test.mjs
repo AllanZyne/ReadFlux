@@ -23,7 +23,8 @@ test("full entry sync loads the complete Miniflux history in resumable phases", 
 });
 
 test("entry content and mutable state use separate single-user stores", () => {
-  assert.match(client, /DB_VERSION\s*=\s*9/);
+  assert.match(client, /DB_VERSION\s*=\s*10/);
+  assert.match(client, /AI_RESULTS\s*=\s*"ai-results"/);
   assert.match(client, /ARTICLES\s*=\s*"articles"/);
   assert.match(client, /ARTICLE_STATE\s*=\s*"article-state"/);
   assert.match(client, /SYNC_STATE\s*=\s*"sync-state"/);

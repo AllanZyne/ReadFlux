@@ -320,3 +320,36 @@ kbd{padding:2px 6px;border:1px solid #33423e;border-radius:4px;background:#1a252
 .articleLivePhotoFrame.hasPoster .articleLivePhoto{position:absolute;inset:0;height:100%;opacity:0}
 .articleLivePhotoFrame.playing .articleLivePhoto{opacity:1}
 .articleLivePhotoFrame.playing .articleLivePhotoPoster{opacity:0}
+
+/* AI summary and translation */
+.readerToolbarDivider{width:1px;height:18px;margin:0 4px;align-self:center;background:var(--line)}
+.readerToolbar .aiAction{position:relative}
+.readerToolbar .aiAction:disabled{opacity:.4;cursor:not-allowed}
+.readerToolbar .aiAction:disabled:hover{background:transparent;color:var(--muted)}
+.readerToolbar .aiAction:focus-visible{outline:2px solid var(--mint);outline-offset:1px}
+.readerToolbar .aiAction.busy i{animation:aiSpin 1s linear infinite}
+.readerToolbar .aiAction.translating{color:var(--mint)}
+.aiProgress{position:absolute;inset:0;padding:2px;border-radius:6px;pointer-events:none;background:conic-gradient(var(--mint) var(--ai-progress,0%),color-mix(in srgb,var(--mint) 18%,transparent) 0);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0)}
+.aiProgressCount{position:absolute;top:calc(100% - 3px);left:50%;transform:translateX(-50%);color:var(--mint);font:600 8px/1 var(--font-geist-sans);white-space:nowrap;pointer-events:none}
+@keyframes aiSpin{to{transform:rotate(360deg)}}
+.aiSummary{max-width:760px;margin:0 auto 24px;overflow:hidden;border:1px solid color-mix(in srgb,var(--mint) 40%,var(--line));border-radius:7px;background:color-mix(in srgb,var(--mint) 5%,transparent)}
+.aiSummary header{display:flex;align-items:center;gap:8px;min-height:38px;padding:0 8px 0 12px;border-bottom:1px solid color-mix(in srgb,var(--mint) 18%,var(--line));color:var(--mint);font:650 11px var(--font-geist-sans);letter-spacing:.06em;text-transform:uppercase}
+.aiSummary header button{width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;margin-left:auto;border:0;border-radius:5px;background:transparent;color:var(--muted);cursor:pointer}
+.aiSummary header button:hover,.aiSummary header button:focus-visible{background:color-mix(in srgb,var(--mint) 12%,transparent);color:var(--mint)}
+.aiSummary header button:focus-visible{outline:2px solid var(--mint);outline-offset:1px}
+.aiSummary ul{margin:0;padding:12px 18px 12px 32px;color:var(--text);font:14px/1.7 var(--font-geist-sans)}
+.aiSummary li+li{margin-top:4px}
+.aiSummaryWaiting{list-style:none}
+.aiSummaryCaret{display:inline-block;width:7px;height:1em;margin-left:2px;vertical-align:-2px;background:var(--mint);animation:aiBlink 1s steps(1) infinite}
+@keyframes aiBlink{50%{opacity:0}}
+.aiSummaryError{display:flex;align-items:center;gap:10px;padding:12px 14px;color:#d26666;font:13px/1.5 var(--font-geist-sans)}
+.aiSummaryError button{flex:none;height:30px;margin-left:auto;padding:0 12px;border:1px solid var(--line);border-radius:5px;background:transparent;color:var(--text);cursor:pointer}
+.aiSummaryError button:hover,.aiSummaryError button:focus-visible{border-color:var(--mint);color:var(--mint)}
+.articleContent .aiTranslationPending{opacity:.45;transition:opacity .2s}
+.aiSettings{display:grid;gap:24px}.aiSettings>section{margin:0}
+.aiSettingsSection{padding-top:24px;border-top:1px solid var(--line)}.aiSettings .settingTitle>span{flex:none;margin-left:16px;white-space:nowrap}
+.aiSettings .settingsForm small{color:var(--muted)}
+.aiSettings .settingsForm>.aiModelField{display:grid;grid-template-columns:1fr;gap:7px}.aiModelField>div{display:flex;gap:8px}.aiModelField input{flex:1;min-width:0}.aiModelField button{flex:none;display:inline-flex;align-items:center;gap:6px;height:40px;padding:0 13px;border:1px solid var(--line);border-radius:7px;background:transparent;color:var(--muted);font:12px var(--font-geist-sans);cursor:pointer}.aiModelField button:hover:not(:disabled),.aiModelField button:focus-visible{border-color:var(--mint);color:var(--text)}.aiModelField button:focus-visible{outline:2px solid var(--mint);outline-offset:2px}.aiModelField button:disabled{opacity:.6;cursor:progress}.aiModelField button:disabled i{animation:aiSpin 1s linear infinite}
+.aiSettings .settingsActions button{display:inline-flex;align-items:center;gap:6px}
+.aiSettings .privacyBox p+p{margin-top:4px}
+@media(prefers-reduced-motion:reduce){.readerToolbar .aiAction.busy i,.aiSummaryCaret,.aiModelField button:disabled i{animation:none}}

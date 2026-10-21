@@ -422,7 +422,7 @@ test("proxy mode is always available and falls back at media load time", () => {
 });
 
 test("settings give feeds a dedicated tab between sync and recommendation", () => {
-  assert.match(app, /useState<"general" \| "sync" \| "feeds" \| "recommendation">/);
+  assert.match(app, /useState<"general" \| "sync" \| "feeds" \| "recommendation" \| "ai">/);
   const tabs = app.match(/<nav className="settingsTabs"[\s\S]*?<\/nav>/)?.[0] ?? "";
   assert.ok(tabs.indexOf('tab === "sync"') < tabs.indexOf('tab === "feeds"'));
   assert.ok(tabs.indexOf('tab === "feeds"') < tabs.indexOf('tab === "recommendation"'));
