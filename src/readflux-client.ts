@@ -5,6 +5,7 @@ import {
 } from "./article-images.ts";
 import {
   AI_PROVIDER_DEFAULTS,
+  isAiEffort,
   isAiProvider,
   isAiTargetLanguage,
   type AiConfig,
@@ -751,6 +752,7 @@ export function getAiConfig(): AiConfig | null {
         : AI_PROVIDER_DEFAULTS[parsed.provider].baseURL,
       apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : "",
       model: parsed.model,
+      ...(isAiEffort(parsed.effort) ? { effort: parsed.effort } : {}),
     };
   } catch {
     localStorage.removeItem(AI_CONFIG);

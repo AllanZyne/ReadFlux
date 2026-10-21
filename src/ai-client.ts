@@ -1,10 +1,15 @@
 export type AiProvider = "openai" | "anthropic";
 
+export const AI_EFFORTS = ["low", "medium", "high"] as const;
+export type AiEffort = typeof AI_EFFORTS[number];
+
 export type AiConfig = {
   provider: AiProvider;
   baseURL: string;
   apiKey: string;
   model: string;
+  /** Reasoning effort; the provider's default when unset. */
+  effort?: AiEffort;
 };
 
 export type AiTask = "summary" | "translation";
@@ -29,6 +34,10 @@ const ANTHROPIC_MAX_TOKENS = 16000;
 
 export function isAiProvider(value: unknown): value is AiProvider {
   return value === "openai" || value === "anthropic";
+}
+
+export function isAiEffort(value: unknown): value is AiEffort {
+  return typeof value === "string" && AI_EFFORTS.includes(value as AiEffort);
 }
 
 export function isAiTargetLanguage(value: unknown): value is AiTargetLanguage {
@@ -228,7 +237,7 @@ export function buildAiRequest(config: AiConfig, prompt: AiPrompt): { url: strin
           system: prompt.system,
           messages: [{ role: "user", content: prompt.user }],
           stream: true,
-          ...(supportsEffort(model) ? { output_config: { effort: "low" } } : {}),
+          ...(config.effort && supportsEffort(model) ? { output_config: { effort: config.effort } } : {}),
           ...(fallback ? { fallbacks: "default" } : {}),
         }),
       },
@@ -245,6 +254,7 @@ export function buildAiRequest(config: AiConfig, prompt: AiPrompt): { url: strin
       body: JSON.stringify({
         model,
         stream: true,
+        ...(config.effort ? { reasoning_effort: config.effort } : {}),
         messages: [
           { role: "system", content: prompt.system },
           { role: "user", content: prompt.user },

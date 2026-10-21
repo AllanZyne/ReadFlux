@@ -101,6 +101,10 @@ or reading events. The only exception is the explicit AI action below.
   Text selection on a translated body does not propose topics.
 - The target language is a profile preference that defaults to the interface
   language. Disconnecting clears the provider settings and saved results.
+- Reasoning effort is optional provider configuration. When unset, send no
+  effort parameter.
+- AI settings feedback (test, save, model loading, clearing results) appears
+  inline in the AI tab, not as toasts.
 - The provider API key is intentionally unencrypted. Keep that boundary
   explicit in the UI and documentation.
 

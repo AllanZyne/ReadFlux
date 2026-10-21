@@ -14,15 +14,18 @@ import {
 } from "./article-images";
 import { articleMediaURL, isWeiboLivePhotoURL, youtubeEmbedURL } from "./article-content";
 import {
+  AI_EFFORTS,
   AI_PROVIDER_DEFAULTS,
   AI_TARGET_LANGUAGES,
   aiLanguageForInterface,
   AiRequestError,
   connectionTestPrompt,
+  isAiEffort,
   listAiModels,
   streamAiCompletion,
   summaryLines,
   type AiConfig,
+  type AiEffort,
   type AiModelOption,
   type AiProvider,
   type AiTargetLanguage,
@@ -651,6 +654,23 @@ function AiSummaryPanel({
   </section>;
 }
 
+type AiSettingsStatus = { tone: "pending" | "success" | "error"; message: string } | null;
+
+const AI_EFFORT_LABELS: Record<AiEffort, string> = { low: "ai.effortLow", medium: "ai.effortMedium", high: "ai.effortHigh" };
+
+const AI_STATUS_ICONS ={ pending: "bi-arrow-repeat", success: "bi-check-circle", error: "bi-exclamation-triangle" } as const;
+
+/** Inline, persistent feedback for the AI settings tab. */
+function AiStatusLine({ status }: { status: AiSettingsStatus }) {
+  const line = useRef<HTMLParagraphElement | null>(null);
+  useEffect(() => {
+    if (status) line.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [status]);
+  return <p ref={line} className={`webDavStatus aiStatus ${status ? status.tone : "empty"}`} role="status" aria-live="polite">
+    {status && <><i className={`bi ${AI_STATUS_ICONS[status.tone]}`} aria-hidden="true" /> {status.message}</>}
+  </p>;
+}
+
 function sameEntryLabels(current: Map<number, string[]>, next: Map<number, string[]>) {
   if (current === next) return true;
   if (current.size !== next.size) return false;
@@ -762,6 +782,9 @@ function SettingsDialog({
     apiKey: "",
   });
   const [aiTesting, setAiTesting] = useState(false);
+  const [aiStatus, setAiStatus] = useState<AiSettingsStatus>(null);
+  const [aiLanguageStatus, setAiLanguageStatus] = useState<AiSettingsStatus>(null);
+  const [aiResultsStatus, setAiResultsStatus] = useState<AiSettingsStatus>(null);
   const [aiModels, setAiModels] = useState<AiModelOption[]>([]);
   const [aiModelsLoading, setAiModelsLoading] = useState(false);
   const [aiStats, setAiStats] = useState<{ count: number; bytes: number } | null>(null);
@@ -790,7 +813,11 @@ function SettingsDialog({
     return () => window.removeEventListener("keydown", close);
   }, [onClose]);
 
-  const saveProfileChange = async (change: (current: ProfileSettings) => ProfileSettings, failure: string) => {
+  const saveProfileChange = async (
+    change: (current: ProfileSettings) => ProfileSettings,
+    failure: string,
+    report: (message: string) => void = notify,
+  ) => {
     try {
       const result = await runExclusive(profileWriteInFlight, async () => {
         setProfileSaving(true);
@@ -803,10 +830,10 @@ function SettingsDialog({
           setProfileSaving(false);
         }
       });
-      if (!result.started) notify(t("settings.saving"));
+      if (!result.started) report(t("settings.saving"));
       return result.started;
     } catch {
-      notify(failure);
+      report(failure);
       return false;
     }
   };
@@ -927,11 +954,16 @@ function SettingsDialog({
     return () => { cancelled = true; };
   }, [tab]);
 
+  /** Draft edits make an earlier test or save result stale. */
+  const updateAiDraft = (patch: Partial<AiConfig>) => {
+    setAiDraft((current) => ({ ...current, ...patch }));
+    setAiStatus(null);
+  };
+
   const changeAiProvider = (provider: AiProvider) => {
     const previous = AI_PROVIDER_DEFAULTS[aiDraft.provider];
     setAiModels([]);
-    setAiDraft({
-      ...aiDraft,
+    updateAiDraft({
       provider,
       baseURL: !aiDraft.baseURL.trim() || aiDraft.baseURL === previous.baseURL ? AI_PROVIDER_DEFAULTS[provider].baseURL : aiDraft.baseURL,
       model: !aiDraft.model.trim() || aiDraft.model === previous.model ? AI_PROVIDER_DEFAULTS[provider].model : aiDraft.model,
@@ -941,7 +973,7 @@ function SettingsDialog({
   const validAiDraft = (requireModel = true) => {
     const next = { ...aiDraft, baseURL: aiDraft.baseURL.trim(), apiKey: aiDraft.apiKey.trim(), model: aiDraft.model.trim() };
     if (!next.baseURL || (requireModel && !next.model) || (next.provider === "anthropic" && !next.apiKey)) {
-      notify(t("ai.missingFields"));
+      setAiStatus({ tone: "error", message: t("ai.missingFields") });
       return null;
     }
     return next;
@@ -950,15 +982,23 @@ function SettingsDialog({
   /** Fills the model suggestions; `quiet` keeps failures silent for background refreshes. */
   const loadAiModels = async (draftConfig: AiConfig, quiet = false) => {
     setAiModelsLoading(true);
+    if (!quiet) setAiStatus({ tone: "pending", message: t("ai.loadingModels") });
     try {
       const models = await listAiModels(draftConfig, AbortSignal.timeout(30_000));
       setAiModels(models);
-      if (!quiet) notify(models.length ? t("ai.modelsLoaded", { count: models.length }) : t("ai.modelsEmpty"));
+      if (!quiet) {
+        setAiStatus(models.length
+          ? { tone: "success", message: t("ai.modelsLoaded", { count: models.length }) }
+          : { tone: "error", message: t("ai.modelsEmpty") });
+      }
     } catch (cause) {
       if (quiet) return;
-      notify(cause instanceof AiRequestError && (cause.status === 404 || cause.status === 405)
-        ? t("ai.modelsUnavailable")
-        : aiErrorMessage(cause, t));
+      setAiStatus({
+        tone: "error",
+        message: cause instanceof AiRequestError && (cause.status === 404 || cause.status === 405)
+          ? t("ai.modelsUnavailable")
+          : aiErrorMessage(cause, t),
+      });
     } finally {
       setAiModelsLoading(false);
     }
@@ -974,19 +1014,20 @@ function SettingsDialog({
     if (!next) return;
     onSaveAi(next);
     setAiDraft(next);
-    notify(t("ai.saved"));
+    setAiStatus({ tone: "success", message: t("ai.saved") });
   };
 
   const testAi = async () => {
     const next = validAiDraft();
     if (!next) return;
     setAiTesting(true);
+    setAiStatus({ tone: "pending", message: t("ai.testing") });
     if (!aiModels.length) void loadAiModels(next, true);
     try {
       await streamAiCompletion(next, connectionTestPrompt(), { signal: AbortSignal.timeout(60_000) });
-      notify(t("ai.testSucceeded"));
+      setAiStatus({ tone: "success", message: t("ai.testSucceeded", { model: next.model }) });
     } catch (cause) {
-      notify(aiErrorMessage(cause, t));
+      setAiStatus({ tone: "error", message: aiErrorMessage(cause, t) });
     } finally {
       setAiTesting(false);
     }
@@ -998,6 +1039,7 @@ function SettingsDialog({
     setAiDraft({ provider: "openai", ...AI_PROVIDER_DEFAULTS.openai, apiKey: "" });
     setAiModels([]);
     setAiStats({ count: 0, bytes: 0 });
+    setAiStatus(null);
   };
 
   const clearSavedAiResults = async () => {
@@ -1005,19 +1047,20 @@ function SettingsDialog({
     try {
       await clearAiResults();
       setAiStats({ count: 0, bytes: 0 });
-      notify(t("ai.resultsCleared"));
+      setAiResultsStatus({ tone: "success", message: t("ai.resultsCleared") });
     } catch {
-      notify(t("ai.clearResultsFailed"));
+      setAiResultsStatus({ tone: "error", message: t("ai.clearResultsFailed") });
     }
   };
 
   const setTranslationLanguage = async (value: string) => {
+    setAiLanguageStatus(null);
     await saveProfileChange((current) => {
       const next: ProfileSettings = { ...current, updatedAt: new Date().toISOString() };
       if (value) next.translationLanguage = value as AiTargetLanguage;
       else delete next.translationLanguage;
       return next;
-    }, t("ai.languageSaveFailed"));
+    }, t("ai.languageSaveFailed"), (message) => setAiLanguageStatus({ tone: "error", message }));
   };
 
   const saveEvent = async () => {
@@ -1257,8 +1300,8 @@ function SettingsDialog({
                   <option value="openai">{t("ai.providerOpenAI")}</option>
                   <option value="anthropic">{t("ai.providerAnthropic")}</option>
                 </select></label>
-                <label><span>{t("ai.baseURL")}</span><input type="url" value={aiDraft.baseURL} placeholder={AI_PROVIDER_DEFAULTS[aiDraft.provider].baseURL} onChange={(event) => { setAiModels([]); setAiDraft({ ...aiDraft, baseURL: event.target.value }); }} /><small>{t(aiDraft.provider === "anthropic" ? "ai.baseURLHintAnthropic" : "ai.baseURLHintOpenAI")}</small></label>
-                <label><span>{t("ai.apiKey")}</span><input type="password" value={aiDraft.apiKey} autoComplete="off" placeholder={aiDraft.provider === "openai" ? t("ai.apiKeyOptional") : undefined} onChange={(event) => setAiDraft({ ...aiDraft, apiKey: event.target.value })} /><small>{t("ai.apiKeyHint")}</small></label>
+                <label><span>{t("ai.baseURL")}</span><input type="url" value={aiDraft.baseURL} placeholder={AI_PROVIDER_DEFAULTS[aiDraft.provider].baseURL} onChange={(event) => { setAiModels([]); updateAiDraft({ baseURL: event.target.value }); }} /><small>{t(aiDraft.provider === "anthropic" ? "ai.baseURLHintAnthropic" : "ai.baseURLHintOpenAI")}</small></label>
+                <label><span>{t("ai.apiKey")}</span><input type="password" value={aiDraft.apiKey} autoComplete="off" placeholder={aiDraft.provider === "openai" ? t("ai.apiKeyOptional") : undefined} onChange={(event) => updateAiDraft({ apiKey: event.target.value })} /><small>{t("ai.apiKeyHint")}</small></label>
                 <div className="aiModelField">
                   <label htmlFor="ai-model"><span>{t("ai.model")}</span></label>
                   <div>
@@ -1269,7 +1312,7 @@ function SettingsDialog({
                       placeholder={aiDraft.provider === "anthropic" ? AI_PROVIDER_DEFAULTS.anthropic.model : "gpt-4.1-mini"}
                       autoComplete="off"
                       aria-describedby="ai-model-hint"
-                      onChange={(event) => setAiDraft({ ...aiDraft, model: event.target.value })}
+                      onChange={(event) => updateAiDraft({ model: event.target.value })}
                     />
                     <button type="button" disabled={aiModelsLoading} onClick={requestAiModels}>
                       <i className={`bi ${aiModelsLoading ? "bi-arrow-repeat" : "bi-list-ul"}`} aria-hidden="true" /> {aiModelsLoading ? t("ai.loadingModels") : t("ai.loadModels")}
@@ -1280,10 +1323,19 @@ function SettingsDialog({
                     {aiModels.map((model) => <option key={model.id} value={model.id} label={model.label === model.id ? undefined : model.label} />)}
                   </datalist>}
                 </div>
+                <label>
+                  <span>{t("ai.effort")}</span>
+                  <select value={aiDraft.effort ?? ""} onChange={(event) => updateAiDraft({ effort: isAiEffort(event.target.value) ? event.target.value : undefined })}>
+                    <option value="">{t("ai.effortDefault")}</option>
+                    {AI_EFFORTS.map((effort) => <option key={effort} value={effort}>{t(AI_EFFORT_LABELS[effort])}</option>)}
+                  </select>
+                  <small>{t(aiDraft.provider === "anthropic" ? "ai.effortHintAnthropic" : "ai.effortHintOpenAI")}</small>
+                </label>
                 <div className="settingsActions">
                   <button disabled={aiTesting} onClick={() => void testAi()}><i className="bi bi-plug" aria-hidden="true" /> {aiTesting ? t("ai.testing") : t("ai.test")}</button>
                   <button className="primary" disabled={aiTesting} onClick={saveAi}>{t("ai.save")}</button>
                 </div>
+                <AiStatusLine status={aiStatus} />
                 {aiConfig && <button className="disconnect" disabled={aiTesting} onClick={() => void disconnectAi()}>{t("ai.disconnect")}</button>}
               </div>
             </section>
@@ -1298,6 +1350,7 @@ function SettingsDialog({
                   </select>
                   <small>{t("ai.targetLanguageHint")}</small>
                 </label>
+                <AiStatusLine status={aiLanguageStatus} />
               </div>
             </section>
             <section className="aiSettingsSection">
@@ -1309,6 +1362,7 @@ function SettingsDialog({
                 })}</span>}
               </div>
               <div className="settingsActions"><button disabled={!aiStats?.count} onClick={() => void clearSavedAiResults()}>{t("ai.clearResults")}</button></div>
+              <AiStatusLine status={aiResultsStatus} />
             </section>
             <section className="privacyBox">
               <strong>{t("ai.privacyTitle")}</strong>

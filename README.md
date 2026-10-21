@@ -217,6 +217,14 @@ Two provider types are supported:
 - **Anthropic**: the Messages API, called with Anthropic's direct browser access
   header.
 
+Enter the fields in order: provider, base URL, API key, then model. **Load
+models** fills model suggestions from the provider's models endpoint when it
+has one; otherwise type the model name. **Reasoning effort** defaults to the
+provider's own default. Low, Medium, or High is sent as `reasoning_effort` to
+OpenAI-compatible endpoints, which only reasoning models accept, and as
+`output_config.effort` to Claude 5 models. **Test connection** and **Save**
+report their result directly in the AI tab.
+
 The browser calls the provider directly, so the provider must accept
 cross-origin browser requests, including the CORS preflight for the
 `Authorization` or `x-api-key` header. Local servers must allow the ReadFlux

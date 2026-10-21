@@ -59,14 +59,24 @@ test("Anthropic requests call the Messages API directly from the browser", () =>
   assert.deepEqual(body.messages, [{ role: "user", content: "User text" }]);
   assert.equal(body.stream, true);
   assert.equal(body.fallbacks, "default");
-  assert.deepEqual(body.output_config, { effort: "low" });
+  assert.equal("output_config" in body, false, "effort is left to the provider by default");
+});
+
+test("a configured reasoning effort is sent in each provider's format", () => {
+  const claude = JSON.parse(ai.buildAiRequest({ ...anthropic, effort: "medium" }, prompt).init.body);
+  assert.deepEqual(claude.output_config, { effort: "medium" });
+  const openaiBody = JSON.parse(ai.buildAiRequest({ ...openai, effort: "high" }, prompt).init.body);
+  assert.equal(openaiBody.reasoning_effort, "high");
+  assert.equal("reasoning_effort" in JSON.parse(ai.buildAiRequest(openai, prompt).init.body), false);
+  assert.equal(ai.isAiEffort("medium"), true);
+  assert.equal(ai.isAiEffort("max"), false);
 });
 
 test("Anthropic options are limited to models that accept them", () => {
-  const haiku = JSON.parse(ai.buildAiRequest({ ...anthropic, model: "claude-haiku-5-5" }, prompt).init.body);
+  const haiku = JSON.parse(ai.buildAiRequest({ ...anthropic, model: "claude-haiku-5-5", effort: "low" }, prompt).init.body);
   assert.equal("fallbacks" in haiku, false);
   assert.deepEqual(haiku.output_config, { effort: "low" });
-  const older = ai.buildAiRequest({ ...anthropic, model: "claude-haiku-4-5" }, prompt);
+  const older = ai.buildAiRequest({ ...anthropic, model: "claude-haiku-4-5", effort: "low" }, prompt);
   const olderBody = JSON.parse(older.init.body);
   assert.equal("output_config" in olderBody, false);
   assert.equal("fallbacks" in olderBody, false);
