@@ -48,7 +48,7 @@ kbd{padding:2px 6px;border:1px solid #33423e;border-radius:4px;background:#1a252
 .code{overflow:hidden;margin:20px 0 24px;border:1px solid #30403b;border-radius:6px;background:#111a18;font-family:var(--font-geist-mono)}.code header{display:flex;justify-content:space-between;padding:8px 12px 0;color:#5f716b;font-size:8px}.code button{border:0;background:transparent;color:#788883;font-size:8px;cursor:pointer}.code pre{margin:0;padding:7px 16px 15px;color:#b8c7c2;font-size:10px;line-height:1.5;white-space:pre-wrap}
 .feedback{display:flex;align-items:center;gap:9px;margin-top:28px;padding-top:17px;border-top:1px solid var(--line);color:#7e8f89;font:9px var(--font-geist-mono)}.feedback span{margin-right:auto}.feedback button{padding:7px 10px;border:1px solid #31443d;border-radius:4px;background:#0d1916;color:#9aaba5;font-size:8px;cursor:pointer}.feedback button:hover{border-color:var(--mint);color:var(--mint)}
 .topicPicker{max-width:760px;margin:18px auto 0;padding:12px;border:1px solid var(--line);border-radius:8px;background:color-mix(in srgb,var(--mint) 4%,transparent)}.topicPicker>div:first-child{display:flex;align-items:baseline;gap:9px;margin-bottom:9px}.topicPicker strong{color:var(--text);font-size:11px}.topicPicker small{color:var(--muted);font-size:9px}.topicPicker>div:last-child{display:flex;flex-wrap:wrap;gap:7px}.topicPicker button{padding:6px 9px;border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--muted);font-size:10px;cursor:pointer}.topicPicker button:hover,.topicPicker button.selected{border-color:var(--mint);background:color-mix(in srgb,var(--mint) 12%,transparent);color:var(--mint)}
-.toast{position:fixed;right:25px;bottom:20px;z-index:10;padding:11px 16px;border:1px solid #4b785f;border-radius:5px;background:#11271d;color:#a1efc4;font-size:10px;box-shadow:0 14px 40px #0006;animation:toast .18s ease-out}@keyframes toast{from{opacity:0;transform:translateY(8px)}}.loadingMark{animation:pulse 1.1s ease-in-out infinite}@keyframes pulse{50%{opacity:.25;transform:scale(.88)}}.errorState b{color:#f18d79}.errorState p{max-width:340px;line-height:1.6}.readerEmpty{height:100%}
+.toast{position:fixed;right:25px;bottom:20px;z-index:90;padding:11px 16px;border:1px solid #4b785f;border-radius:5px;background:#11271d;color:#a1efc4;font-size:10px;box-shadow:0 14px 40px #0006;animation:toast .18s ease-out}@keyframes toast{from{opacity:0;transform:translateY(8px)}}.loadingMark{animation:pulse 1.1s ease-in-out infinite}@keyframes pulse{50%{opacity:.25;transform:scale(.88)}}.errorState b{color:#f18d79}.errorState p{max-width:340px;line-height:1.6}.readerEmpty{height:100%}
 
 /* First-run connection */
 .boot{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:#07100e;color:#82928d;font:11px var(--font-geist-mono)}.boot .wave{font-size:34px}
@@ -320,3 +320,36 @@ kbd{padding:2px 6px;border:1px solid #33423e;border-radius:4px;background:#1a252
 .articleLivePhotoFrame.hasPoster .articleLivePhoto{position:absolute;inset:0;height:100%;opacity:0}
 .articleLivePhotoFrame.playing .articleLivePhoto{opacity:1}
 .articleLivePhotoFrame.playing .articleLivePhotoPoster{opacity:0}
+
+/* AI summary and translation */
+.readerToolbarDivider{width:1px;height:18px;margin:0 4px;align-self:center;background:var(--line)}
+.readerToolbar .aiAction{position:relative}
+.readerToolbar .aiAction:disabled{opacity:.4;cursor:not-allowed}
+.readerToolbar .aiAction:disabled:hover{background:transparent;color:var(--muted)}
+.readerToolbar .aiAction:focus-visible{outline:2px solid var(--mint);outline-offset:1px}
+.readerToolbar .aiAction.busy i{animation:aiSpin 1s linear infinite}
+.readerToolbar .aiAction.translating{color:var(--mint)}
+.aiProgress{position:absolute;inset:0;padding:2px;border-radius:6px;pointer-events:none;background:conic-gradient(var(--mint) var(--ai-progress,0%),color-mix(in srgb,var(--mint) 18%,transparent) 0);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0)}
+.aiProgressCount{position:absolute;top:calc(100% - 3px);left:50%;transform:translateX(-50%);color:var(--mint);font:600 8px/1 var(--font-geist-sans);white-space:nowrap;pointer-events:none}
+@keyframes aiSpin{to{transform:rotate(360deg)}}
+.aiSummary{max-width:760px;margin:0 auto 24px;overflow:hidden;border:1px solid color-mix(in srgb,var(--mint) 40%,var(--line));border-radius:7px;background:color-mix(in srgb,var(--mint) 5%,transparent)}
+.aiSummary header{display:flex;align-items:center;gap:8px;min-height:38px;padding:0 8px 0 12px;border-bottom:1px solid color-mix(in srgb,var(--mint) 18%,var(--line));color:var(--mint);font:650 11px var(--font-geist-sans);letter-spacing:.06em;text-transform:uppercase}
+.aiSummary header button{width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;margin-left:auto;border:0;border-radius:5px;background:transparent;color:var(--muted);cursor:pointer}
+.aiSummary header button:hover,.aiSummary header button:focus-visible{background:color-mix(in srgb,var(--mint) 12%,transparent);color:var(--mint)}
+.aiSummary header button:focus-visible{outline:2px solid var(--mint);outline-offset:1px}
+.aiSummary ul{margin:0;padding:12px 18px 12px 32px;color:var(--text);font:14px/1.7 var(--font-geist-sans)}
+.aiSummary li+li{margin-top:4px}
+.aiSummaryWaiting{list-style:none}
+.aiSummaryCaret{display:inline-block;width:7px;height:1em;margin-left:2px;vertical-align:-2px;background:var(--mint);animation:aiBlink 1s steps(1) infinite}
+@keyframes aiBlink{50%{opacity:0}}
+.aiSummaryError{display:flex;align-items:center;gap:10px;padding:12px 14px;color:#d26666;font:13px/1.5 var(--font-geist-sans)}
+.aiSummaryError button{flex:none;height:30px;margin-left:auto;padding:0 12px;border:1px solid var(--line);border-radius:5px;background:transparent;color:var(--text);cursor:pointer}
+.aiSummaryError button:hover,.aiSummaryError button:focus-visible{border-color:var(--mint);color:var(--mint)}
+.articleContent .aiTranslationPending{opacity:.45;transition:opacity .2s}
+.aiSettings{display:grid;gap:24px}.aiSettings>section{margin:0}
+.aiSettingsSection{padding-top:24px;border-top:1px solid var(--line)}.aiSettings .settingTitle>span{flex:none;margin-left:16px;white-space:nowrap}
+.aiSettings .settingsForm small{color:var(--muted)}
+.aiSettings .settingsForm>.aiModelField{display:grid;grid-template-columns:1fr;gap:7px}.aiModelField>div{display:flex;gap:8px}.aiModelField input{flex:1;min-width:0}.aiModelField button{flex:none;display:inline-flex;align-items:center;gap:6px;height:40px;padding:0 13px;border:1px solid var(--line);border-radius:7px;background:transparent;color:var(--muted);font:12px var(--font-geist-sans);cursor:pointer}.aiModelField button:hover:not(:disabled),.aiModelField button:focus-visible{border-color:var(--mint);color:var(--text)}.aiModelField button:focus-visible{outline:2px solid var(--mint);outline-offset:2px}.aiModelField button:disabled{opacity:.6;cursor:progress}.aiModelField button:disabled i{animation:aiSpin 1s linear infinite}
+.aiSettings .settingsActions button{display:inline-flex;align-items:center;gap:6px}
+.aiSettings .privacyBox p+p{margin-top:4px}.aiStatus{display:flex;align-items:flex-start;gap:7px}.aiStatus i{flex:none;line-height:inherit}.aiStatus.empty{display:none}.aiStatus.pending i{animation:aiSpin 1s linear infinite}
+@media(prefers-reduced-motion:reduce){.readerToolbar .aiAction.busy i,.aiSummaryCaret,.aiModelField button:disabled i,.aiStatus.pending i{animation:none}}

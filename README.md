@@ -31,6 +31,8 @@ The complete synced history remains available in **All**.
 - Continuous keyboard reading, adjustable column widths, and mobile navigation
 - Inspection, editing, and deletion of reading events, feed preferences, and
   keyword preferences
+- Optional AI summaries and translations through your own OpenAI-compatible or
+  Anthropic provider, saved locally per article
 
 ## Privacy and security
 
@@ -42,6 +44,9 @@ ReadFlux has no application server:
   ranking exposures, and pending Miniflux writes are stored in IndexedDB.
 - The browser sends requests directly to your Miniflux server.
 - The repository and build output contain no credentials.
+- Article text leaves the browser only when you click **Summarize** or
+  **Translate**, and only to the AI provider you configured. See
+  [AI summaries and translations](#ai-summaries-and-translations).
 
 On a shared computer, leave **Remember on this device** unchecked. Create a
 dedicated Miniflux API key for ReadFlux so it can be revoked independently.
@@ -185,6 +190,54 @@ pulls run at startup, on foreground resume, at the selected interval, or from
 the **Sync now** button. WebDAV sync requires browser CORS support for `MKCOL`,
 `PROPFIND`, `GET`, and `PUT`. Credentials and remote JSON are not encrypted by
 ReadFlux.
+
+## AI summaries and translations
+
+Configure an AI provider in **Settings → AI** to enable two buttons in the
+reader toolbar:
+
+- **Summarize** shows a short bulleted summary above the article.
+- **Translate** replaces the article body with a translation and shows a
+  progress ring while long articles are translated in parts. Click it again to
+  return to the original text. Links, emphasis, images, and code are preserved;
+  only text is sent for translation.
+
+Both use the target language from **Settings → AI → Translation**, which
+defaults to the interface language. Results are saved in IndexedDB per article,
+task, and language, so clicking again shows the saved result. A result is
+generated again when the article content changes. Ctrl+click (⌘+click on macOS),
+or Ctrl/⌘+Enter on the focused button, regenerates and replaces it.
+
+Two provider types are supported:
+
+- **OpenAI-compatible**: any `/chat/completions` endpoint, such as OpenAI,
+  OpenRouter, DeepSeek, Ollama, or LM Studio. The API key is optional for local
+  servers. Reasoning that some models inline as `<think>` or `<reasoning>` is
+  hidden.
+- **Anthropic**: the Messages API, called with Anthropic's direct browser access
+  header.
+
+Enter the fields in order: provider, base URL, API key, then model. **Load
+models** fills model suggestions from the provider's models endpoint when it
+has one; otherwise type the model name. **Reasoning effort** defaults to the
+provider's own default. Low, Medium, or High is sent as `reasoning_effort` to
+OpenAI-compatible endpoints, which only reasoning models accept, and as
+`output_config.effort` to Claude 5 models. **Test connection** and **Save**
+report their result directly in the AI tab.
+
+The browser calls the provider directly, so the provider must accept
+cross-origin browser requests, including the CORS preflight for the
+`Authorization` or `x-api-key` header. Local servers must allow the ReadFlux
+origin (for Ollama, set `OLLAMA_ORIGINS`). Some gateways answer requests from
+`curl` but reject browser preflights; the Amazon Bedrock OpenAI-compatible
+endpoint is one example, and ReadFlux reports a network/CORS error for it.
+
+When you click Summarize or Translate, the article title and text are sent to
+the configured provider. Nothing is sent automatically. Reading events,
+recommendation data, and Miniflux credentials are never sent. The provider
+settings, including the API key, are stored unencrypted in `localStorage`.
+Disconnecting removes them and all saved results from the browser. AI settings
+and results are not included in the recommendation export.
 
 ## Technology
 
