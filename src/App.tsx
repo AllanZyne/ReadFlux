@@ -917,7 +917,8 @@ function RecommendationBreakdown({
       label: t("recommendation.breakdownSaved"),
       value: formatScorePoints(breakdown.savedBonus),
       points: breakdown.savedBonus,
-      detail: t(story.starred ? "recommendation.breakdownSavedYes" : "recommendation.breakdownSavedNo"),
+      // The bonus is captured with the score until the next list refresh, so describe it rather than live saved state.
+      detail: t(breakdown.savedBonus > 0 ? "recommendation.breakdownSavedYes" : "recommendation.breakdownSavedNo"),
     },
   ];
   return <>
@@ -2830,6 +2831,8 @@ export default function App() {
       initialEntries: stories,
       initialLabels: entryLabels,
       initialVisible: filtered,
+      // Kept so the article explanation shows the tiers that produced this order.
+      timeBuckets,
     };
   // The snapshot and context deliberately define when list order is rebuilt.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3494,7 +3497,7 @@ export default function App() {
 
   const requestTopicSelection = useCallback((value: string, rect: DOMRect) => {
     const term = normalizeSelectedTopic(value);
-    if (!term || selectedTopicTerms.has(term)) {
+    if (!term || followedTopics.has(term)) {
       setTopicSelection(null);
       return;
     }
@@ -3508,7 +3511,7 @@ export default function App() {
       left,
       arrowLeft: Math.max(18, Math.min(width - 18, rect.left + rect.width / 2 - left)),
     });
-  }, [selectedTopicTerms]);
+  }, [followedTopics]);
 
   useEffect(() => {
     if (!topicSelection) return;
@@ -3598,6 +3601,11 @@ export default function App() {
     }
   };
 
+  /**
+   * Hashtag clicks toggle the topic's global follow state. `addToCandidates` is
+   * the explicit "Follow topic" action on selected text: it always follows, so
+   * confirming it for an already followed topic never unfollows it.
+   */
   const toggleTopicInterest = async (term: string, addToCandidates = false) => {
     if (!selected) return;
     if (!activeEvent.current || activeEvent.current.entryId !== selected.id) choose(selected);
@@ -3613,7 +3621,7 @@ export default function App() {
     const operation = {
       id: crypto.randomUUID(),
       term: normalizedTerm,
-      interested: !currentlySelected,
+      interested: addToCandidates || !currentlySelected,
       updatedAt,
     };
     const terms = addToCandidates && !currentEvent.terms.includes(normalizedTerm)
@@ -3644,7 +3652,6 @@ export default function App() {
     const selection = topicSelection;
     if (!selection) return;
     dismissTopicSelection();
-    if (selectedTopicTerms.has(selection.term)) return;
     await toggleTopicInterest(selection.term, true);
   };
 
@@ -3943,7 +3950,7 @@ export default function App() {
                 story={selected}
                 mode={mode}
                 listedStatus={listReadSnapshot.get(selected.id) ?? selected.status}
-                timeBucket={smartFeedTimeBucket(selected.published_at, todayClock, activeTimeZone)}
+                timeBucket={frozenVisibleOrder.timeBuckets?.get(selected.id) ?? smartFeedTimeBucket(selected.published_at, todayClock, activeTimeZone)}
                 source={interest.sources.get(selected.feed_id)}
                 sourceBaseline={interest.sourceBaseline}
                 topics={interest.topics}

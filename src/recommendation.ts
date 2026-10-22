@@ -325,12 +325,24 @@ export function deriveTopicAffinities(
   options: { exposures?: RankingExposure[]; entryTexts?: ReadonlyMap<number, string> } = {},
 ) {
   const matchers = [...followed].map((term) => ({ term, matches: termMatcher(term) }));
+  // Collect each article's evidence from all of its events first, so the
+  // mentions, and therefore the weights, do not depend on event order.
+  const extractedByEntry = new Map<number, Set<string>>();
+  const titlesByEntry = new Map<number, Set<string>>();
+  events.forEach((event) => {
+    const extracted = extractedByEntry.get(event.entryId) ?? new Set<string>();
+    event.terms.forEach((term) => extracted.add(normalizeRecommendationTerm(term)));
+    extractedByEntry.set(event.entryId, extracted);
+    const titles = titlesByEntry.get(event.entryId) ?? new Set<string>();
+    if (event.title) titles.add(event.title);
+    titlesByEntry.set(event.entryId, titles);
+  });
   const mentionCache = new Map<number, string[]>();
-  const mentionsOf = (entryId: number, terms: readonly string[] = [], title = "") => {
+  const mentionsOf = (entryId: number) => {
     const cached = mentionCache.get(entryId);
     if (cached) return cached;
-    const text = normalizeRecommendationTerm(options.entryTexts?.get(entryId) ?? title);
-    const extracted = new Set(terms.map(normalizeRecommendationTerm));
+    const text = normalizeRecommendationTerm(options.entryTexts?.get(entryId) ?? [...titlesByEntry.get(entryId) ?? []].sort().join("\n"));
+    const extracted = extractedByEntry.get(entryId) ?? new Set<string>();
     const mentioned = matchers.filter(({ term, matches }) => extracted.has(term) || matches(text)).map(({ term }) => term);
     mentionCache.set(entryId, mentioned);
     return mentioned;
@@ -345,7 +357,7 @@ export function deriveTopicAffinities(
     const openedAt = new Date(event.openedAt).getTime();
     if (!Number.isFinite(openedAt)) return;
     const weight = recencyWeight(openedAt, now);
-    mentionsOf(event.entryId, event.terms, event.title).forEach((term) => {
+    mentionsOf(event.entryId).forEach((term) => {
       const current = totals.get(term)!;
       current.readingWeight += weight;
       current.readingQuality += weight * readingEventQuality(event);
@@ -434,7 +446,8 @@ export function scoreRecommendation(input: {
     freshnessScore,
     savedBonus,
     negativePenalty,
-    matchedTerms: hits.slice(0, 3).map(({ term }) => term),
+    // Every match feeds the topic score, so all are kept; exposures store the top three.
+    matchedTerms: hits.map(({ term }) => term),
   };
 }
 

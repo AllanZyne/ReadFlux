@@ -118,7 +118,12 @@ test("article opening delegates Jieba extraction and dictionary warmup to a work
 });
 
 test("topic toggles derive current state from the active event", () => {
-  assert.match(appSource, /const currentEvent = activeEvent\.current[\s\S]*?followedTopicTerms\([\s\S]*?currentEvent[\s\S]*?interested: !currentlySelected/);
+  assert.match(appSource, /const currentEvent = activeEvent\.current[\s\S]*?followedTopicTerms\([\s\S]*?currentEvent[\s\S]*?interested: addToCandidates \|\| !currentlySelected/);
+});
+
+test("following selected text is idempotent and checks the global follow state", () => {
+  assert.match(appSource, /const requestTopicSelection = useCallback[\s\S]*?followedTopics\.has\(term\)/);
+  assert.match(appSource, /const followSelectedTopic = async \(\) => \{\s*const selection = topicSelection;\s*if \(!selection\) return;\s*dismissTopicSelection\(\);\s*await toggleTopicInterest\(selection\.term, true\);/);
   assert.match(appSource, /term: normalizedTerm/);
 });
 
@@ -229,6 +234,40 @@ test("followed topics are weighted by reading depth and Today open rate, and unf
   assert.equal(topicWeightForAffinity(1), 1);
   const unread = deriveInterestProfile([event({ terms: ["llvm"], topicFeedback: [follow("zig")] })], [], now);
   assert.equal(unread.topics.get("zig").weight, 1, "a followed topic without reads stays neutral");
+});
+
+test("topic affinity does not depend on the order of an article's events", () => {
+  const now = Date.parse("2026-08-14T02:00:00.000Z");
+  const follow = { id: "follow", term: "rust", interested: true, updatedAt: "2026-08-13T00:00:00.000Z" };
+  const withoutTerms = event({ id: "a", entryId: 7, terms: [], title: "Systems notes", topicFeedback: [follow] });
+  const withTerms = event({ id: "b", entryId: 7, terms: ["rust"], title: "Systems notes", openedAt: "2026-08-14T01:00:00.000Z" });
+  const exposure = {
+    id: "ranking",
+    createdAt: "2026-08-13T12:00:00.000Z",
+    seenEntryIds: [7],
+    items: [{ entryId: 7, rank: 1, feedId: 2 }],
+  };
+  const topic = (events) => deriveInterestProfile(events, [], now, { exposures: [exposure] }).topics.get("rust");
+  assert.deepEqual(topic([withoutTerms, withTerms]), topic([withTerms, withoutTerms]));
+  assert.ok(topic([withoutTerms, withTerms]).readingWeight > 1.9, "both reads of the article mention the topic");
+});
+
+test("score breakdowns list every matched topic", () => {
+  const profile = {
+    sources: new Map(),
+    sourceBaseline: null,
+    words: new Map(["llvm", "rust", "zig", "wasm"].map((term) => [term, 1])),
+    negatives: new Map(),
+  };
+  const breakdown = scoreRecommendation({
+    feedId: 1,
+    text: "LLVM Rust Zig WASM",
+    publishedAt: "2026-08-14T00:00:00.000Z",
+    starred: false,
+    now: Date.parse("2026-08-14T00:00:00.000Z"),
+    profile,
+  });
+  assert.equal(breakdown.matchedTerms.length, 4);
 });
 
 test("followed topics that are seen in Today but skipped lose weight", () => {
