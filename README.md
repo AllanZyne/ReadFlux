@@ -118,37 +118,24 @@ ReadFlux records the article, feed, title, keywords, open time, active
 foreground time, scroll depth, entry path, and explicit **Helpful** or
 **Not interested** feedback. Saved state remains managed by Miniflux.
 
-Active foreground time is measured from real elapsed time while the page is
-visible and focused and no dialog is open. It is flushed when reading pauses,
-when the article changes or the page is left, and on visibility changes.
-Events recorded by older versions were counted in 5-second steps.
+Foreground time counts only while the page is visible and focused and no
+dialog is open.
 
-The recommendation profile gives more weight to recent behavior (28-day decay)
-and combines:
+**Today** ranks articles within each publication-time and read-status group
+using the feeds you read, the topics you follow, publication time, and saved
+state, with more weight on recent behavior. Topics you follow count more when
+you read articles about them. ReadFlux never learns topics you did not follow.
 
-- Feed affinity: a feed's smoothed reading depth multiplied by its smoothed
-  **Today** open rate, relative to the average feed. The open rate counts
-  articles you actually saw in the list (at least half visible for half a
-  second), so articles you scroll past without opening lower it. Older records
-  without this data estimate visibility from list position. Reading
-  depth uses foreground time compared with the article's reading time, so a
-  short post does not count as a deep read. Scroll depth counts in proportion
-  to article length. Saved articles add credit with diminishing returns.
-- Explicitly followed topics selected from candidates, article titles, or article text; each topic has a fixed weight of 1 even when selected repeatedly
-- Publication time
-- A bonus for saved articles
+The end of each article explains why it is where it is, with the full score
+breakdown, and has thumbs-up (**Helpful**) and thumbs-down (**Not interested**)
+buttons for explicit feedback. Scores are not shown in the article list.
 
-**Not interested** feedback is recorded but does not currently lower any score.
+The **Recommendation data** tab in Settings shows the derived feed and topic
+weights and the 30 most recent raw events by default. Local records can be
+edited or deleted, and search still covers the complete event history.
 
-Recommendation scores order articles within each **Today** time and read-status
-tier and are not displayed in the article list. The **Recommendation data** tab
-in Settings exposes derived feed affinity (reading depth, impressions, opens,
-open rate, and saved-article credit) and the 30 most recent raw events by
-default. Local records can be edited or deleted, and search still covers the
-complete event history.
-
-**Export JSON** in the same tab downloads an unencrypted local file for offline
-evaluation. It contains all local and mirrored reading events, ranking
+**Export JSON** in the same tab downloads an unencrypted local file. It
+contains all local and mirrored reading events, ranking
 exposures, the derived profile, diagnostics, feed and category names, and
 metadata for referenced, unread, updated, and saved articles: title, URL,
 publication time, state, the title-plus-excerpt text used for scoring, and the
@@ -156,24 +143,12 @@ current score breakdown. It never includes full article content or Miniflux and
 WebDAV credentials. When WebDAV is configured, the tab shows its sync status and
 disables export while a sync is running.
 
-Each **Today** list records its top 100 articles and which of them you saw. To
-evaluate the current algorithm against an export, run:
+Each **Today** list also records its top 100 articles and which of them you
+saw.
 
-```bash
-npm run eval -- path/to/readflux-recommendation-YYYY-MM-DD.json
-```
-
-The command replays each recorded **Today** list using only data from before
-it, then reports pairwise AUC within each time and read-status tier for opens,
-engaged reads, and reads of 30 seconds or more. It prints aggregates only. Run
-it on two branches to compare algorithm changes. The recorded score decided
-the on-screen order, so its open AUC is inflated by position bias and is not a
-fair baseline. Keep exports outside the repository.
-
-When an article is opened, followed topics found in its title or summary are
-prioritized in the five candidate-topic slots. Chinese topics use substring
-matching, while Latin-script words and phrases require complete word boundaries;
-the remaining slots are filled by the normal Jieba and technical-term extractor.
+Candidate topics appear as hashtags after the article's byline. Topics you
+already follow are highlighted; click a hashtag to follow it, or click a
+highlighted one to stop following it everywhere.
 
 ### Optional WebDAV sync
 
@@ -193,19 +168,22 @@ ReadFlux.
 
 ## AI summaries and translations
 
-Configure an AI provider in **Settings → AI** to enable two buttons in the
-reader toolbar:
+Configure an AI provider in **Settings → AI** to enable two controls under the
+article byline:
 
+- An **Original | <language>** switch. Choosing the language translates the
+  article body in place, paragraph by paragraph as the reply streams in, with
+  untranslated paragraphs dimmed and a translated-paragraph count. Choose
+  **Original** to return to the original text or to cancel a running
+  translation. Links, emphasis, images, and code are preserved; only text is
+  sent for translation.
 - **Summarize** shows a short bulleted summary above the article.
-- **Translate** replaces the article body with a translation and shows a
-  progress ring while long articles are translated in parts. Click it again to
-  return to the original text. Links, emphasis, images, and code are preserved;
-  only text is sent for translation.
 
 Both use the target language from **Settings → AI → Translation**, which
 defaults to the interface language. Results are saved in IndexedDB per article,
-task, and language, so clicking again shows the saved result. A result is
-generated again when the article content changes. Ctrl+click (⌘+click on macOS),
+task, and language, so clicking again shows the saved result. Reopening an
+article shows its saved summary or translation again unless you hid it last
+time. A result is generated again when the article content changes. Ctrl+click (⌘+click on macOS),
 or Ctrl/⌘+Enter on the focused button, regenerates and replaces it.
 
 Two provider types are supported:

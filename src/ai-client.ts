@@ -135,6 +135,17 @@ export function parseTranslationSegments(output: string) {
   return segments;
 }
 
+/** Segments of a reply still streaming that are complete because a later marker follows them. */
+export function completedTranslationSegments(partial: string) {
+  const segments = new Map<number, string>();
+  const parts = partial.split(/^[ \t]*<<<(\d+)>>>[ \t]*$/m);
+  for (let index = 1; index < parts.length - 2; index += 2) {
+    const value = parts[index + 1].trim();
+    if (value) segments.set(Number(parts[index]), value);
+  }
+  return segments;
+}
+
 export function stripCodeFence(value: string) {
   const fenced = value.trim().match(/^```[\w-]*\n([\s\S]*?)\n?```$/);
   return fenced ? fenced[1] : value;

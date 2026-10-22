@@ -49,6 +49,7 @@ export function buildRecommendationExport(input: {
     {
       exposures: input.exposures,
       entryFeedIds: new Map(input.entries.map((entry) => [entry.id, entry.feed_id])),
+      entryTexts: new Map(input.entries.map((entry) => [entry.id, storyTextForEntry(entry).recommendationText])),
     },
   );
   const referenced = new Set<number>();
@@ -96,6 +97,7 @@ export function buildRecommendationExport(input: {
       sources: [...profile.sources.values()]
         .sort((a, b) => b.relativeAffinity - a.relativeAffinity || a.feedId - b.feedId),
       terms: byWeight(profile.words).map(([term, weight]) => ({ term, weight })),
+      topics: [...profile.topics.values()].sort((a, b) => b.weight - a.weight || a.term.localeCompare(b.term)),
       negatives: byWeight(profile.negatives).map(([term, weight]) => ({ term, weight })),
     },
     diagnostics: recommendationDiagnostics(input.exposures, input.events),

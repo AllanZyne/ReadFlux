@@ -4,7 +4,13 @@ import { evaluateRecommendations } from "../src/recommendation-evaluation.ts";
 
 const [path, ...flags] = process.argv.slice(2);
 if (!path) {
-  console.error("Usage: npm run eval -- <readflux-recommendation-export.json> [--json]");
+  console.error("Usage: npm run eval -- <readflux-recommendation-export.json> [--since YYYY-MM-DD] [--json]");
+  process.exit(1);
+}
+const sinceIndex = flags.indexOf("--since");
+const since = sinceIndex >= 0 ? Date.parse(flags[sinceIndex + 1] ?? "") : undefined;
+if (since !== undefined && !Number.isFinite(since)) {
+  console.error("--since needs a date such as 2026-10-01.");
   process.exit(1);
 }
 
@@ -19,6 +25,7 @@ const result = evaluateRecommendations({
   events: data.events,
   exposures: data.exposures,
   entries: data.entries,
+  since,
 });
 
 if (flags.includes("--json")) {

@@ -5,6 +5,7 @@ import {
   AiRequestError,
   aiResultKey,
   chunkSegments,
+  completedTranslationSegments,
   parseTranslationSegments,
   streamAiCompletion,
   stripCodeFence,
@@ -15,7 +16,7 @@ import {
   type AiTask,
 } from "./ai-client";
 import { applyTranslation, articlePlainText, prepareTranslation, serializeTranslation } from "./ai-translation";
-import { currentAiResultsGeneration, getAiResult, putAiResult } from "./readflux-client";
+import { currentAiResultsGeneration, getAiResult, putAiResult, setAiResultVisible } from "./readflux-client";
 
 export type AiArticle = { id: number; title: string; content: string };
 
@@ -33,6 +34,7 @@ export type ArticleTranslation = AiResultScope & {
   status: "loading" | "translating" | "done";
   /** Translated HTML; partially translated while `status` is "translating". */
   html: string;
+  /** Translated and total blocks (paragraphs, headings, list items). */
   done: number;
   total: number;
   showing: boolean;
@@ -42,9 +44,18 @@ const sameScope = (value: AiResultScope | null, scope: AiResultScope | null) =>
   value !== null && scope !== null && value.entryId === scope.entryId && value.revision === scope.revision
   && value.language === scope.language && value.epoch === scope.epoch;
 
-async function savedResult(article: AiArticle, task: AiTask, language: AiTargetLanguage, contentHash: string) {
+async function savedRecord(article: AiArticle, task: AiTask, language: AiTargetLanguage, contentHash: string) {
   const record = await getAiResult(aiResultKey(article.id, task, language)).catch(() => null);
-  return record?.contentHash === contentHash ? record.text : null;
+  return record?.contentHash === contentHash ? record : null;
+}
+
+async function savedResult(article: AiArticle, task: AiTask, language: AiTargetLanguage, contentHash: string) {
+  return (await savedRecord(article, task, language, contentHash))?.text ?? null;
+}
+
+/** Remembers whether a saved result is showing, so reopening the article restores it. */
+function rememberVisible(entryId: number, task: AiTask, language: AiTargetLanguage, visible: boolean) {
+  void setAiResultVisible(aiResultKey(entryId, task, language), visible).catch(() => undefined);
 }
 
 function saveResult(
@@ -68,29 +79,44 @@ function saveResult(
   }, generation).catch(() => undefined);
 }
 
-/** Translates segments, retrying missing ones once; rejects rather than accept a partial reply. */
-async function translateSegments(config: AiConfig, segments: string[], language: AiTargetLanguage, signal: AbortSignal) {
+/**
+ * Translates segments, retrying missing ones once; rejects rather than accept
+ * a partial reply. `onSegment` receives each segment as soon as it is complete.
+ */
+async function translateSegments(
+  config: AiConfig,
+  segments: string[],
+  language: AiTargetLanguage,
+  signal: AbortSignal,
+  onSegment: (index: number, value: string) => void,
+) {
   const translated = new Map<number, string>();
+  const accept = (index: number | undefined, value: string | undefined) => {
+    if (index === undefined || !value || translated.get(index) === value) return;
+    translated.set(index, value);
+    onSegment(index, value);
+  };
   let pending = segments.map((_, index) => index);
   for (let attempt = 0; attempt < 2 && pending.length; attempt += 1) {
-    const result = await streamAiCompletion(config, translationPrompt(pending.map((index) => segments[index]), language), { signal });
-    const parsed = parseTranslationSegments(result.text);
-    if (!parsed.size && pending.length === 1) parsed.set(1, stripCodeFence(result.text).trim());
-    pending.forEach((index, position) => {
-      const value = parsed.get(position + 1);
-      if (value) translated.set(index, value);
+    const batch = pending;
+    const result = await streamAiCompletion(config, translationPrompt(batch.map((index) => segments[index]), language), {
+      signal,
+      onText: (text) => completedTranslationSegments(text).forEach((value, marker) => accept(batch[marker - 1], value)),
     });
-    pending = pending.filter((index) => !translated.has(index));
+    const parsed = parseTranslationSegments(result.text);
+    if (!parsed.size && batch.length === 1) parsed.set(1, stripCodeFence(result.text).trim());
+    batch.forEach((index, position) => accept(index, parsed.get(position + 1)));
+    pending = batch.filter((index) => !translated.has(index));
   }
   if (pending.length) throw new AiRequestError("incomplete");
-  return translated;
 }
 
 /**
  * Summary and translation state for the open article. Results are saved per
  * entry, task, and language, and reused while the article content is
- * unchanged; `force` regenerates and replaces a saved result. Bump
- * `resultsEpoch` after clearing saved results to drop in-memory results.
+ * unchanged; `force` regenerates and replaces a saved result. A saved result
+ * that was showing when the article was last open is shown again on reopen.
+ * Bump `resultsEpoch` after clearing saved results to drop in-memory results.
  */
 export function useArticleAi(
   config: AiConfig | null,
@@ -121,6 +147,33 @@ export function useArticleAi(
     setTranslationState(null);
   }, [articleId, revision, language, resultsEpoch, config]);
 
+  // Saved results that were showing when the article was last open are shown
+  // again. This reads IndexedDB only; nothing is sent to the provider.
+  useEffect(() => {
+    if (!config || articleId === undefined || title === undefined || content === undefined) return;
+    const restoreScope: AiResultScope = { entryId: articleId, revision, language, epoch: resultsEpoch };
+    const target: AiArticle = { id: articleId, title, content };
+    let cancelled = false;
+    void (async () => {
+      const contentHash = await aiContentHash(`${title}\n${content}`);
+      const [savedSummary, savedTranslation] = await Promise.all([
+        savedRecord(target, "summary", language, contentHash),
+        savedRecord(target, "translation", language, contentHash),
+      ]);
+      if (cancelled) return;
+      const keep = <T extends AiResultScope>(current: T | null) => current !== null && sameScope(current, restoreScope);
+      if (savedSummary && savedSummary.visible !== false) {
+        setSummaryState((current) => keep(current) ? current : { ...restoreScope, status: "done", text: savedSummary.text, open: true });
+      }
+      if (savedTranslation && savedTranslation.visible !== false) {
+        setTranslationState((current) => keep(current) ? current : { ...restoreScope, status: "done", html: savedTranslation.text, done: 1, total: 1, showing: true });
+      }
+    })().catch(() => undefined);
+    return () => { cancelled = true; };
+  // `revision` already tracks the title and content.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [articleId, revision, language, resultsEpoch, config]);
+
   const summary = sameScope(summaryState, scope) ? summaryState : null;
   const translation = sameScope(translationState, scope) ? translationState : null;
 
@@ -136,7 +189,10 @@ export function useArticleAi(
     try {
       const contentHash = await aiContentHash(`${target.title}\n${target.content}`);
       const saved = force ? null : await savedResult(target, "summary", language, contentHash);
-      if (saved !== null) return update({ status: "done", text: saved });
+      if (saved !== null) {
+        rememberVisible(target.id, "summary", language, true);
+        return update({ status: "done", text: saved });
+      }
       if (controller.signal.aborted) return;
       const prompt = summaryPrompt(target.title, articlePlainText(target.content), language);
       const result = await streamAiCompletion(activeConfig, prompt, {
@@ -163,24 +219,32 @@ export function useArticleAi(
     try {
       const contentHash = await aiContentHash(`${target.title}\n${target.content}`);
       const saved = force ? null : await savedResult(target, "translation", language, contentHash);
-      if (saved !== null) return update({ status: "done", html: saved, done: 1, total: 1 });
+      if (saved !== null) {
+        rememberVisible(target.id, "translation", language, true);
+        return update({ status: "done", html: saved, done: 1, total: 1 });
+      }
       const prepared = prepareTranslation(target.content);
       if (!prepared.blocks.length) throw new AiRequestError("empty");
-      const chunks = chunkSegments(prepared.blocks.map((block) => block.source));
-      update({ status: "translating", html: serializeTranslation(prepared), done: 0, total: chunks.length });
-      for (const [index, chunk] of chunks.entries()) {
-        const segments = await translateSegments(
+      const total = prepared.blocks.length;
+      const translatedBlocks = new Set<number>();
+      update({ status: "translating", html: serializeTranslation(prepared), done: 0, total });
+      for (const chunk of chunkSegments(prepared.blocks.map((block) => block.source))) {
+        await translateSegments(
           activeConfig,
           chunk.map((blockIndex) => prepared.blocks[blockIndex].source),
           language,
           controller.signal,
+          (position, value) => {
+            if (controller.signal.aborted) return;
+            applyTranslation(prepared.blocks[chunk[position]], value);
+            translatedBlocks.add(chunk[position]);
+            update({ status: "translating", html: serializeTranslation(prepared), done: translatedBlocks.size, total });
+          },
         );
         if (controller.signal.aborted) return;
-        chunk.forEach((blockIndex, position) => applyTranslation(prepared.blocks[blockIndex], segments.get(position)!));
-        update({ status: "translating", html: serializeTranslation(prepared), done: index + 1, total: chunks.length });
       }
       const html = serializeTranslation(prepared, true);
-      update({ status: "done", html, done: chunks.length, total: chunks.length });
+      update({ status: "done", html, done: total, total });
       saveResult(activeConfig, target, "translation", language, contentHash, html, generation);
     } catch (cause) {
       if (controller.signal.aborted) return;
@@ -196,7 +260,10 @@ export function useArticleAi(
       setSummaryState(null);
       return;
     }
-    if (!force && summary?.status === "done") return setSummaryState({ ...summary, open: !summary.open });
+    if (!force && summary?.status === "done") {
+      rememberVisible(summary.entryId, "summary", summary.language, !summary.open);
+      return setSummaryState({ ...summary, open: !summary.open });
+    }
     if (!force && summary?.status === "error") return setSummaryState(null);
     void runSummary(config, article, scope, force);
   };
@@ -208,7 +275,10 @@ export function useArticleAi(
       setTranslationState(null);
       return;
     }
-    if (!force && translation) return setTranslationState({ ...translation, showing: !translation.showing });
+    if (!force && translation) {
+      rememberVisible(translation.entryId, "translation", translation.language, !translation.showing);
+      return setTranslationState({ ...translation, showing: !translation.showing });
+    }
     void runTranslation(config, article, scope, force);
   };
 

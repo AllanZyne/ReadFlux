@@ -3,11 +3,14 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  BASE_SCORE,
+  MAX_TERM_SCORE,
   createRankingExposure,
   deriveInterestProfile,
   deriveSourceAffinities,
   extractRecommendationTerms,
   foldTopicFeedback,
+  followedTopicTerms,
   isEngagedReadingEvent,
   RANKING_EXPOSURE_LIMIT,
   rankingAttribution,
@@ -19,12 +22,15 @@ import {
   scoreRecommendation,
   selectedTopicTermsByEntry,
   sourceScoreForAffinity,
+  topicWeightForAffinity,
 } from "../src/recommendation.ts";
 import { extractRecommendationCandidateTerms, normalizeSelectedTopic, prioritizeFollowedTopicTerms } from "../src/recommendation-terms.ts";
 
 const appSource = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
 const termSource = await readFile(new URL("../src/recommendation-terms.ts", import.meta.url), "utf8");
 const termWorkerSource = await readFile(new URL("../src/recommendation-terms.worker.ts", import.meta.url), "utf8");
+
+const round3 = (value) => Math.round(value * 1000) / 1000;
 
 const event = (overrides = {}) => ({
   id: "event-1",
@@ -112,7 +118,12 @@ test("article opening delegates Jieba extraction and dictionary warmup to a work
 });
 
 test("topic toggles derive current state from the active event", () => {
-  assert.match(appSource, /const currentEvent = activeEvent\.current[\s\S]*?selectedTopicTermsForEntry\([\s\S]*?currentEvent[\s\S]*?interested: !currentlySelected/);
+  assert.match(appSource, /const currentEvent = activeEvent\.current[\s\S]*?followedTopicTerms\([\s\S]*?currentEvent[\s\S]*?interested: addToCandidates \|\| !currentlySelected/);
+});
+
+test("following selected text is idempotent and checks the global follow state", () => {
+  assert.match(appSource, /const requestTopicSelection = useCallback[\s\S]*?followedTopics\.has\(term\)/);
+  assert.match(appSource, /const followSelectedTopic = async \(\) => \{\s*const selection = topicSelection;\s*if \(!selection\) return;\s*dismissTopicSelection\(\);\s*await toggleTopicInterest\(selection\.term, true\);/);
   assert.match(appSource, /term: normalizedTerm/);
 });
 
@@ -179,6 +190,124 @@ test("explicit topic weights stay fixed at one across repeated selections and ti
   assert.equal(profile.words.get("llvm"), 1);
 });
 
+test("the latest topic choice from any article decides whether it is followed", () => {
+  const followedInFirst = event({
+    entryId: 1,
+    topicFeedback: [{ id: "a", term: "LLVM", interested: true, updatedAt: "2026-08-14T00:00:00.000Z" }],
+  });
+  const unfollowedInSecond = event({
+    id: "event-2",
+    entryId: 2,
+    topicFeedback: [{ id: "b", term: "llvm", interested: false, updatedAt: "2026-08-14T01:00:00.000Z" }],
+  });
+  const now = Date.parse("2026-08-14T02:00:00.000Z");
+  assert.deepEqual([...followedTopicTerms([followedInFirst])], ["llvm"]);
+  assert.deepEqual([...followedTopicTerms([followedInFirst, unfollowedInSecond])], []);
+  assert.equal(deriveInterestProfile([followedInFirst, unfollowedInSecond], [], now).words.size, 0);
+  const followedAgain = event({
+    id: "event-3",
+    entryId: 3,
+    topicFeedback: [{ id: "c", term: "llvm", interested: true, updatedAt: "2026-08-14T02:00:00.000Z" }],
+  });
+  assert.equal(deriveInterestProfile([followedInFirst, unfollowedInSecond, followedAgain], [], now).words.get("llvm"), 1);
+});
+
+test("followed topics are weighted by reading depth and Today open rate, and unfollowed terms get none", () => {
+  const now = Date.parse("2026-08-14T02:00:00.000Z");
+  const follow = (term) => ({ id: `follow-${term}`, term, interested: true, updatedAt: "2026-08-13T00:00:00.000Z" });
+  const read = (id, entryId, terms, overrides = {}) => event({ id, entryId, terms, title: terms.join(" "), ...overrides });
+  const events = [
+    read("e1", 1, ["llvm"], { topicFeedback: [follow("llvm"), follow("rust")] }),
+    read("e2", 2, ["llvm"]),
+    read("e3", 3, ["llvm"]),
+    read("e4", 4, ["rust"], { activeSeconds: 2, scrollDepth: 0 }),
+    read("e5", 5, ["rust"], { activeSeconds: 2, scrollDepth: 0 }),
+    read("e6", 6, ["python"]),
+  ];
+  const profile = deriveInterestProfile(events, [], now);
+  assert.deepEqual([...profile.followedTerms].sort(), ["llvm", "rust"]);
+  assert.equal(profile.words.has("python"), false, "terms that are not followed get no weight");
+  const llvm = profile.topics.get("llvm");
+  const rust = profile.topics.get("rust");
+  assert.ok(llvm.weight > 1 && llvm.weight < 2, "deeply read topics weigh more than a neutral topic");
+  assert.ok(rust.weight < 1, "topics that are opened but not read weigh less");
+  assert.equal(topicWeightForAffinity(1), 1);
+  const unread = deriveInterestProfile([event({ terms: ["llvm"], topicFeedback: [follow("zig")] })], [], now);
+  assert.equal(unread.topics.get("zig").weight, 1, "a followed topic without reads stays neutral");
+});
+
+test("topic affinity does not depend on the order of an article's events", () => {
+  const now = Date.parse("2026-08-14T02:00:00.000Z");
+  const follow = { id: "follow", term: "rust", interested: true, updatedAt: "2026-08-13T00:00:00.000Z" };
+  const withoutTerms = event({ id: "a", entryId: 7, terms: [], title: "Systems notes", topicFeedback: [follow] });
+  const withTerms = event({ id: "b", entryId: 7, terms: ["rust"], title: "Systems notes", openedAt: "2026-08-14T01:00:00.000Z" });
+  const exposure = {
+    id: "ranking",
+    createdAt: "2026-08-13T12:00:00.000Z",
+    seenEntryIds: [7],
+    items: [{ entryId: 7, rank: 1, feedId: 2 }],
+  };
+  const topic = (events) => deriveInterestProfile(events, [], now, { exposures: [exposure] }).topics.get("rust");
+  assert.deepEqual(topic([withoutTerms, withTerms]), topic([withTerms, withoutTerms]));
+  assert.ok(topic([withoutTerms, withTerms]).readingWeight > 1.9, "both reads of the article mention the topic");
+});
+
+test("score breakdowns list every matched topic", () => {
+  const profile = {
+    sources: new Map(),
+    sourceBaseline: null,
+    words: new Map(["llvm", "rust", "zig", "wasm"].map((term) => [term, 1])),
+    negatives: new Map(),
+  };
+  const breakdown = scoreRecommendation({
+    feedId: 1,
+    text: "LLVM Rust Zig WASM",
+    publishedAt: "2026-08-14T00:00:00.000Z",
+    starred: false,
+    now: Date.parse("2026-08-14T00:00:00.000Z"),
+    profile,
+  });
+  assert.equal(breakdown.matchedTerms.length, 4);
+});
+
+test("followed topics that are seen in Today but skipped lose weight", () => {
+  const now = Date.parse("2026-08-14T02:00:00.000Z");
+  const follow = { id: "follow", term: "rust", interested: true, updatedAt: "2026-08-13T00:00:00.000Z" };
+  const opened = event({ id: "open", entryId: 1, terms: ["llvm"], title: "LLVM", rankingId: "ranking", exposedRank: 1, topicFeedback: [follow] });
+  const exposure = {
+    id: "ranking",
+    createdAt: "2026-08-14T00:00:00.000Z",
+    seenEntryIds: [1, 2, 3, 4],
+    items: [1, 2, 3, 4].map((entryId, index) => ({ entryId, rank: index + 1, feedId: 2 })),
+  };
+  const entryTexts = new Map([[1, "LLVM"], [2, "Rust async"], [3, "Rust traits"], [4, "Rust macros"]]);
+  const profile = deriveInterestProfile([opened], [], now, { exposures: [exposure], entryTexts });
+  const rust = profile.topics.get("rust");
+  assert.equal(rust.opens, 0);
+  assert.ok(rust.impressions > 2.9);
+  assert.ok(rust.weight < 1);
+});
+
+test("topic matches stay below the feed component", () => {
+  const profile = {
+    sources: new Map(),
+    sourceBaseline: { engagement: 0.5, openRate: 1, affinity: 0.5 },
+    words: new Map([["llvm", 1]]),
+    negatives: new Map(),
+  };
+  const breakdown = scoreRecommendation({
+    feedId: 9,
+    text: "LLVM",
+    publishedAt: "2026-08-01T00:00:00.000Z",
+    starred: false,
+    now: Date.parse("2026-08-14T00:00:00.000Z"),
+    profile,
+  });
+  assert.ok(breakdown.termScore > 4 && breakdown.termScore < 5, "one neutral topic adds about 4.4 points");
+  assert.ok(MAX_TERM_SCORE < sourceScoreForAffinity(Number.MAX_SAFE_INTEGER) + 0.1, "the topic cap stays within the feed range");
+  assert.equal(breakdown.unclampedScore, round3(BASE_SCORE + breakdown.sourceScore + breakdown.termScore));
+});
+
 test("invalid explicit-topic timestamps do not receive maximum weight", () => {
   const profile = deriveInterestProfile([event({
     topicFeedback: [{ id: "invalid", term: "llvm", interested: true, updatedAt: "not-a-date" }],
@@ -216,10 +345,10 @@ test("source scores map relative affinity onto a bounded scale and keep term dis
   assert.equal(score(99).sourceScore, 10);
   assert.equal(score(99, { ...profile, sources: new Map(), sourceBaseline: null }).sourceScore, 0);
   assert.equal(sourceScoreForAffinity(1), 10);
-  assert.ok(breakdown.termScore > 20 && breakdown.termScore < 24);
+  assert.ok(breakdown.termScore > 11.9 && breakdown.termScore <= 12);
   assert.ok(breakdown.unclampedScore < 99);
   assert.equal(breakdown.score, Math.round(breakdown.unclampedScore));
-  assert.equal(RECOMMENDATION_ALGORITHM_VERSION, "heuristic-v5-seen-impressions");
+  assert.equal(RECOMMENDATION_ALGORITHM_VERSION, "heuristic-v7-topic-affinity");
 });
 
 test("reading quality normalizes foreground time by expected length", () => {

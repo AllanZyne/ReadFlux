@@ -26,7 +26,8 @@ The primary product contract is:
 - `Unread only` is a list filter, not a separate smart feed. It does not apply
   to `Updated`, whose entries are already read by definition.
 - Recommendation scores affect ordering within each `Today` time and read-status
-  tier only, and are not shown in the list.
+  tier only, and are not shown in the list. The end of the open article shows
+  its sort keys and every score component with its formula and inputs.
 - Reading an entry updates its live state without removing it from the current
   list snapshot. Reuse recommendation scores and reasons until the next list
   refresh or context change; scroll-to-read must not rescore existing articles.
@@ -94,6 +95,9 @@ or reading events. The only exception is the explicit AI action below.
 - Results are saved per entry, task, and target language with a hash of the
   title and content. A changed article generates a new result. Ctrl/⌘+click or
   Ctrl/⌘+Enter forces regeneration.
+- A saved result records whether it was showing. Reopening the article shows a
+  saved summary or translation again unless the user last hid it; this reads
+  IndexedDB only and never contacts the provider.
 - Summaries render as plain text. Translations send block text with inline
   markup replaced by numbered placeholders, are rebuilt from the original
   nodes, and always render through the article sanitizer.
@@ -180,8 +184,24 @@ Current derivation rules:
   and saved-article differences still rank feeds. The result is divided by the average feed's value, and
   the source score is `20 * r / (1 + r)`. A feed with no data scores 10, and
   every feed scores 0 before any profile data exists.
-- Ranking combines the source score, positive term matches, freshness, and a
-  starred bonus, then clamps the internal score.
+- A topic is followed when its most recent explicit follow or unfollow, across
+  all articles and synced devices, is a follow. The reader highlights followed
+  topics wherever they appear as candidates. Only followed topics get weight;
+  other terms are never learned from reading.
+- Topic affinity mirrors feed affinity over the articles that mention the
+  topic (its extracted terms, or a match in the title-plus-summary text):
+  smoothed depth (3-read prior) times smoothed Today open rate (20-impression
+  prior), divided by the average-article baseline. A topic's weight is
+  `2 * r / (1 + r)`: 1 without data, toward 2 for topics read more than
+  average, below 1 for topics that are opened without reading or seen and
+  skipped.
+- The topic score is `12 * (1 - exp(-Σ weight / 2.2))`, so one neutral topic
+  adds about 4.4 and several strong topics reach 12. The cap stays below the
+  source score's 20: offline evaluation of an October 2026 export showed feed
+  affinity predicts engaged and deep reads best, and caps of 16 or more lowered
+  them, most in recent exposures. Re-evaluate before raising it.
+- Ranking adds a base of 40 to the topic, source, freshness, and starred
+  components, then clamps the internal score.
 
 When changing ranking behavior:
 
@@ -189,12 +209,42 @@ When changing ranking behavior:
 2. Update the Recommendation Data tab so the inputs and derived values remain
    inspectable.
 3. Add focused tests for the new pure calculation where practical.
-4. Update README and this file.
+4. Update this file. Keep the README to what users notice (what is recorded,
+   what influences Today, where to inspect it); formulas, weights, and
+   evaluation belong here.
 5. Do not surface the numeric score in the article list.
-6. Compare the change offline with `npm run eval -- <export.json>` on the base
-   branch and the change branch. Compare replayed columns with each other. The
-   recorded score shaped the on-screen order, so its open AUC is inflated by
-   position bias. Never commit exports or evaluation output.
+6. Compare the change offline as described below. Never commit exports or
+   evaluation output.
+
+### Offline evaluation
+
+The user exports data from Settings → Recommendation data → Export JSON and
+provides the file path. Keep the file outside the repository and pass it only
+as an argument.
+
+- `npm run eval -- <export.json>` replays each recorded Today list with only
+  the data from before it and prints pairwise AUC within the same exposure,
+  read status, and publication day for opens, engaged reads, and reads of 30
+  seconds or more. `--since YYYY-MM-DD` scores only exposures from that date,
+  while earlier data still builds the replayed profiles; use it when the user
+  reports that recent ranking feels worse. `--json` prints the full result.
+- Run it on the change and on the base. For the base, create a temporary
+  detached worktree of the base commit outside the repository, link the main
+  `node_modules` into it as a junction, and run
+  `node scripts/evaluate-recommendations.mjs <export.json>` there. When
+  cleaning up, remove the junction by itself first (`cmd /c rmdir`) so nothing
+  deletes through it into the real `node_modules`, then
+  `git worktree remove --force` and `git worktree prune`.
+- Compare the `replayed` columns between runs, and the per-component columns
+  (`replayed source`, `replayed term`) to see which signal moved. The
+  `recorded` column shaped the on-screen order, so its open AUC is inflated by
+  position bias; it is still useful as the quality the user actually saw.
+- Engaged and deep reads matter more than opens. Prefer a change that raises
+  them, overall and in recent exposures, even at a small cost in opens.
+- To tune a constant, sweep a few values with temporary edits, run `--json`
+  for each, and restore the file afterwards. Record the chosen value's
+  rationale in a code comment and in the ranking rules above, without raw
+  numbers.
 
 ## Commands
 
@@ -204,7 +254,7 @@ npm run lint
 npm test
 npm run build
 npm run preview
-npm run eval -- <readflux-recommendation-export.json> [--json]
+npm run eval -- <readflux-recommendation-export.json> [--since YYYY-MM-DD] [--json]
 ```
 
 Run lint, tests, and build before publishing.

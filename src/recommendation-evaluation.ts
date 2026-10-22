@@ -24,6 +24,8 @@ export type EvaluationInput = {
   events: ReadingEvent[];
   exposures: RankingExposure[];
   entries: EvaluationEntry[];
+  /** Evaluate only exposures created at or after this time; earlier data still builds profiles. */
+  since?: number;
 };
 
 export type EvaluationLabel = "opened" | "engaged" | "deep";
@@ -123,6 +125,7 @@ export function evaluateRecommendations(input: EvaluationInput) {
     attributed.set(key, [...(attributed.get(key) ?? []), event]);
   });
   const entryFeedIds = new Map(input.entries.map((entry) => [entry.id, entry.feedId]));
+  const entryTexts = new Map(input.entries.flatMap((entry) => entry.recommendationText ? [[entry.id, entry.recommendationText] as const] : []));
 
   const rows: Row[] = [];
   let items = 0;
@@ -132,9 +135,10 @@ export function evaluateRecommendations(input: EvaluationInput) {
   let seenTracked = 0;
   exposures.forEach((exposure) => {
     const keyFor = (entryId: number) => `${exposure.id}\n${entryId}`;
+    const at = new Date(exposure.createdAt).getTime();
+    if (input.since !== undefined && !(at >= input.since)) return;
     if (!exposure.items.some((item) => attributed.has(keyFor(item.entryId)))) return;
     activeExposures += 1;
-    const at = new Date(exposure.createdAt).getTime();
     const seen = exposure.seenEntryIds ? new Set(exposure.seenEntryIds) : null;
     if (seen) seenTracked += 1;
     const history = historicalEvents(input.events, at);
@@ -144,10 +148,12 @@ export function evaluateRecommendations(input: EvaluationInput) {
     const stars = input.entries
       .filter((entry) => entry.starred && new Date(entry.publishedAt).getTime() < at)
       .map((entry) => ({ feedId: entry.feedId, entryId: entry.id }));
-    const profile = {
-      ...deriveInterestProfile(history.readingEvents, stars, at, { exposures: priorExposures, entryFeedIds }),
-      words: deriveInterestProfile(history.topicEvents, [], at).words,
-    };
+    const profile = deriveInterestProfile(history.readingEvents, stars, at, {
+      exposures: priorExposures,
+      entryFeedIds,
+      entryTexts,
+      topicEvents: history.topicEvents,
+    });
     exposure.items.forEach((item) => {
       const opened = attributed.get(keyFor(item.entryId)) ?? [];
       if (seen && !opened.length && !seen.has(item.entryId)) return;
