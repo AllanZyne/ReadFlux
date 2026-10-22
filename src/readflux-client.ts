@@ -158,6 +158,8 @@ export type AiResultRecord = {
   model: string;
   text: string;
   createdAt: string;
+  /** Whether the result was showing when last toggled; reopening the article restores it. Missing means showing. */
+  visible?: boolean;
 };
 
 export type WebDavSyncInterval = 0 | 5 | 15 | 30 | 60;
@@ -797,6 +799,16 @@ export async function putAiResult(record: AiResultRecord, generation = aiResults
   await transactionComplete(transaction);
   db.close();
   return true;
+}
+
+export async function setAiResultVisible(key: string, visible: boolean) {
+  const db = await openDb();
+  const transaction = db.transaction(AI_RESULTS, "readwrite");
+  const store = transaction.objectStore(AI_RESULTS);
+  const record = await requestResult(store.get(key)) as AiResultRecord | undefined;
+  if (record && (record.visible ?? true) !== visible) store.put({ ...record, visible });
+  await transactionComplete(transaction);
+  db.close();
 }
 
 export async function getAiResultStats() {

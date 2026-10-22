@@ -1,4 +1,4 @@
-import { CSSProperties, FormEvent, memo, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { CSSProperties, FormEvent, memo, ReactNode, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import {
@@ -104,7 +104,7 @@ import {
   WebDavConfig,
   WebDavSyncInterval,
 } from "./readflux-client";
-import { createRankingExposure, deriveInterestProfile, isEngagedReadingEvent, isPreferredSource, RANKING_EXPOSURE_LIMIT, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, recordSeenEntries, scoreRecommendation, selectedTopicTermsByEntry, selectedTopicTermsForEntry, sourceScoreForAffinity, type RecommendationScoreBreakdown, type SourceAffinity, type SourceBaseline } from "./recommendation";
+import { createRankingExposure, deriveInterestProfile, followedTopicTerms, isEngagedReadingEvent, RANKING_EXPOSURE_LIMIT, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, recordSeenEntries, scoreRecommendation, selectedTopicTermsByEntry, selectedTopicTermsForEntry, sourceScoreForAffinity, BASE_SCORE, MAX_TERM_SCORE, TERM_SCORE_SCALE, type RecommendationScoreBreakdown, type SourceAffinity, type SourceBaseline, type TopicAffinity } from "./recommendation";
 import { buildRecommendationExport, recommendationExportFileName, withActiveReadingEvent } from "./recommendation-export";
 import { extractRecommendationCandidateTermsAsync, initializeChineseRecommendationTerms, normalizeRecommendationTerm, normalizeSelectedTopic, prioritizeFollowedTopicTerms } from "./recommendation-terms";
 import {
@@ -147,10 +147,9 @@ type Story = Entry & {
   mark: string;
   summary: string;
   score: number;
-  reason: string;
   scoreBreakdown: RecommendationScoreBreakdown;
 };
-type BaseStory = Entry & Omit<Story, keyof Entry | "score" | "reason" | "scoreBreakdown"> & {
+type BaseStory = Entry & Omit<Story, keyof Entry | "score" | "scoreBreakdown"> & {
   recommendationText: string;
 };
 type EntryPage = { total: number; entries: Entry[] };
@@ -373,20 +372,106 @@ function safeHtml(html: string, minifluxURL: string, imageMode: ImageLoadingMode
       }
       image.setAttribute("loading", "lazy");
       image.setAttribute("referrerpolicy", imageReferrerPolicy(imageMode));
+      image.setAttribute("data-readflux-src", src);
+      if (!image.classList.contains("articleInlineIcon")) image.classList.add(ARTICLE_IMAGE_PENDING_CLASS);
     }
   });
   return parsed.body.innerHTML;
 }
 
-function handleArticleImageError(event: React.SyntheticEvent<HTMLDivElement>) {
+const ARTICLE_IMAGE_PENDING_CLASS = "articleImagePending";
+
+/** The image each failure placeholder replaced, so Retry can put it back. */
+const failedArticleImages = new WeakMap<Element, HTMLImageElement>();
+
+function imageHost(url: string) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
+}
+
+function handleArticleImageLoad(event: React.SyntheticEvent<HTMLDivElement>) {
+  const image = event.target;
+  if (!(image instanceof HTMLImageElement) || !image.classList.contains(ARTICLE_IMAGE_PENDING_CLASS)) return;
+  image.classList.remove(ARTICLE_IMAGE_PENDING_CLASS);
+  image.classList.add("articleImageLoaded");
+}
+
+/** Tries the original URL once after a proxy failure, then shows a placeholder the size of the image. */
+function handleArticleImageError(event: React.SyntheticEvent<HTMLDivElement>, t: TFunction) {
   const image = event.target;
   if (!(image instanceof HTMLImageElement)) return;
   const originalSrc = image.dataset.readfluxOriginalSrc;
-  if (!originalSrc || image.dataset.readfluxFallback === "true") return;
-  image.dataset.readfluxFallback = "true";
-  image.removeAttribute("srcset");
-  image.src = originalSrc;
-  image.referrerPolicy = "no-referrer";
+  if (originalSrc && image.dataset.readfluxFallback !== "true") {
+    image.dataset.readfluxFallback = "true";
+    image.removeAttribute("srcset");
+    image.src = originalSrc;
+    image.referrerPolicy = "no-referrer";
+    return;
+  }
+  const document = image.ownerDocument;
+  const width = Number(image.getAttribute("width"));
+  const height = Number(image.getAttribute("height"));
+  const inline = image.classList.contains("articleInlineIcon");
+  const source = originalSrc ?? image.dataset.readfluxSrc ?? image.src;
+  const description = image.alt.trim() || imageHost(source);
+  const label = description ? t("reader.imageFailed", { description }) : t("reader.imageFailedShort");
+  const fallback = document.createElement("span");
+  fallback.className = "articleImageFallback";
+  if (inline) fallback.classList.add("inline");
+  else if (width > 0 && height > 0) {
+    fallback.style.width = `${width}px`;
+    fallback.style.aspectRatio = `${width} / ${height}`;
+  }
+  fallback.setAttribute("role", "group");
+  fallback.setAttribute("aria-label", label);
+  fallback.title = label;
+  const icon = document.createElement("span");
+  icon.className = "articleImageBrokenIcon";
+  icon.setAttribute("aria-hidden", "true");
+  // Two halves of the picture icon, split along a zigzag, read as a torn image.
+  icon.innerHTML = '<i class="bi bi-image"></i><i class="bi bi-image"></i>';
+  fallback.append(icon);
+  if (!inline && !((width > 0 && width < 160) || (height > 0 && height < 100))) {
+    const overlay = document.createElement("span");
+    overlay.className = "articleImageFallbackOverlay";
+    const text = document.createElement("span");
+    text.textContent = description ? `${t("reader.imageFailedShort")} · ${description}` : t("reader.imageFailedShort");
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.dataset.readfluxImageRetry = "";
+    retry.title = t("reader.retryImage");
+    retry.setAttribute("aria-label", t("reader.retryImage"));
+    retry.innerHTML = '<i class="bi bi-arrow-clockwise" aria-hidden="true"></i>';
+    const open = document.createElement("a");
+    open.href = source;
+    open.target = "_blank";
+    open.rel = "noopener noreferrer";
+    open.title = t("reader.openImage");
+    open.setAttribute("aria-label", t("reader.openImage"));
+    open.innerHTML = '<i class="bi bi-box-arrow-up-right" aria-hidden="true"></i>';
+    overlay.append(text, retry, open);
+    fallback.append(overlay);
+  } else fallback.classList.add("small");
+  failedArticleImages.set(fallback, image);
+  image.replaceWith(fallback);
+}
+
+/** Puts a failed image back and loads it again from the first URL. */
+function retryArticleImage(target: EventTarget | null) {
+  if (!(target instanceof Element) || !target.closest("[data-readflux-image-retry]")) return false;
+  const fallback = target.closest(".articleImageFallback");
+  const image = fallback && failedArticleImages.get(fallback);
+  if (!fallback || !image) return false;
+  failedArticleImages.delete(fallback);
+  delete image.dataset.readfluxFallback;
+  image.classList.add(ARTICLE_IMAGE_PENDING_CLASS);
+  image.classList.remove("articleImageLoaded");
+  if (image.dataset.readfluxSrc) image.src = image.dataset.readfluxSrc;
+  fallback.replaceWith(image);
+  return true;
 }
 
 function toggleLivePhoto(target: EventTarget | null) {
@@ -487,12 +572,22 @@ function captureTextSelection(root: HTMLElement, onTextSelection: (text: string,
   });
 }
 
+const AUTHOR_SEPARATOR = /\s*[,，、;；&]\s*|\s+and\s+/i;
+
+/** Keeps up to two authors; longer lists show the first author and a count. */
+function compactAuthors(authors: string, t: TFunction) {
+  const names = authors.split(AUTHOR_SEPARATOR).map((name) => name.trim()).filter(Boolean);
+  if (names.length <= 2) return authors;
+  return t("reader.authorsMore", { first: names[0], count: names.length - 1 });
+}
+
 function ArticleMetadata({
   story,
   feedIcon,
   timeZone,
   onReadingTick,
   onTextSelection,
+  topics,
   t,
 }: {
   story: Story;
@@ -500,6 +595,7 @@ function ArticleMetadata({
   timeZone: string;
   onReadingTick: () => number;
   onTextSelection: (text: string, rect: DOMRect) => void;
+  topics?: ReactNode;
   t: TFunction;
 }) {
   useEffect(() => {
@@ -510,7 +606,32 @@ function ArticleMetadata({
   return <header className="articleHead"><div><h2
     onMouseUp={(event) => captureTextSelection(event.currentTarget, onTextSelection)}
     onTouchEnd={(event) => captureTextSelection(event.currentTarget, onTextSelection)}
-  >{story.title}</h2><p><SourceIcon src={feedIcon}>{story.mark}</SourceIcon>{story.author || story.source} · {formatZonedDateTime(story.published_at, timeZone)} · {t("feed.minutes", { count: story.reading_time || 1 })}</p></div></header>;
+  >{story.title}</h2><p><SourceIcon src={feedIcon}>{story.mark}</SourceIcon><span className="articleAuthor" title={story.author || story.source}>{compactAuthors(story.author || story.source, t)}</span>· {formatZonedDateTime(story.published_at, timeZone)} · {t("feed.minutes", { count: story.reading_time || 1 })}{topics}</p></div></header>;
+}
+
+/** Candidate topics as byline hashtags; following one adds it to the interest profile. */
+function ArticleTopics({
+  terms,
+  followed,
+  loading,
+  onToggle,
+  t,
+}: {
+  terms: string[];
+  followed: Set<string>;
+  loading: boolean;
+  onToggle: (term: string) => void;
+  t: TFunction;
+}) {
+  if (loading) return <span className="articleTopics" aria-live="polite"><span className="articleTopicsLoading"><i className="bi bi-arrow-repeat" aria-hidden="true" />{t("recommendation.extractingTopics")}</span></span>;
+  if (!terms.length) return null;
+  return <span className="articleTopics" role="group" aria-label={t("recommendation.candidateTopics")}>
+    {terms.map((term) => {
+      const isFollowed = followed.has(term);
+      const label = t(isFollowed ? "recommendation.unfollowTopic" : "recommendation.followTopic", { term });
+      return <button key={term} type="button" className={isFollowed ? "followed" : undefined} aria-pressed={isFollowed} aria-label={label} data-tooltip={t(isFollowed ? "recommendation.unfollowShort" : "recommendation.followShort")} onClick={() => onToggle(term)}>#{term}</button>;
+    })}
+  </span>;
 }
 
 const ArticleBody = memo(function ArticleBody({
@@ -518,27 +639,45 @@ const ArticleBody = memo(function ArticleBody({
   minifluxURL,
   imageMode,
   onTextSelection,
+  t,
 }: {
   content: string;
   minifluxURL: string;
   imageMode: ImageLoadingMode;
   onTextSelection: (text: string, rect: DOMRect) => void;
+  t: TFunction;
 }) {
   const markup = useMemo(() => ({
     __html: safeHtml(content, minifluxURL, imageMode),
   }), [content, minifluxURL, imageMode]);
+  const container = useRef<HTMLDivElement>(null);
 
+  // Images already decoded from cache may finish before the load listener sees them.
+  useEffect(() => {
+    container.current?.querySelectorAll<HTMLImageElement>(`img.${ARTICLE_IMAGE_PENDING_CLASS}`).forEach((image) => {
+      if (image.complete && image.naturalWidth > 0) image.classList.remove(ARTICLE_IMAGE_PENDING_CLASS);
+    });
+  }, [markup]);
+
+  // Image load and error events do not bubble; React delivers them to ancestors only in the capture phase.
   return <div
+    ref={container}
     className="body articleContent"
-    onError={handleArticleImageError}
-    onClick={(event) => toggleLivePhoto(event.target)}
+    onLoadCapture={handleArticleImageLoad}
+    onErrorCapture={(event) => handleArticleImageError(event, t)}
+    onClick={(event) => {
+      if (!retryArticleImage(event.target)) toggleLivePhoto(event.target);
+    }}
     onMouseUp={(event) => captureTextSelection(event.currentTarget, onTextSelection)}
     onTouchEnd={(event) => captureTextSelection(event.currentTarget, onTextSelection)}
     onKeyUp={(event) => {
       if (event.shiftKey || event.key.startsWith("Arrow")) captureTextSelection(event.currentTarget, onTextSelection);
     }}
     onKeyDown={(event) => {
-      if ((event.key === "Enter" || event.key === " ") && toggleLivePhoto(event.target)) event.preventDefault();
+      if (event.key !== "Enter" && event.key !== " ") return;
+      // Keep the placeholder's own buttons away from the reader shortcuts.
+      if (event.target instanceof Element && event.target.closest(".articleImageFallback")) event.stopPropagation();
+      else if (toggleLivePhoto(event.target)) event.preventDefault();
     }}
     dangerouslySetInnerHTML={markup}
   />;
@@ -562,7 +701,8 @@ function aiActionKeyDown(action: (force: boolean) => void) {
   };
 }
 
-function AiReaderActions({
+/** Original / translation switch and summary toggle shown under the article byline. */
+function AiArticleControls({
   summary,
   summaryBusy,
   translation,
@@ -587,41 +727,51 @@ function AiReaderActions({
   const summaryLabel = summaryBusy
     ? t("ai.cancelSummary")
     : t(summary?.open ? "ai.hideSummary" : "ai.summarize", { modifier });
-  const translated = translation?.status === "done" && translation.showing;
+  const showingTranslation = translating || (translation?.status === "done" && translation.showing);
   const translationLabel = translation?.status === "translating"
-    ? t("ai.translatingProgress", { done: Math.min(translation.done + 1, translation.total), total: translation.total })
-    : translating
-      ? t("ai.cancelTranslation")
-      : t(translated ? "ai.showOriginal" : "ai.translate", { language, modifier });
-  const progress = translation?.total ? translation.done / translation.total * 100 : 0;
-  return <>
-    <span className="readerToolbarDivider" aria-hidden="true" />
+    ? t("ai.translatingProgress", { done: translation.done, total: translation.total })
+    : t(showingTranslation ? "ai.retranslate" : "ai.translate", { language, modifier });
+  const originalLabel = translating ? t("ai.cancelTranslation") : t("ai.showOriginal");
+  return <div className="aiControls">
+    <div className="aiVersion" role="group" aria-label={t("ai.version")}>
+      <button
+        type="button"
+        className={showingTranslation ? undefined : "on"}
+        disabled={disabled}
+        aria-pressed={!showingTranslation}
+        title={originalLabel}
+        onClick={() => { if (showingTranslation) onTranslation(false); }}
+        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") event.stopPropagation(); }}
+      >{t("ai.original")}</button>
+      <button
+        type="button"
+        className={showingTranslation ? "on" : undefined}
+        disabled={disabled}
+        aria-pressed={showingTranslation}
+        title={translationLabel}
+        onClick={(event) => {
+          const force = aiForceRequested(event);
+          if (force || !showingTranslation) onTranslation(force);
+        }}
+        onKeyDown={aiActionKeyDown(onTranslation)}
+      >
+        <i className="bi bi-translate" aria-hidden="true" />{language}
+        {translation?.status === "translating" && <small>{translation.done}/{translation.total}</small>}
+      </button>
+    </div>
     <button
       type="button"
-      className={`aiAction ${summary?.open ? "pressed" : ""} ${summaryBusy ? "busy" : ""}`}
+      className={`aiChip ${summary?.open ? "pressed" : ""} ${summaryBusy ? "busy" : ""}`}
       disabled={disabled}
       aria-pressed={summary?.open ?? false}
-      aria-label={summaryLabel}
       title={summaryLabel}
       onClick={(event) => onSummary(aiForceRequested(event))}
       onKeyDown={aiActionKeyDown(onSummary)}
-    ><i className={`bi ${summaryBusy ? "bi-arrow-repeat" : "bi-stars"}`} aria-hidden="true" /></button>
-    <button
-      type="button"
-      className={`aiAction ${translated ? "pressed" : ""} ${translating ? "translating" : ""}`}
-      disabled={disabled}
-      aria-pressed={translated}
-      aria-label={translationLabel}
-      title={translationLabel}
-      style={{ "--ai-progress": `${progress}%` } as CSSProperties}
-      onClick={(event) => onTranslation(aiForceRequested(event))}
-      onKeyDown={aiActionKeyDown(onTranslation)}
     >
-      <i className="bi bi-translate" aria-hidden="true" />
-      {translating && <span className="aiProgress" aria-hidden="true" />}
-      {translation?.status === "translating" && <span className="aiProgressCount" aria-hidden="true">{translation.done}/{translation.total}</span>}
+      <i className={`bi ${summaryBusy ? "bi-arrow-repeat" : "bi-stars"}`} aria-hidden="true" />
+      {t(summaryBusy ? "ai.summarizing" : summary?.open ? "ai.hideSummaryShort" : "ai.summarizeShort")}
     </button>
-  </>;
+  </div>;
 }
 
 function AiSummaryPanel({
@@ -663,6 +813,154 @@ function AiSummaryPanel({
         {pending && !lines.length && <li className="aiSummaryWaiting"><span className="sr-only">{t("ai.summarizing")}</span><span className="aiSummaryCaret" aria-hidden="true" /></li>}
       </ul>}
   </section>;
+}
+
+const SMART_FEED_TIER_LABELS = ["recommendation.tierToday", "recommendation.tierYesterday", "recommendation.tierWeek", "recommendation.tierMonth", "recommendation.tierYear", "recommendation.tierOlder"] as const;
+
+const formatScorePoints = (value: number) => `+${Number(value.toFixed(1))}`;
+
+function formatPublishedAge(publishedAt: string, now: number, locale: string) {
+  const published = new Date(publishedAt).getTime();
+  if (!Number.isFinite(published)) return null;
+  const minutes = Math.max(0, (now - published) / 60_000);
+  const format = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
+  if (minutes < 60) return format.format(-Math.round(minutes), "minute");
+  if (minutes < 48 * 60) return format.format(-Math.round(minutes / 60), "hour");
+  return format.format(-Math.round(minutes / 1440), "day");
+}
+
+/** Article-end explanation of the list order and every score component. */
+function RecommendationBreakdown({
+  story,
+  mode,
+  listedStatus,
+  timeBucket,
+  source,
+  sourceBaseline,
+  topics,
+  now,
+  locale,
+  feedback,
+  onFeedback,
+  t,
+}: {
+  story: Story;
+  mode: ListMode;
+  listedStatus: Entry["status"];
+  timeBucket: number;
+  source?: SourceAffinity;
+  sourceBaseline: SourceBaseline | null;
+  topics: ReadonlyMap<string, TopicAffinity>;
+  now: number;
+  locale: string;
+  feedback?: ReadingEvent["feedback"];
+  onFeedback: (feedback: "helpful" | "not_interested") => void;
+  t: TFunction;
+}) {
+  const breakdown = story.scoreBreakdown;
+  const age = formatPublishedAge(story.published_at, now, locale);
+  const matchedTopics = breakdown.matchedTerms.map((term) => topics.get(term)).filter((topic): topic is TopicAffinity => !!topic);
+  const rows: { key: string; label: string; value: string; points: number; detail: string; notes?: string[] }[] = [
+    { key: "base", label: t("recommendation.breakdownBase"), value: String(BASE_SCORE), detail: t("recommendation.breakdownBaseDetail"), points: BASE_SCORE },
+    {
+      key: "terms",
+      label: t("recommendation.breakdownTerms"),
+      value: formatScorePoints(breakdown.termScore),
+      points: breakdown.termScore,
+      detail: matchedTopics.length
+        ? t("recommendation.breakdownTermsDetail", { terms: matchedTopics.map((topic) => `${topic.term} ×${topic.weight.toFixed(2)}`).join(", ") })
+        : t(topics.size ? "recommendation.breakdownTermsNone" : "recommendation.breakdownTermsNoneFollowed"),
+      notes: [
+        ...matchedTopics.map((topic) => sourceBaseline
+          ? t("recommendation.breakdownTopicDetail", {
+            term: topic.term,
+            engagement: Math.round(topic.engagement * 100),
+            reads: topic.readingWeight.toFixed(1),
+            opens: topic.opens.toFixed(1),
+            impressions: topic.impressions.toFixed(1),
+            affinity: topic.relativeAffinity.toFixed(2),
+          })
+          : t("recommendation.breakdownTopicNoData", { term: topic.term })),
+        t("recommendation.breakdownTermsFormula", { max: MAX_TERM_SCORE, scale: TERM_SCORE_SCALE }),
+      ],
+    },
+    {
+      key: "source",
+      label: t("recommendation.breakdownSource"),
+      value: formatScorePoints(breakdown.sourceScore),
+      points: breakdown.sourceScore,
+      detail: source
+        ? t("recommendation.breakdownSourceDetail", { source: story.source, affinity: source.relativeAffinity.toFixed(2) })
+        : sourceBaseline
+          ? t("recommendation.breakdownSourceUnknown", { source: story.source })
+          : t("recommendation.breakdownSourceEmpty"),
+      notes: source && [t("recommendation.sourceAffinityDetail", {
+        engagement: Math.round(source.engagement * 100),
+        reads: source.readingWeight.toFixed(1),
+        opens: source.opens.toFixed(1),
+        impressions: source.impressions.toFixed(1),
+        openRate: (sourceBaseline?.openRate ? source.openRate / sourceBaseline.openRate : 1).toFixed(2),
+        stars: source.stars.toFixed(1),
+        starWeight: source.starWeight.toFixed(2),
+      })],
+    },
+    {
+      key: "fresh",
+      label: t("recommendation.breakdownFresh"),
+      value: formatScorePoints(breakdown.freshnessScore),
+      points: breakdown.freshnessScore,
+      detail: age ? t("recommendation.breakdownFreshDetail", { age }) : t("recommendation.breakdownFreshUnknown"),
+      notes: [t("recommendation.breakdownFreshFormula")],
+    },
+    {
+      key: "saved",
+      label: t("recommendation.breakdownSaved"),
+      value: formatScorePoints(breakdown.savedBonus),
+      points: breakdown.savedBonus,
+      detail: t(story.starred ? "recommendation.breakdownSavedYes" : "recommendation.breakdownSavedNo"),
+    },
+  ];
+  return <>
+    <div className="feedbackEnd">
+      <div
+        className="feedbackPill"
+        role="group"
+        aria-label={t("recommendation.feedback")}
+        onKeyDown={(event) => {
+          // Keep Enter and Space on these buttons away from the reader shortcuts.
+          if ((event.key === "Enter" || event.key === " ") && event.target instanceof HTMLButtonElement) event.stopPropagation();
+        }}
+      >
+        <button type="button" title={t("recommendation.helpful")} aria-label={t("recommendation.helpful")} aria-pressed={feedback === "helpful"} onClick={() => onFeedback("helpful")}><i className={`bi ${feedback === "helpful" ? "bi-hand-thumbs-up-fill" : "bi-hand-thumbs-up"}`} aria-hidden="true" /></button>
+        <i className="feedbackPillDivider" aria-hidden="true" />
+        <button type="button" title={t("recommendation.notInterested")} aria-label={t("recommendation.notInterested")} aria-pressed={feedback === "not_interested"} onClick={() => onFeedback("not_interested")}><i className={`bi ${feedback === "not_interested" ? "bi-hand-thumbs-down-fill" : "bi-hand-thumbs-down"}`} aria-hidden="true" /></button>
+      </div>
+    </div>
+    <section className="feedback" aria-labelledby="recommendation-reason-title">
+      <header>
+        <h3 id="recommendation-reason-title">{t("recommendation.reason")}</h3>
+        <span>{t("recommendation.scoreLabel")} <b>{breakdown.score}</b> / 99</span>
+      </header>
+      {mode === "today"
+        ? <p className="feedbackOrder">{t("recommendation.orderToday")} <span className="current">{t(SMART_FEED_TIER_LABELS[timeBucket] ?? SMART_FEED_TIER_LABELS[5])}</span><span className="current">{t(listedStatus === "unread" ? "recommendation.orderUnread" : "recommendation.orderRead")}</span><span className="current">{t("recommendation.orderScore", { score: breakdown.score })}</span><span>{t("recommendation.orderTime")}</span></p>
+        : <p className="feedbackOrder">{t(mode === "updated" ? "recommendation.orderByChanged" : "recommendation.orderByPublished")}</p>}
+      <div className="feedbackBar" aria-hidden="true">{rows.filter((row) => row.points > 0).map((row) => <i key={row.key} className={row.key} style={{ width: `${row.points / 99 * 100}%` }} />)}</div>
+      <table>
+        <tbody>
+          {rows.map((row) => <tr key={row.key} className={row.points > 0 ? undefined : "zero"}>
+            <th scope="row"><i className={row.key} aria-hidden="true" />{row.label}</th>
+            <td>{row.value}</td>
+            <td>{row.detail}{row.notes?.map((note) => <small key={note}>{note}</small>)}</td>
+          </tr>)}
+          <tr className="total">
+            <th scope="row">{t("recommendation.breakdownTotal")}</th>
+            <td>{breakdown.score}</td>
+            <td>{t("recommendation.breakdownTotalDetail", { raw: Number(breakdown.unclampedScore.toFixed(1)) })}</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  </>;
 }
 
 type AiSettingsStatus = { tone: "pending" | "success" | "error"; message: string } | null;
@@ -729,7 +1027,7 @@ function SettingsDialog({
   timeZoneSource,
   sourceAffinities,
   sourceBaseline,
-  wordWeights,
+  topicAffinities,
   exposures,
   starredCount,
   onClose,
@@ -763,7 +1061,7 @@ function SettingsDialog({
   timeZoneSource: "miniflux" | "browser";
   sourceAffinities: Map<number, SourceAffinity>;
   sourceBaseline: SourceBaseline | null;
-  wordWeights: Map<string, number>;
+  topicAffinities: Map<string, TopicAffinity>;
   exposures: RankingExposure[];
   starredCount: number;
   onClose: () => void;
@@ -1130,7 +1428,7 @@ function SettingsDialog({
   const topSources = [...sourceAffinities.values()]
     .sort((a, b) => b.relativeAffinity - a.relativeAffinity || a.feedId - b.feedId)
     .slice(0, 12);
-  const topWords = [...wordWeights.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
+  const topTopics = [...topicAffinities.values()].sort((a, b) => b.weight - a.weight || a.term.localeCompare(b.term)).slice(0, 20);
   const diagnostics = recommendationDiagnostics(exposures, events);
   const selectedTermsByEntry = useMemo(() => selectedTopicTermsByEntry(events), [events]);
   const normalizedEventQuery = eventQuery.trim().toLowerCase();
@@ -1480,7 +1778,16 @@ function SettingsDialog({
               </div>
               <div>
                 <header><h3>{t("recommendation.positiveTerms")}</h3><small>{t("recommendation.positiveTermsHint")}</small></header>
-                <div className="weightTags">{topWords.length ? topWords.map(([word, weight]) => <span key={word}>{word}<em>{weight.toFixed(1)}</em></span>) : <p>{t("recommendation.noKeywords")}</p>}</div>
+                <div className="weightList">{topTopics.length ? topTopics.map((topic) => <span key={topic.term}>
+                  <b>{topic.term}</b>
+                  <em>{t("recommendation.topicAffinityValue", { weight: topic.weight.toFixed(2), affinity: topic.relativeAffinity.toFixed(2) })}</em>
+                  <small>{t("recommendation.topicAffinityDetail", {
+                    engagement: Math.round(topic.engagement * 100),
+                    reads: topic.readingWeight.toFixed(1),
+                    opens: topic.opens.toFixed(1),
+                    impressions: topic.impressions.toFixed(1),
+                  })}</small>
+                </span>) : <p>{t("recommendation.noKeywords")}</p>}</div>
               </div>
             </section>
 
@@ -1621,7 +1928,7 @@ export default function App() {
     statuses: Map<number, Entry["status"]>;
     labels: Map<number, string[]>;
   }>(() => ({ statuses: new Map(), labels: new Map() }));
-  const [reasonOpen, setReasonOpen] = useState(false);
+  const [feedbackChoice, setFeedbackChoice] = useState<{ entryId: number; feedback: NonNullable<ReadingEvent["feedback"]> } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [markAllReadOpen, setMarkAllReadOpen] = useState(false);
   const [markAllReadPosition, setMarkAllReadPosition] = useState({ top: 0, left: 0, arrowLeft: 0 });
@@ -2361,6 +2668,7 @@ export default function App() {
     {
       exposures: recommendationSnapshot.exposures,
       entryFeedIds: new Map(recommendationSnapshot.entries.map((entry) => [entry.id, entry.feed_id])),
+      entryTexts: new Map(recommendationSnapshot.entries.map((entry) => [entry.id, storyTextForEntry(entry).recommendationText])),
     },
   ), [recommendationSnapshot]);
 
@@ -2386,21 +2694,10 @@ export default function App() {
       now: recommendationSnapshot.now,
       profile: interest,
     });
-    const terms = scoreBreakdown.matchedTerms.slice(0, 2).join(", ");
-    const reason = isPreferredSource(interest, story.feed_id)
-      ? t("recommendation.reasonSource", { source: story.source, interest: scoreBreakdown.matchedTerms[0] ? t("recommendation.reasonSourceInterest", { terms }) : "" })
-      : scoreBreakdown.matchedTerms[0]
-        ? t("recommendation.reasonTerms", { terms })
-        : story.starred
-          ? t("recommendation.reasonSaved")
-          : recommendationSnapshot.events.length
-            ? t("recommendation.reasonCategory", { category: story.category })
-            : t("recommendation.reasonNew");
     return {
       ...story,
       score: scoreBreakdown.score,
       scoreBreakdown,
-      reason,
     };
   }), [feedMap, interest, recommendationSnapshot, t]);
   const stories = useMemo<Story[]>(() => projectStories(entries), [entries, projectStories]);
@@ -2793,6 +3090,7 @@ export default function App() {
       : new Set<string>(),
     [recommendationEvents, deferredSelectedId],
   );
+  const followedTopics = useMemo(() => followedTopicTerms(recommendationEvents), [recommendationEvents]);
   const extractedCandidateTerms = readerSelected && activeCandidates?.entryId === readerSelected.id
     ? activeCandidates.terms
     : selectedReadingEvent?.termExtractionVersion ? selectedReadingEvent.terms : [];
@@ -3289,6 +3587,7 @@ export default function App() {
       activeEvent.current.feedback = feedback;
       await persistActive();
     }
+    setFeedbackChoice({ entryId: selected.id, feedback });
     if (feedback === "not_interested") {
       const next = visible.find((story) => story.id !== selected.id);
       if (next) choose(next);
@@ -3306,10 +3605,10 @@ export default function App() {
     const normalizedTerm = normalizeRecommendationTerm(term);
     if (!normalizedTerm) return;
     const currentEvent = activeEvent.current;
-    const currentlySelected = selectedTopicTermsForEntry([
+    const currentlySelected = followedTopicTerms([
       ...recommendationEvents.filter((event) => event.id !== currentEvent.id),
       currentEvent,
-    ], selected.id).has(normalizedTerm);
+    ]).has(normalizedTerm);
     const updatedAt = new Date().toISOString();
     const operation = {
       id: crypto.randomUUID(),
@@ -3521,7 +3820,7 @@ export default function App() {
 
         <section className="feed">
           <header className="feedTitle">
-            <button className="mobileBack" onClick={() => setMobileView("sources")}>‹ {t("sidebar.feeds")}</button>
+            <button className="mobileBack" onClick={() => setMobileView("sources")}><i className="bi bi-chevron-left" aria-hidden="true" />{t("sidebar.feeds")}</button>
             <div className="feedTitleText">
               <h1>{topicTitle ? `${t(`sidebar.${mode}`)} · ${topicTitle}` : t(`sidebar.${mode}`)}</h1>
               {(settings.showFeedArticleCount || error && entries.length > 0) && <small>
@@ -3585,7 +3884,30 @@ export default function App() {
               const depth = target.scrollHeight <= target.clientHeight ? 1 : target.scrollTop / (target.scrollHeight - target.clientHeight);
               activeEvent.current.scrollDepth = Math.max(activeEvent.current.scrollDepth, Math.min(1, depth));
             }}>
-              <div className="readerToolbar"><button className="mobileBack" onClick={() => { navigateToList(); setMobileView("list"); }}>‹ {t("reader.backToArticles")}</button><div><button onClick={() => toggleRead(selected)} title={t(selected.status === "read" ? "reader.markUnread" : "reader.markRead")}>{selected.status === "read" ? "○" : "●"}</button><button className={selected.starred ? "pressed" : ""} title={t(selected.starred ? "reader.unsave" : "reader.save")} onClick={() => void toggleStarred(selected)}>{selected.starred ? "★" : "☆"}</button><a href={selected.url} target="_blank" rel="noopener noreferrer" title={t("reader.openOriginal")}>↗</a><button title={t("reader.copyLink")} onClick={async () => { await navigator.clipboard.writeText(selected.url); notify(t("reader.linkCopied")); }}>⧉</button><button title={t("reader.notInterested")} onClick={() => void setFeedback("not_interested")}>−</button>{aiConfig && <AiReaderActions
+              <div className="readerToolbar"><button className="mobileBack" onClick={() => { navigateToList(); setMobileView("list"); }}><i className="bi bi-chevron-left" aria-hidden="true" />{t("reader.backToArticles")}</button><div>
+                <button title={t(selected.status === "read" ? "reader.markUnread" : "reader.markRead")} aria-label={t(selected.status === "read" ? "reader.markUnread" : "reader.markRead")} onClick={() => toggleRead(selected)}><i className={`bi ${selected.status === "read" ? "bi-circle" : "bi-circle-fill"}`} aria-hidden="true" /></button>
+                <button className={selected.starred ? "pressed" : ""} title={t(selected.starred ? "reader.unsave" : "reader.save")} aria-label={t(selected.starred ? "reader.unsave" : "reader.save")} aria-pressed={selected.starred} onClick={() => void toggleStarred(selected)}><i className={`bi ${selected.starred ? "bi-star-fill" : "bi-star"}`} aria-hidden="true" /></button>
+                <a href={selected.url} target="_blank" rel="noopener noreferrer" title={t("reader.openOriginal")} aria-label={t("reader.openOriginal")}><i className="bi bi-box-arrow-up-right" aria-hidden="true" /></a>
+                <button title={t("reader.copyLink")} aria-label={t("reader.copyLink")} onClick={async () => { await navigator.clipboard.writeText(selected.url); notify(t("reader.linkCopied")); }}><i className="bi bi-copy" aria-hidden="true" /></button>
+              </div></div>
+              <p className="crumb">{selected.category} · {selected.source}</p>
+              <ArticleMetadata
+                key={selected.id}
+                story={selected}
+                feedIcon={feedIcons.get(selected.feed_id)}
+                timeZone={activeTimeZone}
+                onReadingTick={recordReadingTick}
+                onTextSelection={requestTopicSelection}
+                topics={readerSelected && <ArticleTopics
+                  terms={selectedCandidateTerms}
+                  followed={followedTopics}
+                  loading={activeCandidates?.entryId === selected.id && activeCandidates.loading}
+                  onToggle={(term) => void toggleTopicInterest(term)}
+                  t={t}
+                />}
+                t={t}
+              />
+              {aiConfig && <AiArticleControls
                 summary={aiSummary}
                 summaryBusy={aiSummaryBusy}
                 translation={aiTranslation}
@@ -3595,30 +3917,7 @@ export default function App() {
                 onSummary={articleAi.toggleSummary}
                 onTranslation={articleAi.toggleTranslation}
                 t={t}
-              />}</div></div>
-              <p className="crumb">{selected.category} · {selected.source}</p>
-              <ArticleMetadata
-                key={selected.id}
-                story={selected}
-                feedIcon={feedIcons.get(selected.feed_id)}
-                timeZone={activeTimeZone}
-                onReadingTick={recordReadingTick}
-                onTextSelection={requestTopicSelection}
-                t={t}
-              />
-              {readerSelected && (activeCandidates?.entryId === selected.id && activeCandidates.loading ? <section className="topicPicker topicPickerLoading" aria-live="polite">
-                <div><strong>{t("recommendation.candidateTopics")}</strong><small>{t("recommendation.extractingTopics")}</small></div>
-              </section> : selectedCandidateTerms.length > 0 && <section className="topicPicker" aria-labelledby="topic-picker-title">
-                <div><strong id="topic-picker-title">{t("recommendation.candidateTopics")}</strong><small>{t("recommendation.candidateTopicsHint")}</small></div>
-                <div>{selectedCandidateTerms.map((term) => {
-                  const selectedTopic = selectedTopicTerms.has(term);
-                  return <button key={term} className={selectedTopic ? "selected" : ""} aria-pressed={selectedTopic} onClick={() => void toggleTopicInterest(term)}>{selectedTopic ? "✓ " : "+ "}{term}</button>;
-                })}</div>
-              </section>)}
-              <section className="reason">
-                <button className="reasonHead" onClick={() => setReasonOpen(!reasonOpen)}><span>{t("recommendation.reason")}</span><small>{reasonOpen ? t("recommendation.collapse") : t("recommendation.view")}</small></button>
-                {reasonOpen && <><p>{selected.reason}</p><div className="tags">{[selected.category, selected.source, ...(selected.tags ?? [])].slice(0, 4).map((tag) => <span key={tag}>{tag}</span>)}</div></>}
-              </section>
+              />}
               {readerSelected?.id !== selected.id
                 ? <div className="articleLoading" role="status"><b className="loadingMark">↻</b><p>{t("reader.loadingContent")}</p></div>
                 : contentLoadingId === selected.id
@@ -3637,9 +3936,23 @@ export default function App() {
                       minifluxURL={config.url}
                       imageMode={selectedImageMode}
                       onTextSelection={translatedContent ? ignoreTextSelection : requestTopicSelection}
+                      t={t}
                     />
                   </>}
-              <div className="feedback"><span>{t("recommendation.feedbackQuestion")}</span><button onClick={() => void setFeedback("helpful")}>{t("recommendation.helpful")}</button><button onClick={() => void setFeedback("not_interested")}>{t("recommendation.notInterested")}</button></div>
+              <RecommendationBreakdown
+                story={selected}
+                mode={mode}
+                listedStatus={listReadSnapshot.get(selected.id) ?? selected.status}
+                timeBucket={smartFeedTimeBucket(selected.published_at, todayClock, activeTimeZone)}
+                source={interest.sources.get(selected.feed_id)}
+                sourceBaseline={interest.sourceBaseline}
+                topics={interest.topics}
+                now={recommendationSnapshot.now}
+                locale={i18n.resolvedLanguage ?? "en"}
+                feedback={feedbackChoice?.entryId === selected.id ? feedbackChoice.feedback : undefined}
+                onFeedback={(feedback) => void setFeedback(feedback)}
+                t={t}
+              />
             </div>
             {topicSelection && <>
               <div className="topicSelectionBackdrop" role="presentation" onMouseDown={() => dismissTopicSelection()} />
@@ -3677,7 +3990,7 @@ export default function App() {
         timeZoneSource={timeZoneSelection.source}
         sourceAffinities={interest.sources}
         sourceBaseline={interest.sourceBaseline}
-        wordWeights={interest.words}
+        topicAffinities={interest.topics}
         exposures={recommendationExposures}
         starredCount={savedCount}
         onClose={() => setSettingsOpen(false)}

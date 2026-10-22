@@ -237,6 +237,13 @@ test("translation segments round-trip through markers, tolerating fences and gap
   assert.equal(ai.translationPrompt(["A"], "fr").user, "<<<1>>>\nA");
 });
 
+test("streamed translation segments are complete only once a later marker arrives", () => {
+  assert.deepEqual([...ai.completedTranslationSegments("```\n<<<1>>>\n第一")], []);
+  assert.deepEqual([...ai.completedTranslationSegments("<<<1>>>\n第一\n\n<<<2>>")], []);
+  assert.deepEqual([...ai.completedTranslationSegments("<<<1>>>\n第一\n\n<<<2>>>")], [[1, "第一"]]);
+  assert.deepEqual([...ai.completedTranslationSegments("<<<1>>>\n第一\n\n<<<2>>>\n第二\n\n<<<3>>>\n第")], [[1, "第一"], [2, "第二"]]);
+});
+
 test("segments are grouped into bounded requests in document order", () => {
   assert.deepEqual(ai.chunkSegments(["aaaa", "bb", "cc", "dddddd", "e"], 6), [[0, 1], [2], [3], [4]]);
   assert.deepEqual(ai.chunkSegments([], 6), []);

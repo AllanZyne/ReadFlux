@@ -1,7 +1,7 @@
 import type { ReadingEvent, RankingExposure } from "./readflux-client.ts";
 import { normalizeRecommendationTerm } from "./recommendation-terms.ts";
 
-export const RECOMMENDATION_ALGORITHM_VERSION = "heuristic-v5-seen-impressions";
+export const RECOMMENDATION_ALGORITHM_VERSION = "heuristic-v7-topic-affinity";
 export const RANKING_EXPOSURE_LIMIT = 100;
 
 export const RECENCY_DAYS = 28;
@@ -12,6 +12,27 @@ const ENGAGEMENT_PRIOR_EVENTS = 3;
 const MIN_ENGAGEMENT_PRIOR = 0.01;
 const OPEN_RATE_PRIOR_IMPRESSIONS = 20;
 const MAX_SOURCE_SCORE = 20;
+/** Every article starts here; the components below are added to it. */
+export const BASE_SCORE = 40;
+/**
+ * Offline evaluation on 2026-10-22 favoured a topic cap of 12 below the feed's 20:
+ * feed affinity predicts engaged and deep reads best, and higher caps lowered them.
+ */
+export const MAX_TERM_SCORE = 12;
+export const TERM_SCORE_SCALE = 2.2;
+const MAX_TOPIC_WEIGHT = 2;
+
+export type TopicAffinity = {
+  term: string;
+  readingWeight: number;
+  readingQuality: number;
+  engagement: number;
+  impressions: number;
+  opens: number;
+  openRate: number;
+  relativeAffinity: number;
+  weight: number;
+};
 
 export type SourceAffinity = {
   feedId: number;
@@ -36,7 +57,10 @@ export type SourceBaseline = {
 export type InterestProfile = {
   sources: Map<number, SourceAffinity>;
   sourceBaseline: SourceBaseline | null;
+  /** Scoring weight of each followed topic, from `topics`. */
   words: Map<string, number>;
+  followedTerms: Set<string>;
+  topics: Map<string, TopicAffinity>;
   negatives: Map<string, number>;
 };
 
@@ -219,11 +243,6 @@ export function sourceScoreForAffinity(relativeAffinity: number) {
   return round(MAX_SOURCE_SCORE * relative / (1 + relative));
 }
 
-export function isPreferredSource(profile: InterestProfile, feedId: number) {
-  const source = profile.sources.get(feedId);
-  return !!source && source.readingQuality > 0 && source.relativeAffinity >= 1.5;
-}
-
 export { extractRecommendationTerms } from "./recommendation-terms.ts";
 
 type FoldedTopicFeedback = {
@@ -264,22 +283,126 @@ export function selectedTopicTermsByEntry(events: ReadingEvent[]) {
   return selected;
 }
 
+/** Each topic's most recent explicit choice, from any article or device: true for follow. */
+function latestTopicChoices(events: ReadingEvent[]) {
+  const latest = new Map<string, { interested: boolean; order: string }>();
+  foldTopicFeedback(events).forEach((operation) => {
+    if (!Number.isFinite(new Date(operation.updatedAt).getTime())) return;
+    const order = `${operation.updatedAt}\n${operation.id}`;
+    const current = latest.get(operation.term);
+    if (!current || order > current.order) latest.set(operation.term, { interested: operation.interested, order });
+  });
+  return new Map([...latest].map(([term, choice]) => [term, choice.interested]));
+}
+
+/**
+ * Topics whose most recent follow or unfollow, from any article or device, is
+ * a follow. Unfollowing a topic in one article therefore unfollows it everywhere.
+ */
+export function followedTopicTerms(events: ReadingEvent[]) {
+  return new Set([...latestTopicChoices(events)].filter(([, interested]) => interested).map(([term]) => term));
+}
+
+/** A followed topic's weight in (0, 2): 1 with no evidence, higher when read more than average. */
+export function topicWeightForAffinity(relativeAffinity: number) {
+  const relative = Math.max(0, relativeAffinity);
+  return round(MAX_TOPIC_WEIGHT * relative / (1 + relative));
+}
+
+/**
+ * Affinity of each followed topic, measured like feed affinity: smoothed reading
+ * depth of opened articles that mention it, times its smoothed Today open rate
+ * over seen articles that mention it, relative to the average article. An article
+ * mentions a topic when its extracted terms include it or its title and summary
+ * text match it. Not-interested reads count toward neither. Topics that are not
+ * followed get no weight.
+ */
+export function deriveTopicAffinities(
+  events: ReadingEvent[],
+  followed: ReadonlySet<string>,
+  now: number,
+  baseline: SourceBaseline | null,
+  options: { exposures?: RankingExposure[]; entryTexts?: ReadonlyMap<number, string> } = {},
+) {
+  const matchers = [...followed].map((term) => ({ term, matches: termMatcher(term) }));
+  const mentionCache = new Map<number, string[]>();
+  const mentionsOf = (entryId: number, terms: readonly string[] = [], title = "") => {
+    const cached = mentionCache.get(entryId);
+    if (cached) return cached;
+    const text = normalizeRecommendationTerm(options.entryTexts?.get(entryId) ?? title);
+    const extracted = new Set(terms.map(normalizeRecommendationTerm));
+    const mentioned = matchers.filter(({ term, matches }) => extracted.has(term) || matches(text)).map(({ term }) => term);
+    mentionCache.set(entryId, mentioned);
+    return mentioned;
+  };
+  const totals = new Map([...followed].map((term) => [term, { readingWeight: 0, readingQuality: 0, impressions: 0, opens: 0 }]));
+  const attributedOpens = new Set<string>();
+  // As for feeds, open rates carry no signal until some Today open is attributed.
+  let openRateKnown = false;
+  events.forEach((event) => {
+    if (event.feedback === "not_interested") return;
+    if (event.rankingId && event.exposedRank !== undefined) attributedOpens.add(attributedOpenKey(event.rankingId, event.entryId));
+    const openedAt = new Date(event.openedAt).getTime();
+    if (!Number.isFinite(openedAt)) return;
+    const weight = recencyWeight(openedAt, now);
+    mentionsOf(event.entryId, event.terms, event.title).forEach((term) => {
+      const current = totals.get(term)!;
+      current.readingWeight += weight;
+      current.readingQuality += weight * readingEventQuality(event);
+    });
+  });
+  options.exposures?.forEach((exposure) => {
+    const createdAt = new Date(exposure.createdAt).getTime();
+    if (!Number.isFinite(createdAt)) return;
+    const weight = recencyWeight(createdAt, now);
+    const seen = exposure.seenEntryIds ? new Set(exposure.seenEntryIds) : null;
+    exposure.items.forEach((item) => {
+      const opened = attributedOpens.has(attributedOpenKey(exposure.id, item.entryId));
+      if (seen && !opened && !seen.has(item.entryId)) return;
+      if (opened) openRateKnown = true;
+      mentionsOf(item.entryId).forEach((term) => {
+        const current = totals.get(term)!;
+        current.impressions += seen ? weight : weight / Math.log2(Math.max(1, item.rank) + 1);
+        if (opened) current.opens += weight;
+      });
+    });
+  });
+  const topics = new Map<string, TopicAffinity>();
+  totals.forEach((current, term) => {
+    if (!baseline) {
+      topics.set(term, { term, ...current, engagement: 0, openRate: 1, relativeAffinity: 1, weight: 1 });
+      return;
+    }
+    const engagement = (current.readingQuality + ENGAGEMENT_PRIOR_EVENTS * baseline.engagement)
+      / (current.readingWeight + ENGAGEMENT_PRIOR_EVENTS);
+    const openRate = openRateKnown
+      ? (current.opens + OPEN_RATE_PRIOR_IMPRESSIONS * baseline.openRate) / (current.impressions + OPEN_RATE_PRIOR_IMPRESSIONS)
+      : 1;
+    const relativeAffinity = engagement * openRate / baseline.affinity;
+    topics.set(term, { term, ...current, engagement, openRate, relativeAffinity, weight: topicWeightForAffinity(relativeAffinity) });
+  });
+  return topics;
+}
+
 export function deriveInterestProfile(
   events: ReadingEvent[],
   starred: StarredDocument[],
   now: number,
-  options: { exposures?: RankingExposure[]; entryFeedIds?: ReadonlyMap<number, number> } = {},
+  options: {
+    exposures?: RankingExposure[];
+    entryFeedIds?: ReadonlyMap<number, number>;
+    /** Title-plus-summary text by entry, used to find the followed topics an article mentions. */
+    entryTexts?: ReadonlyMap<number, string>;
+    /** Events whose topic choices define the followed topics; defaults to `events`. */
+    topicEvents?: ReadingEvent[];
+  } = {},
 ): InterestProfile {
   const { sources, baseline } = deriveSourceAffinities(events, starred, now, options);
-  const words = new Map<string, number>();
+  const followedTerms = followedTopicTerms(options.topicEvents ?? events);
+  const topics = deriveTopicAffinities(events, followedTerms, now, baseline, options);
+  const words = new Map([...topics].map(([term, topic]) => [term, topic.weight]));
   const negatives = new Map<string, number>();
-  foldTopicFeedback(events).forEach((operation) => {
-    if (!operation.interested) return;
-    const selectedAt = new Date(operation.updatedAt).getTime();
-    if (!Number.isFinite(selectedAt)) return;
-    words.set(operation.term, 1);
-  });
-  return { sources, sourceBaseline: baseline, words, negatives };
+  return { sources, sourceBaseline: baseline, words, followedTerms, topics, negatives };
 }
 
 export function scoreRecommendation(input: {
@@ -295,14 +418,14 @@ export function scoreRecommendation(input: {
     .filter(({ matches }) => matches(normalizedText));
   const source = input.profile.sources.get(input.feedId);
   const sourceScore = sourceScoreForAffinity(source ? source.relativeAffinity : input.profile.sourceBaseline ? 1 : 0);
-  const termSignal = hits.reduce((sum, { weight }) => sum + Math.log1p(weight), 0);
-  const termScore = round(Math.min(24, 9 * Math.log1p(termSignal)));
+  const termSignal = hits.reduce((sum, { weight }) => sum + weight, 0);
+  const termScore = round(MAX_TERM_SCORE * (1 - Math.exp(-termSignal / TERM_SCORE_SCALE)));
   const publishedAt = new Date(input.publishedAt).getTime();
   const ageDays = Number.isFinite(publishedAt) ? Math.max(0, (input.now - publishedAt) / 86_400_000) : 12;
   const freshnessScore = round(Math.max(0, 12 - ageDays));
   const savedBonus = input.starred ? 8 : 0;
   const negativePenalty = 0;
-  const unclampedScore = round(40 + sourceScore + termScore + freshnessScore + savedBonus);
+  const unclampedScore = round(BASE_SCORE + sourceScore + termScore + freshnessScore + savedBonus);
   return {
     score: clampRecommendationScore(unclampedScore),
     unclampedScore,
@@ -315,6 +438,14 @@ export function scoreRecommendation(input: {
   };
 }
 
+/** Chinese terms match as substrings; other terms need word boundaries. Expects normalized text. */
+function termMatcher(term: string) {
+  if (/\p{Script=Han}/u.test(term)) return (text: string) => text.includes(term);
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, "u");
+  return (text: string) => pattern.test(text);
+}
+
 function termMatchersForProfile(profile: InterestProfile) {
   const cached = profileTermMatchers.get(profile);
   if (cached) return cached;
@@ -323,13 +454,7 @@ function termMatchersForProfile(profile: InterestProfile) {
     .filter(([, weight]) => weight > 0)
     .map(([termValue, weight]) => {
       const term = normalizeRecommendationTerm(termValue);
-      if (!term) return null;
-      if (/\p{Script=Han}/u.test(term)) {
-        return { term, weight, matches: (text: string) => text.includes(term) };
-      }
-      const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const pattern = new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, "u");
-      return { term, weight, matches: (text: string) => pattern.test(text) };
+      return term ? { term, weight, matches: termMatcher(term) } : null;
     })
     .filter((matcher): matcher is WeightedTermMatcher => matcher !== null)
     .sort((a, b) => b.weight - a.weight || a.term.localeCompare(b.term));
