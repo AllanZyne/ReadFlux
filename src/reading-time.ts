@@ -27,6 +27,59 @@ export function isReadingPointerTarget(target: EventTarget | null) {
     && (target as Element).closest(READING_POINTER_AREAS) !== null;
 }
 
+type AttentionInput = {
+  type: string;
+  clientX: number;
+  clientY: number;
+  target: EventTarget | null;
+  /** Absent on wheel events, which come from a mouse or trackpad. */
+  pointerType?: string;
+  relatedTarget?: EventTarget | null;
+};
+
+/**
+ * Decides reader attention from mouse position: the mouse must rest on the
+ * reader or the open article's list card. Touch has no hover, so only a tap
+ * moves attention, and keyboard resumption holds until the mouse next acts. A
+ * fullscreen article video holds attention wherever the pointer is.
+ */
+export function createReadingAttentionTracker(env: {
+  setAttention: (attending: boolean) => void;
+  fullscreenElement: () => Element | null;
+  elementFromPoint: (x: number, y: number) => Element | null;
+  isFrame: (target: EventTarget | null) => boolean;
+}) {
+  // The last mouse position while the mouse, not keys or touch, decides attention.
+  let mouse: { x: number; y: number } | null = null;
+  const fullscreenReading = () => isReadingPointerTarget(env.fullscreenElement());
+  const update = (target: EventTarget | null) => env.setAttention(fullscreenReading() || isReadingPointerTarget(target));
+  return {
+    /** pointermove, pointerdown, and wheel. */
+    pointer(event: AttentionInput) {
+      const fromMouse = event.pointerType === undefined || event.pointerType === "mouse";
+      if (event.type === "pointermove" && !fromMouse) return;
+      mouse = fromMouse ? { x: event.clientX, y: event.clientY } : null;
+      update(event.target);
+    },
+    /** pointerout: only leaving the window counts; moving into an embedded video frame does not. */
+    out(event: AttentionInput) {
+      if (event.pointerType !== "mouse" || event.relatedTarget || env.isFrame(event.target)) return;
+      mouse = null;
+      if (!fullscreenReading()) env.setAttention(false);
+    },
+    key() {
+      mouse = null;
+    },
+    /** Scrolling can move the open article's card out from under a resting mouse. */
+    scroll() {
+      if (mouse) update(env.elementFromPoint(mouse.x, mouse.y));
+    },
+    fullscreenChange() {
+      if (fullscreenReading()) env.setAttention(true);
+    },
+  };
+}
+
 export function readingForegroundActive(doc: Document) {
   return doc.visibilityState === "visible"
     && doc.hasFocus()

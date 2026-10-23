@@ -150,7 +150,7 @@ An event records:
   is visible and focused, no modal is open, and the mouse is over the reader
   or the open article's list card (so a short article read in full from the
   list still counts), or an article video is fullscreen. Moving the mouse
-  elsewhere or out of the window pauses
+  elsewhere, out of the window, or scrolling the card out from under it pauses
   it; opening an article, pressing a key in the reader, or scrolling it with
   Space resumes it until the mouse next moves. Touch has no hover, so only a
   tap moves attention. Events from older versions are quantized to 5-second

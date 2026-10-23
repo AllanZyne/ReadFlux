@@ -45,7 +45,7 @@ import { loadOptionalMinifluxTimeZone } from "./miniflux-timezone.mjs";
 import { articleHash, parseAppRoute, type AppRoute } from "./routes";
 import { compareSmartFeedEntries, countSmartFeedEntries, formatStoryListDate, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, nextDayBoundary, selectTimeZone, smartFeedStatusPriority, smartFeedTimeBucket, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
 import { createStoryProjector, nextStoryRenderCount, STORY_RENDER_BATCH_SIZE, storyIdsPassedByScroll } from "./story-list";
-import { advanceReadingClock, isReadingPointerTarget, READING_PERSIST_MS, READING_TICK_MS, readingForegroundActive, type ReadingClock } from "./reading-time";
+import { advanceReadingClock, createReadingAttentionTracker, READING_PERSIST_MS, READING_TICK_MS, readingForegroundActive, type ReadingClock } from "./reading-time";
 import { storyTextForEntry } from "./story-text";
 import {
   CachedFeedIcon,
@@ -2754,36 +2754,31 @@ export default function App() {
     if (!attending && elapsedSeconds > 0) void persistActive();
   }, [persistActive, syncReadingClock]);
 
-  // The mouse must rest on the reader or on the open article's list card, which
-  // also covers short articles read in full without moving into the reader.
-  // Touch has no hover, so only a tap moves attention. A fullscreen video from
-  // the article holds attention wherever the pointer is.
+  // The open article's list card counts so that short articles read in full
+  // without moving into the reader still count.
   useEffect(() => {
-    const fullscreenReading = () => isReadingPointerTarget(document.fullscreenElement);
-    const follow = (event: PointerEvent | WheelEvent) => {
-      if (event instanceof PointerEvent && event.type === "pointermove" && event.pointerType !== "mouse") return;
-      setReaderAttention(fullscreenReading() || isReadingPointerTarget(event.target));
-    };
-    const leave = (event: PointerEvent) => {
-      // Moving into an embedded video frame is not leaving the page.
-      if (event.pointerType === "mouse" && !event.relatedTarget && !(event.target instanceof HTMLIFrameElement) && !fullscreenReading()) {
-        setReaderAttention(false);
-      }
-    };
-    const fullscreenChange = () => {
-      if (fullscreenReading()) setReaderAttention(true);
-    };
-    document.addEventListener("pointermove", follow, { passive: true });
-    document.addEventListener("pointerdown", follow, { passive: true });
-    document.addEventListener("wheel", follow, { passive: true });
-    document.addEventListener("pointerout", leave);
-    document.addEventListener("fullscreenchange", fullscreenChange);
+    const tracker = createReadingAttentionTracker({
+      setAttention: setReaderAttention,
+      fullscreenElement: () => document.fullscreenElement,
+      elementFromPoint: (x, y) => document.elementFromPoint(x, y),
+      isFrame: (target) => target instanceof HTMLIFrameElement,
+    });
+    document.addEventListener("pointermove", tracker.pointer, { passive: true });
+    document.addEventListener("pointerdown", tracker.pointer, { passive: true });
+    document.addEventListener("wheel", tracker.pointer, { passive: true });
+    document.addEventListener("pointerout", tracker.out);
+    document.addEventListener("keydown", tracker.key, true);
+    // Scroll does not bubble; capture sees every scrolling panel.
+    document.addEventListener("scroll", tracker.scroll, { capture: true, passive: true });
+    document.addEventListener("fullscreenchange", tracker.fullscreenChange);
     return () => {
-      document.removeEventListener("pointermove", follow);
-      document.removeEventListener("pointerdown", follow);
-      document.removeEventListener("wheel", follow);
-      document.removeEventListener("pointerout", leave);
-      document.removeEventListener("fullscreenchange", fullscreenChange);
+      document.removeEventListener("pointermove", tracker.pointer);
+      document.removeEventListener("pointerdown", tracker.pointer);
+      document.removeEventListener("wheel", tracker.pointer);
+      document.removeEventListener("pointerout", tracker.out);
+      document.removeEventListener("keydown", tracker.key, true);
+      document.removeEventListener("scroll", tracker.scroll, true);
+      document.removeEventListener("fullscreenchange", tracker.fullscreenChange);
     };
   }, [setReaderAttention]);
 
