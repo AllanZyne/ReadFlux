@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { advanceReadingClock, MAX_READING_INTERVAL_MS, readingForegroundActive } from "../src/reading-time.ts";
+import { advanceReadingClock, isReadingPointerTarget, MAX_READING_INTERVAL_MS, READING_POINTER_AREAS, readingForegroundActive } from "../src/reading-time.ts";
 
 const appSource = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
 
@@ -54,4 +54,34 @@ test("the reader accumulates timestamps and flushes on pause, leave, and visibil
   assert.match(appSource, /addEventListener\("pagehide", flush\)/);
   assert.match(appSource, /now - lastReadingPersist\.current >= READING_PERSIST_MS/);
   assert.match(appSource, /activeEvent\.current = readingEvent;\s*syncReadingClock\(\);/);
+});
+
+test("only the reader and the open article's list card hold reading attention", () => {
+  const element = (matches) => ({ closest: (selector) => {
+    assert.equal(selector, READING_POINTER_AREAS);
+    return matches ? {} : null;
+  } });
+  assert.equal(isReadingPointerTarget(element(true)), true);
+  assert.equal(isReadingPointerTarget(element(false)), false);
+  assert.equal(isReadingPointerTarget(null), false);
+  assert.equal(isReadingPointerTarget({}), false);
+  assert.match(READING_POINTER_AREAS, /\.reader\b/);
+  assert.match(READING_POINTER_AREAS, /\.story\.selected\b/);
+});
+
+test("the mouse leaving the reading areas pauses the open article's clock", () => {
+  assert.match(appSource, /!!current && readerAttention\.current && readingForegroundActive\(document\)/);
+  assert.match(appSource, /const elapsedSeconds = syncReadingClock\(\);\s*readerAttention\.current = attending;\s*syncReadingClock\(\);/);
+  assert.match(appSource, /setReaderAttention\(fullscreenReading\(\) \|\| isReadingPointerTarget\(event\.target\)\)/);
+  assert.match(appSource, /const fullscreenReading = \(\) => isReadingPointerTarget\(document\.fullscreenElement\);/);
+  assert.match(appSource, /document\.addEventListener\("fullscreenchange", fullscreenChange\)/);
+  for (const type of ["pointermove", "pointerdown", "wheel"]) {
+    assert.match(appSource, new RegExp(`document\\.addEventListener\\("${type}", follow`));
+  }
+  assert.match(appSource, /event\.type === "pointermove" && event\.pointerType !== "mouse"\) return;/);
+  assert.match(appSource, /document\.addEventListener\("pointerout", leave\)/);
+  assert.match(appSource, /!event\.relatedTarget && !\(event\.target instanceof HTMLIFrameElement\)/);
+  assert.match(appSource, /readerAttention\.current = true;\s*activeEvent\.current = readingEvent;/);
+  assert.match(appSource, /setReaderAttention\(true\);\s*reader\.scrollBy/);
+  assert.match(appSource, /<article className="reader" onKeyDown=\{\(\) => setReaderAttention\(true\)\}>/);
 });

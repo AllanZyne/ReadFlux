@@ -45,7 +45,7 @@ import { loadOptionalMinifluxTimeZone } from "./miniflux-timezone.mjs";
 import { articleHash, parseAppRoute, type AppRoute } from "./routes";
 import { compareSmartFeedEntries, countSmartFeedEntries, formatStoryListDate, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, nextDayBoundary, selectTimeZone, smartFeedStatusPriority, smartFeedTimeBucket, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
 import { createStoryProjector, nextStoryRenderCount, STORY_RENDER_BATCH_SIZE, storyIdsPassedByScroll } from "./story-list";
-import { advanceReadingClock, READING_PERSIST_MS, READING_TICK_MS, readingForegroundActive, type ReadingClock } from "./reading-time";
+import { advanceReadingClock, isReadingPointerTarget, READING_PERSIST_MS, READING_TICK_MS, readingForegroundActive, type ReadingClock } from "./reading-time";
 import { storyTextForEntry } from "./story-text";
 import {
   CachedFeedIcon,
@@ -106,7 +106,7 @@ import {
 } from "./readflux-client";
 import { createRankingExposure, deriveInterestProfile, followedTopicTerms, isEngagedReadingEvent, RANKING_EXPOSURE_LIMIT, rankingAttribution, recommendationDiagnostics, recordBulkDismissal, recordSeenEntries, scoreRecommendation, selectedTopicTermsByEntry, selectedTopicTermsForEntry, sourceScoreForAffinity, BASE_SCORE, MAX_TERM_SCORE, TERM_SCORE_SCALE, type RecommendationScoreBreakdown, type SourceAffinity, type SourceBaseline, type TopicAffinity } from "./recommendation";
 import { buildRecommendationExport, recommendationExportFileName, withActiveReadingEvent } from "./recommendation-export";
-import { extractRecommendationCandidateTermsAsync, initializeChineseRecommendationTerms, normalizeRecommendationTerm, normalizeSelectedTopic, prioritizeFollowedTopicTerms } from "./recommendation-terms";
+import { articleTopicTerms, extractRecommendationCandidateTermsAsync, initializeChineseRecommendationTerms, normalizeRecommendationTerm, normalizeSelectedTopic, prioritizeFollowedTopicTerms } from "./recommendation-terms";
 import {
   clearWebDavEtagCache,
   synchronizeWebDav,
@@ -1972,6 +1972,7 @@ export default function App() {
   const entriesRef = useRef<Entry[]>([]);
   const activeEvent = useRef<ReadingEvent | null>(null);
   const readingClock = useRef<ReadingClock>(null);
+  const readerAttention = useRef(true);
   const lastReadingPersist = useRef(0);
   const latestExposure = useRef<RankingExposure | null>(null);
   const storyListRef = useRef<HTMLDivElement | null>(null);
@@ -2734,7 +2735,7 @@ export default function App() {
     const { clock, elapsedSeconds } = advanceReadingClock(
       readingClock.current,
       current?.id ?? null,
-      !!current && readingForegroundActive(document),
+      !!current && readerAttention.current && readingForegroundActive(document),
       performance.now(),
     );
     readingClock.current = clock;
@@ -2743,6 +2744,48 @@ export default function App() {
     }
     return elapsedSeconds;
   }, []);
+
+  /** The open article's clock runs only while the reader has the user's attention. */
+  const setReaderAttention = useCallback((attending: boolean) => {
+    if (readerAttention.current === attending) return;
+    const elapsedSeconds = syncReadingClock();
+    readerAttention.current = attending;
+    syncReadingClock();
+    if (!attending && elapsedSeconds > 0) void persistActive();
+  }, [persistActive, syncReadingClock]);
+
+  // The mouse must rest on the reader or on the open article's list card, which
+  // also covers short articles read in full without moving into the reader.
+  // Touch has no hover, so only a tap moves attention. A fullscreen video from
+  // the article holds attention wherever the pointer is.
+  useEffect(() => {
+    const fullscreenReading = () => isReadingPointerTarget(document.fullscreenElement);
+    const follow = (event: PointerEvent | WheelEvent) => {
+      if (event instanceof PointerEvent && event.type === "pointermove" && event.pointerType !== "mouse") return;
+      setReaderAttention(fullscreenReading() || isReadingPointerTarget(event.target));
+    };
+    const leave = (event: PointerEvent) => {
+      // Moving into an embedded video frame is not leaving the page.
+      if (event.pointerType === "mouse" && !event.relatedTarget && !(event.target instanceof HTMLIFrameElement) && !fullscreenReading()) {
+        setReaderAttention(false);
+      }
+    };
+    const fullscreenChange = () => {
+      if (fullscreenReading()) setReaderAttention(true);
+    };
+    document.addEventListener("pointermove", follow, { passive: true });
+    document.addEventListener("pointerdown", follow, { passive: true });
+    document.addEventListener("wheel", follow, { passive: true });
+    document.addEventListener("pointerout", leave);
+    document.addEventListener("fullscreenchange", fullscreenChange);
+    return () => {
+      document.removeEventListener("pointermove", follow);
+      document.removeEventListener("pointerdown", follow);
+      document.removeEventListener("wheel", follow);
+      document.removeEventListener("pointerout", leave);
+      document.removeEventListener("fullscreenchange", fullscreenChange);
+    };
+  }, [setReaderAttention]);
 
   const commitActiveEvent = useCallback(() => {
     syncReadingClock();
@@ -3097,10 +3140,12 @@ export default function App() {
   const extractedCandidateTerms = readerSelected && activeCandidates?.entryId === readerSelected.id
     ? activeCandidates.terms
     : selectedReadingEvent?.termExtractionVersion ? selectedReadingEvent.terms : [];
-  const selectedCandidateTerms = [
-    ...selectedTopicTerms,
-    ...extractedCandidateTerms.filter((term) => !selectedTopicTerms.has(term)),
-  ].slice(0, Math.max(5, selectedTopicTerms.size));
+  const selectedCandidateTerms = articleTopicTerms({
+    matched: readerSelected?.scoreBreakdown.matchedTerms ?? [],
+    selected: selectedTopicTerms,
+    followed: followedTopics,
+    candidates: extractedCandidateTerms,
+  });
   const selectedImageMode = readerSelected
     ? resolveImageLoadingMode(
         settings.imageLoadingPreferences,
@@ -3278,6 +3323,7 @@ export default function App() {
       listPosition: (() => { const i = visible.findIndex((s) => s.id === story.id); return i >= 0 ? i : undefined; })(),
       ...attribution,
     });
+    readerAttention.current = true;
     activeEvent.current = readingEvent;
     syncReadingClock();
     setActiveCandidates({ entryId: story.id, terms: [], loading: true });
@@ -3573,15 +3619,17 @@ export default function App() {
       if (event.key === " ") {
         event.preventDefault();
         const reader = readerRef.current;
-        if (reader && reader.scrollTop + reader.clientHeight < reader.scrollHeight - 12) reader.scrollBy({ top: reader.clientHeight * .8, behavior: "smooth" });
-        else move(1);
+        if (reader && reader.scrollTop + reader.clientHeight < reader.scrollHeight - 12) {
+          setReaderAttention(true);
+          reader.scrollBy({ top: reader.clientHeight * .8, behavior: "smooth" });
+        } else move(1);
       }
       if (event.shiftKey && event.key.toLowerCase() === "a") requestMarkVisibleRead();
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, move, selected, entries, visible, selectedId, choose, toggleRead, markAllReadOpen, requestMarkVisibleRead, settingsOpen, topicSelection]);
+  }, [config, move, selected, entries, visible, selectedId, choose, toggleRead, markAllReadOpen, requestMarkVisibleRead, settingsOpen, topicSelection, setReaderAttention]);
 
   const setFeedback = async (feedback: "helpful" | "not_interested") => {
     if (!selected) return;
@@ -3883,7 +3931,7 @@ export default function App() {
         </section>
         <div className="resizeHandle listHandle" onPointerDown={(event) => startResize("list", event)} onDoubleClick={() => setListWidth(430)} />
 
-        <article className="reader">
+        <article className="reader" onKeyDown={() => setReaderAttention(true)}>
           {selected ? <>
             <div className="readerScroll" ref={readerRef} onScroll={(event) => {
               if (!activeEvent.current) return;

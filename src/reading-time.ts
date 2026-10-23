@@ -19,6 +19,14 @@ export function advanceReadingClock(
   };
 }
 
+/** The reader panel and the open article's card in the list. */
+export const READING_POINTER_AREAS = ".reader, .story.selected";
+
+export function isReadingPointerTarget(target: EventTarget | null) {
+  return typeof (target as Element | null)?.closest === "function"
+    && (target as Element).closest(READING_POINTER_AREAS) !== null;
+}
+
 export function readingForegroundActive(doc: Document) {
   return doc.visibilityState === "visible"
     && doc.hasFocus()

@@ -24,7 +24,7 @@ import {
   sourceScoreForAffinity,
   topicWeightForAffinity,
 } from "../src/recommendation.ts";
-import { extractRecommendationCandidateTerms, normalizeSelectedTopic, prioritizeFollowedTopicTerms } from "../src/recommendation-terms.ts";
+import { articleTopicTerms, extractRecommendationCandidateTerms, normalizeSelectedTopic, prioritizeFollowedTopicTerms } from "../src/recommendation-terms.ts";
 
 const appSource = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
 const termSource = await readFile(new URL("../src/recommendation-terms.ts", import.meta.url), "utf8");
@@ -92,13 +92,29 @@ test("followed English topics require complete word boundaries", () => {
   ), ["compiler internals", "c++20", "compiler", "internals"]);
 });
 
-test("followed-topic priority is capped and deterministic", () => {
+test("followed-topic priority keeps every followed match and is deterministic", () => {
   assert.deepEqual(prioritizeFollowedTopicTerms(
     "alpha beta gamma delta epsilon zeta",
     "",
     ["zeta", "beta", "epsilon", "alpha", "delta", "gamma"],
     ["fallback"],
-  ), ["epsilon", "alpha", "delta", "gamma", "beta"]);
+  ), ["epsilon", "alpha", "delta", "gamma", "beta", "zeta"]);
+  assert.deepEqual(prioritizeFollowedTopicTerms("alpha", "", ["alpha"], ["b", "c", "d", "e", "f"]), ["alpha", "b", "c", "d", "e"]);
+});
+
+test("article byline lists ranking matches and followed topics before other candidates", () => {
+  assert.deepEqual(articleTopicTerms({
+    matched: ["m1", "m2", "m3"],
+    selected: ["s1", "m1"],
+    followed: new Set(["m1", "m2", "m3", "s1", "f1", "f2"]),
+    candidates: ["x1", "f1", "s1", "x2", "f2", "x1"],
+  }), ["m1", "m2", "m3", "s1", "f1", "f2"]);
+  assert.deepEqual(articleTopicTerms({
+    matched: ["m1"],
+    selected: [],
+    followed: new Set(["m1"]),
+    candidates: ["x1", "x2", "x3", "x4", "x5", "x6"],
+  }), ["m1", "x1", "x2", "x3", "x4"]);
 });
 
 test("manual topic selection accepts short terms and rejects sentences or noisy values", () => {
