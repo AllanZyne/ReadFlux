@@ -71,11 +71,10 @@ test("article sanitizer preserves controlled native video playback", async () =>
   assert.doesNotMatch(app, /fallbackNodes/);
 });
 
-test("native videos retain their intrinsic aspect ratio", async () => {
+test("native videos retain their intrinsic aspect ratio and stay 16:9 until it is known", async () => {
   const css = await readFile(new URL("../src/index.css", import.meta.url), "utf8");
-  assert.match(css, /\.articleContent video\{aspect-ratio:auto\}/);
+  assert.match(css, /\.articleContent video\{aspect-ratio:auto 16\/9\}/);
 });
-
 test("the first article paragraph uses the normal paragraph style", async () => {
   const css = await readFile(new URL("../src/index.css", import.meta.url), "utf8");
   assert.doesNotMatch(css, /\.body\s*>\s*p:first-child/);

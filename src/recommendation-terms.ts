@@ -206,10 +206,33 @@ export function prioritizeFollowedTopicTerms(
       || b.length - a.length
       || (a.term < b.term ? -1 : a.term > b.term ? 1 : 0))
     .map(({ term }) => term);
+  // Followed topics are never cut; other candidates fill up to the limit.
   return [
     ...followed,
     ...extractedTerms.map(normalizeRecommendationTerm).filter((term) => term && !matches.has(term)),
-  ].slice(0, limit);
+  ].slice(0, Math.max(limit, followed.length));
+}
+
+/**
+ * Byline topics for the open article: the followed topics that matched its
+ * ranking text, then topics followed here or elsewhere, then other candidates
+ * up to the limit. Topics that can affect ranking are never cut.
+ */
+export function articleTopicTerms(input: {
+  matched: Iterable<string>;
+  selected: Iterable<string>;
+  followed: ReadonlySet<string>;
+  candidates: Iterable<string>;
+  limit?: number;
+}) {
+  const priority = new Set([...input.matched, ...input.selected]);
+  const others: string[] = [];
+  for (const term of input.candidates) {
+    if (priority.has(term)) continue;
+    if (input.followed.has(term)) priority.add(term);
+    else if (!others.includes(term)) others.push(term);
+  }
+  return [...priority, ...others].slice(0, Math.max(input.limit ?? 5, priority.size));
 }
 
 export function extractRecommendationTerms(value: string, limit = 80) {

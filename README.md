@@ -119,7 +119,8 @@ foreground time, scroll depth, entry path, and explicit **Helpful** or
 **Not interested** feedback. Saved state remains managed by Miniflux.
 
 Foreground time counts only while the page is visible and focused and no
-dialog is open.
+dialog is open, and only while the mouse is over the article or its card in
+the article list, or one of the article's videos is fullscreen.
 
 **Today** ranks articles within each publication-time and read-status group
 using the feeds you read, the topics you follow, publication time, and saved
