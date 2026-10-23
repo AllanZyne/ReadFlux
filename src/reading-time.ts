@@ -44,6 +44,7 @@ type AttentionInput = {
  * fullscreen article video holds attention wherever the pointer is.
  */
 export function createReadingAttentionTracker(env: {
+  attention: () => boolean;
   setAttention: (attending: boolean) => void;
   fullscreenElement: () => Element | null;
   elementFromPoint: (x: number, y: number) => Element | null;
@@ -51,31 +52,42 @@ export function createReadingAttentionTracker(env: {
 }) {
   // The last mouse position while the mouse, not keys or touch, decides attention.
   let mouse: { x: number; y: number } | null = null;
+  // While an article video is fullscreen: the attention to restore on exit when
+  // no mouse position is known. Null outside fullscreen.
+  let beforeFullscreen: boolean | null = null;
   const fullscreenReading = () => isReadingPointerTarget(env.fullscreenElement());
-  const update = (target: EventTarget | null) => env.setAttention(fullscreenReading() || isReadingPointerTarget(target));
+  const underMouse = () => mouse && isReadingPointerTarget(env.elementFromPoint(mouse.x, mouse.y));
   return {
     /** pointermove, pointerdown, and wheel. */
     pointer(event: AttentionInput) {
       const fromMouse = event.pointerType === undefined || event.pointerType === "mouse";
       if (event.type === "pointermove" && !fromMouse) return;
       mouse = fromMouse ? { x: event.clientX, y: event.clientY } : null;
-      update(event.target);
+      env.setAttention(fullscreenReading() || isReadingPointerTarget(event.target));
     },
     /** pointerout: only leaving the window counts; moving into an embedded video frame does not. */
     out(event: AttentionInput) {
       if (event.pointerType !== "mouse" || event.relatedTarget || env.isFrame(event.target)) return;
       mouse = null;
-      if (!fullscreenReading()) env.setAttention(false);
+      if (beforeFullscreen !== null) beforeFullscreen = false;
+      else env.setAttention(false);
     },
     key() {
       mouse = null;
     },
     /** Scrolling can move the open article's card out from under a resting mouse. */
     scroll() {
-      if (mouse) update(env.elementFromPoint(mouse.x, mouse.y));
+      if (mouse && beforeFullscreen === null) env.setAttention(!!underMouse());
     },
     fullscreenChange() {
-      if (fullscreenReading()) env.setAttention(true);
+      if (fullscreenReading()) {
+        if (beforeFullscreen === null) beforeFullscreen = env.attention();
+        env.setAttention(true);
+      } else if (beforeFullscreen !== null) {
+        const restored = mouse ? !!underMouse() : beforeFullscreen;
+        beforeFullscreen = null;
+        env.setAttention(restored);
+      }
     },
   };
 }

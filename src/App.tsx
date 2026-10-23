@@ -2758,6 +2758,7 @@ export default function App() {
   // without moving into the reader still count.
   useEffect(() => {
     const tracker = createReadingAttentionTracker({
+      attention: () => readerAttention.current,
       setAttention: setReaderAttention,
       fullscreenElement: () => document.fullscreenElement,
       elementFromPoint: (x, y) => document.elementFromPoint(x, y),

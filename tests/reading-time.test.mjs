@@ -73,9 +73,10 @@ const reading = { closest: () => ({}) };
 const elsewhere = { closest: () => null };
 const frame = { closest: () => ({}), frame: true };
 
-function attentionHarness({ underMouse = () => elsewhere, fullscreen = () => null } = {}) {
+function attentionHarness({ underMouse = () => elsewhere, fullscreen = () => null, initial = true } = {}) {
   const changes = [];
   const tracker = createReadingAttentionTracker({
+    attention: () => changes.at(-1) ?? initial,
     setAttention: (attending) => changes.push(attending),
     fullscreenElement: fullscreen,
     elementFromPoint: (x, y) => underMouse(x, y),
@@ -141,18 +142,66 @@ test("a fullscreen article video holds attention wherever the pointer is", () =>
   assert.equal(last(), true);
   tracker.pointer(mouse("pointermove", elsewhere));
   assert.equal(last(), true);
+  tracker.scroll();
+  assert.equal(last(), true);
   tracker.out({ ...mouse("pointerout", elsewhere), relatedTarget: null });
   assert.equal(last(), true);
-  fullscreen = elsewhere;
-  tracker.fullscreenChange();
-  tracker.pointer(mouse("pointermove", elsewhere));
-  assert.equal(last(), false);
+});
+
+test("leaving fullscreen restores attention from the mouse, or else from before fullscreen", () => {
+  let fullscreen = null;
+  let under = elsewhere;
+  const harness = (initial) => attentionHarness({ fullscreen: () => fullscreen, underMouse: () => under, initial });
+
+  // The mouse rests outside the reading areas once the layout returns.
+  const resting = harness(true);
+  resting.tracker.pointer(mouse("pointerdown", reading));
+  fullscreen = reading;
+  resting.tracker.fullscreenChange();
+  resting.tracker.pointer(mouse("pointermove", reading));
+  fullscreen = null;
+  resting.tracker.fullscreenChange();
+  assert.equal(resting.last(), false);
+  under = reading;
+  const onReader = harness(false);
+  onReader.tracker.pointer(mouse("pointerdown", elsewhere));
+  fullscreen = reading;
+  onReader.tracker.fullscreenChange();
+  fullscreen = null;
+  onReader.tracker.fullscreenChange();
+  assert.equal(onReader.last(), true);
+
+  // Keys cleared the mouse position, so the attention from before fullscreen returns.
+  for (const before of [true, false]) {
+    const keyboard = harness(before);
+    fullscreen = reading;
+    keyboard.tracker.fullscreenChange();
+    keyboard.tracker.key();
+    fullscreen = null;
+    keyboard.tracker.fullscreenChange();
+    assert.equal(keyboard.last(), before);
+  }
+
+  // The mouse left the window during fullscreen.
+  const left = harness(true);
+  left.tracker.pointer(mouse("pointerdown", reading));
+  fullscreen = reading;
+  left.tracker.fullscreenChange();
+  left.tracker.out({ ...mouse("pointerout", reading), relatedTarget: null });
+  fullscreen = null;
+  left.tracker.fullscreenChange();
+  assert.equal(left.last(), false);
+
+  // A fullscreen change that never involved the article leaves attention alone.
+  const unrelated = harness(true);
+  unrelated.tracker.fullscreenChange();
+  assert.deepEqual(unrelated.changes, []);
 });
 
 test("the reader wires attention into the clock and resumes it from the keyboard", () => {
   assert.match(appSource, /!!current && readerAttention\.current && readingForegroundActive\(document\)/);
   assert.match(appSource, /const elapsedSeconds = syncReadingClock\(\);\s*readerAttention\.current = attending;\s*syncReadingClock\(\);/);
-  assert.match(appSource, /createReadingAttentionTracker\(\{\s*setAttention: setReaderAttention,/);
+  assert.match(appSource, /createReadingAttentionTracker\(\{\s*attention: \(\) => readerAttention\.current,\s*setAttention: setReaderAttention,/);
   for (const [type, handler] of [["pointermove", "pointer"], ["pointerdown", "pointer"], ["wheel", "pointer"], ["pointerout", "out"], ["keydown", "key"], ["scroll", "scroll"], ["fullscreenchange", "fullscreenChange"]]) {
     assert.match(appSource, new RegExp(`document\\.addEventListener\\("${type}", tracker\\.${handler}\\b`));
   }
