@@ -40,7 +40,7 @@ type AttentionInput = {
 /**
  * Decides reader attention from mouse position: the mouse must rest on the
  * reader or the open article's list card. Touch has no hover, so only a tap
- * moves attention, and keyboard resumption holds until the mouse next acts. A
+ * moves attention, and `resume` holds until the mouse next acts. A
  * fullscreen article video holds attention wherever the pointer is.
  */
 export function createReadingAttentionTracker(env: {
@@ -72,8 +72,14 @@ export function createReadingAttentionTracker(env: {
       if (beforeFullscreen !== null) beforeFullscreen = false;
       else env.setAttention(false);
     },
-    key() {
+    /**
+     * Keyboard reading or opening an article resumes attention; the mouse
+     * position stops deciding it until the mouse next acts.
+     */
+    resume() {
       mouse = null;
+      if (beforeFullscreen !== null) beforeFullscreen = true;
+      else env.setAttention(true);
     },
     /** Scrolling can move the open article's card out from under a resting mouse. */
     scroll() {
@@ -91,6 +97,8 @@ export function createReadingAttentionTracker(env: {
     },
   };
 }
+
+export type ReadingAttentionTracker = ReturnType<typeof createReadingAttentionTracker>;
 
 export function readingForegroundActive(doc: Document) {
   return doc.visibilityState === "visible"

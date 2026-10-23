@@ -149,14 +149,14 @@ An event records:
 - active foreground seconds, accumulated from real elapsed time while the page
   is visible and focused, no modal is open, and the mouse is over the reader
   or the open article's list card (so a short article read in full from the
-  list still counts), or an article video is fullscreen; leaving fullscreen
-  rechecks the element under the mouse, or restores the earlier state when
-  keys or touch were used last. Moving the mouse
-  elsewhere, out of the window, or scrolling the card out from under it pauses
-  it; opening an article, pressing a key in the reader, or scrolling it with
-  Space resumes it until the mouse next moves. Touch has no hover, so only a
-  tap moves attention. Events from older versions are quantized to 5-second
-  steps.
+  list still counts), or an article video is fullscreen. Moving the mouse
+  elsewhere, out of the window, or scrolling the card out from under it,
+  including with list keys, pauses it. Opening an article, pressing a key in
+  the reader (captured before its controls), or scrolling it with Space
+  resumes it until the mouse next acts. Leaving fullscreen rechecks the
+  element under the mouse, or restores the earlier state when no mouse
+  position is known. Touch has no hover, so only a tap moves attention.
+  Events from older versions are quantized to 5-second steps.
 - maximum scroll depth
 - the entry's Miniflux reading time, when available
 - entry path (`recommendation`, `feed`, `search`, or `saved`)

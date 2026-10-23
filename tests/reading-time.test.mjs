@@ -119,17 +119,27 @@ test("scrolling the open article's card out from under a resting mouse pauses at
   assert.equal(last(), true);
 });
 
-test("keyboard and touch attention are not overridden by scrolling", () => {
+test("keyboard resumption and touch attention are not overridden by scrolling", () => {
   const { tracker, changes } = attentionHarness();
-  tracker.pointer(mouse("pointermove", reading));
-  tracker.key();
+  tracker.pointer(mouse("pointermove", elsewhere));
+  tracker.resume();
   tracker.scroll();
-  assert.deepEqual(changes, [true]);
+  assert.deepEqual(changes, [false, true]);
   tracker.pointer({ type: "pointermove", pointerType: "touch", clientX: 0, clientY: 0, target: elsewhere });
-  assert.deepEqual(changes, [true], "touch has no hover");
+  assert.deepEqual(changes, [false, true], "touch has no hover");
   tracker.pointer({ type: "pointerdown", pointerType: "touch", clientX: 0, clientY: 0, target: reading });
   tracker.scroll();
-  assert.deepEqual(changes, [true, true]);
+  assert.deepEqual(changes, [false, true, true]);
+});
+
+test("keys that do not resume reading leave the resting mouse in charge", () => {
+  // A list card is focused and PageDown scrolls the open article's card away.
+  let under = reading;
+  const { tracker, last } = attentionHarness({ underMouse: () => under });
+  tracker.pointer(mouse("pointermove", reading));
+  under = elsewhere;
+  tracker.scroll();
+  assert.equal(last(), false);
 });
 
 test("a fullscreen article video holds attention wherever the pointer is", () => {
@@ -171,16 +181,25 @@ test("leaving fullscreen restores attention from the mouse, or else from before 
   onReader.tracker.fullscreenChange();
   assert.equal(onReader.last(), true);
 
-  // Keys cleared the mouse position, so the attention from before fullscreen returns.
+  // Without a mouse position, the attention from before fullscreen returns.
   for (const before of [true, false]) {
     const keyboard = harness(before);
     fullscreen = reading;
     keyboard.tracker.fullscreenChange();
-    keyboard.tracker.key();
     fullscreen = null;
     keyboard.tracker.fullscreenChange();
     assert.equal(keyboard.last(), before);
   }
+
+  // Keyboard reading during fullscreen resumes attention for after it.
+  const resumed = harness(true);
+  resumed.tracker.pointer(mouse("pointermove", elsewhere));
+  fullscreen = reading;
+  resumed.tracker.fullscreenChange();
+  resumed.tracker.resume();
+  fullscreen = null;
+  resumed.tracker.fullscreenChange();
+  assert.equal(resumed.last(), true);
 
   // The mouse left the window during fullscreen.
   const left = harness(true);
@@ -202,10 +221,12 @@ test("the reader wires attention into the clock and resumes it from the keyboard
   assert.match(appSource, /!!current && readerAttention\.current && readingForegroundActive\(document\)/);
   assert.match(appSource, /const elapsedSeconds = syncReadingClock\(\);\s*readerAttention\.current = attending;\s*syncReadingClock\(\);/);
   assert.match(appSource, /createReadingAttentionTracker\(\{\s*attention: \(\) => readerAttention\.current,\s*setAttention: setReaderAttention,/);
-  for (const [type, handler] of [["pointermove", "pointer"], ["pointerdown", "pointer"], ["wheel", "pointer"], ["pointerout", "out"], ["keydown", "key"], ["scroll", "scroll"], ["fullscreenchange", "fullscreenChange"]]) {
+  for (const [type, handler] of [["pointermove", "pointer"], ["pointerdown", "pointer"], ["wheel", "pointer"], ["pointerout", "out"], ["scroll", "scroll"], ["fullscreenchange", "fullscreenChange"]]) {
     assert.match(appSource, new RegExp(`document\\.addEventListener\\("${type}", tracker\\.${handler}\\b`));
   }
-  assert.match(appSource, /readerAttention\.current = true;\s*activeEvent\.current = readingEvent;/);
-  assert.match(appSource, /setReaderAttention\(true\);\s*reader\.scrollBy/);
-  assert.match(appSource, /<article className="reader" onKeyDown=\{\(\) => setReaderAttention\(true\)\}>/);
+  assert.doesNotMatch(appSource, /addEventListener\("keydown", tracker\./);
+  assert.match(appSource, /readerAttention\.current = true;\s*attentionTracker\.current\?\.resume\(\);\s*activeEvent\.current = readingEvent;/);
+  assert.match(appSource, /resumeReaderAttention\(\);\s*reader\.scrollBy/);
+  // Capture runs before reader controls such as the AI buttons stop propagation.
+  assert.match(appSource, /<article className="reader" onKeyDownCapture=\{resumeReaderAttention\}>/);
 });

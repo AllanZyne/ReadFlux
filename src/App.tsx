@@ -45,7 +45,7 @@ import { loadOptionalMinifluxTimeZone } from "./miniflux-timezone.mjs";
 import { articleHash, parseAppRoute, type AppRoute } from "./routes";
 import { compareSmartFeedEntries, countSmartFeedEntries, formatStoryListDate, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, nextDayBoundary, selectTimeZone, smartFeedStatusPriority, smartFeedTimeBucket, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
 import { createStoryProjector, nextStoryRenderCount, STORY_RENDER_BATCH_SIZE, storyIdsPassedByScroll } from "./story-list";
-import { advanceReadingClock, createReadingAttentionTracker, READING_PERSIST_MS, READING_TICK_MS, readingForegroundActive, type ReadingClock } from "./reading-time";
+import { advanceReadingClock, createReadingAttentionTracker, READING_PERSIST_MS, READING_TICK_MS, readingForegroundActive, type ReadingAttentionTracker, type ReadingClock } from "./reading-time";
 import { storyTextForEntry } from "./story-text";
 import {
   CachedFeedIcon,
@@ -1973,6 +1973,7 @@ export default function App() {
   const activeEvent = useRef<ReadingEvent | null>(null);
   const readingClock = useRef<ReadingClock>(null);
   const readerAttention = useRef(true);
+  const attentionTracker = useRef<ReadingAttentionTracker>(null);
   const lastReadingPersist = useRef(0);
   const latestExposure = useRef<RankingExposure | null>(null);
   const storyListRef = useRef<HTMLDivElement | null>(null);
@@ -2764,23 +2765,28 @@ export default function App() {
       elementFromPoint: (x, y) => document.elementFromPoint(x, y),
       isFrame: (target) => target instanceof HTMLIFrameElement,
     });
+    attentionTracker.current = tracker;
     document.addEventListener("pointermove", tracker.pointer, { passive: true });
     document.addEventListener("pointerdown", tracker.pointer, { passive: true });
     document.addEventListener("wheel", tracker.pointer, { passive: true });
     document.addEventListener("pointerout", tracker.out);
-    document.addEventListener("keydown", tracker.key, true);
     // Scroll does not bubble; capture sees every scrolling panel.
     document.addEventListener("scroll", tracker.scroll, { capture: true, passive: true });
     document.addEventListener("fullscreenchange", tracker.fullscreenChange);
     return () => {
+      attentionTracker.current = null;
       document.removeEventListener("pointermove", tracker.pointer);
       document.removeEventListener("pointerdown", tracker.pointer);
       document.removeEventListener("wheel", tracker.pointer);
       document.removeEventListener("pointerout", tracker.out);
-      document.removeEventListener("keydown", tracker.key, true);
       document.removeEventListener("scroll", tracker.scroll, true);
       document.removeEventListener("fullscreenchange", tracker.fullscreenChange);
     };
+  }, [setReaderAttention]);
+
+  const resumeReaderAttention = useCallback(() => {
+    if (attentionTracker.current) attentionTracker.current.resume();
+    else setReaderAttention(true);
   }, [setReaderAttention]);
 
   const commitActiveEvent = useCallback(() => {
@@ -3319,7 +3325,10 @@ export default function App() {
       listPosition: (() => { const i = visible.findIndex((s) => s.id === story.id); return i >= 0 ? i : undefined; })(),
       ...attribution,
     });
+    // Set directly so no time moves to the previous article; the tracker then
+    // stops following an old mouse position, as after keyboard navigation.
     readerAttention.current = true;
+    attentionTracker.current?.resume();
     activeEvent.current = readingEvent;
     syncReadingClock();
     setActiveCandidates({ entryId: story.id, terms: [], loading: true });
@@ -3616,7 +3625,7 @@ export default function App() {
         event.preventDefault();
         const reader = readerRef.current;
         if (reader && reader.scrollTop + reader.clientHeight < reader.scrollHeight - 12) {
-          setReaderAttention(true);
+          resumeReaderAttention();
           reader.scrollBy({ top: reader.clientHeight * .8, behavior: "smooth" });
         } else move(1);
       }
@@ -3625,7 +3634,7 @@ export default function App() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, move, selected, entries, visible, selectedId, choose, toggleRead, markAllReadOpen, requestMarkVisibleRead, settingsOpen, topicSelection, setReaderAttention]);
+  }, [config, move, selected, entries, visible, selectedId, choose, toggleRead, markAllReadOpen, requestMarkVisibleRead, settingsOpen, topicSelection, resumeReaderAttention]);
 
   const setFeedback = async (feedback: "helpful" | "not_interested") => {
     if (!selected) return;
@@ -3927,7 +3936,8 @@ export default function App() {
         </section>
         <div className="resizeHandle listHandle" onPointerDown={(event) => startResize("list", event)} onDoubleClick={() => setListWidth(430)} />
 
-        <article className="reader" onKeyDown={() => setReaderAttention(true)}>
+        {/* Capture, so reader controls that stop key propagation still resume reading. */}
+        <article className="reader" onKeyDownCapture={resumeReaderAttention}>
           {selected ? <>
             <div className="readerScroll" ref={readerRef} onScroll={(event) => {
               if (!activeEvent.current) return;
