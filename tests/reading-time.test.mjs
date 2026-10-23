@@ -103,6 +103,17 @@ test("the mouse decides attention by the reading area it rests on", () => {
   assert.equal(last(), false);
 });
 
+test("the mouse entering an embedded video frame from outside the reader resumes attention", () => {
+  const { tracker, last, changes } = attentionHarness();
+  tracker.pointer(mouse("pointermove", elsewhere));
+  assert.equal(last(), false);
+  tracker.pointer({ type: "pointerover", pointerType: "touch", clientX: 0, clientY: 0, target: frame });
+  assert.deepEqual(changes, [false], "touch has no hover");
+  tracker.out({ ...mouse("pointerout", elsewhere), relatedTarget: frame });
+  tracker.pointer(mouse("pointerover", frame));
+  assert.equal(last(), true);
+});
+
 test("scrolling the open article's card out from under a resting mouse pauses attention", () => {
   let under = reading;
   const { tracker, last } = attentionHarness({ underMouse: (x, y) => {
@@ -221,7 +232,7 @@ test("the reader wires attention into the clock and resumes it from the keyboard
   assert.match(appSource, /!!current && readerAttention\.current && readingForegroundActive\(document\)/);
   assert.match(appSource, /const elapsedSeconds = syncReadingClock\(\);\s*readerAttention\.current = attending;\s*syncReadingClock\(\);/);
   assert.match(appSource, /createReadingAttentionTracker\(\{\s*attention: \(\) => readerAttention\.current,\s*setAttention: setReaderAttention,/);
-  for (const [type, handler] of [["pointermove", "pointer"], ["pointerdown", "pointer"], ["wheel", "pointer"], ["pointerout", "out"], ["scroll", "scroll"], ["fullscreenchange", "fullscreenChange"]]) {
+  for (const [type, handler] of [["pointermove", "pointer"], ["pointerover", "pointer"], ["pointerdown", "pointer"], ["wheel", "pointer"], ["pointerout", "out"], ["scroll", "scroll"], ["fullscreenchange", "fullscreenChange"]]) {
     assert.match(appSource, new RegExp(`document\\.addEventListener\\("${type}", tracker\\.${handler}\\b`));
   }
   assert.doesNotMatch(appSource, /addEventListener\("keydown", tracker\./);

@@ -58,10 +58,14 @@ export function createReadingAttentionTracker(env: {
   const fullscreenReading = () => isReadingPointerTarget(env.fullscreenElement());
   const underMouse = () => mouse && isReadingPointerTarget(env.elementFromPoint(mouse.x, mouse.y));
   return {
-    /** pointermove, pointerdown, and wheel. */
+    /**
+     * pointermove, pointerover, pointerdown, and wheel. Entering an embedded
+     * video frame shows only as pointerover on the frame; later moves stay
+     * inside its document.
+     */
     pointer(event: AttentionInput) {
       const fromMouse = event.pointerType === undefined || event.pointerType === "mouse";
-      if (event.type === "pointermove" && !fromMouse) return;
+      if ((event.type === "pointermove" || event.type === "pointerover") && !fromMouse) return;
       mouse = fromMouse ? { x: event.clientX, y: event.clientY } : null;
       env.setAttention(fullscreenReading() || isReadingPointerTarget(event.target));
     },

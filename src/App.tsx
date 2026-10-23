@@ -2767,6 +2767,7 @@ export default function App() {
     });
     attentionTracker.current = tracker;
     document.addEventListener("pointermove", tracker.pointer, { passive: true });
+    document.addEventListener("pointerover", tracker.pointer, { passive: true });
     document.addEventListener("pointerdown", tracker.pointer, { passive: true });
     document.addEventListener("wheel", tracker.pointer, { passive: true });
     document.addEventListener("pointerout", tracker.out);
@@ -2776,6 +2777,7 @@ export default function App() {
     return () => {
       attentionTracker.current = null;
       document.removeEventListener("pointermove", tracker.pointer);
+      document.removeEventListener("pointerover", tracker.pointer);
       document.removeEventListener("pointerdown", tracker.pointer);
       document.removeEventListener("wheel", tracker.pointer);
       document.removeEventListener("pointerout", tracker.out);
