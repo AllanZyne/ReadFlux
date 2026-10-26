@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>ReadFlux · Read later</title>
+  <subtitle>Links saved from articles in ReadFlux. ReadFlux adds them through the Miniflux API; this file stays empty.</subtitle>
+  <id>urn:readflux:read-later</id>
+  <updated>2026-10-26T00:00:00Z</updated>
+</feed>
