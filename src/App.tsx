@@ -42,7 +42,7 @@ import {
 } from "./entry-mutation-sync";
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { loadOptionalMinifluxTimeZone } from "./miniflux-timezone.mjs";
-import { readLaterFeedFileURL, readLaterFeedIds as findReadLaterFeedIds, readLaterLinkTitle, readLaterLinkURL, ReadLaterError, readLaterSourceFromTags, readLaterSourceTag, saveReadLaterLink } from "./read-later";
+import { articleLinkHref, readLaterFeedFileURL, readLaterFeedIds as findReadLaterFeedIds, readLaterLinkTitle, readLaterLinkURL, ReadLaterError, readLaterSourceFromTags, readLaterSourceTag, saveReadLaterLink } from "./read-later";
 import { articleHash, parseAppRoute, type AppRoute } from "./routes";
 import { compareSmartFeedEntries, countSmartFeedEntries, formatStoryListDate, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, nextDayBoundary, selectTimeZone, smartFeedStatusPriority, smartFeedTimeBucket, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
 import { createStoryProjector, nextStoryRenderCount, STORY_RENDER_BATCH_SIZE, storyIdsPassedByScroll } from "./story-list";
@@ -165,7 +165,10 @@ type TopicSelection = {
 };
 /** A link clicked in the article body, as the link action menu needs it. */
 type ArticleLink = {
+  /** What the link opens, fragment included; actions and imports use it. */
   url: string;
+  /** The URL without its fragment, for matching synced entries. */
+  matchURL: string;
   text: string;
   title: string;
   imageAlt: string;
@@ -178,7 +181,9 @@ type LinkMenu = ArticleLink & {
   top: number;
   left: number;
   arrowLeft: number;
-  above: boolean;
+  /** Where the arrow points from, or null when the menu was moved off the link to fit. */
+  arrow: "above" | "below" | null;
+  maxHeight: number;
 };
 type SyncProgress = {
   kind: "full" | "incremental" | "search";
@@ -673,8 +678,9 @@ function articleLinkFromClick(event: React.MouseEvent<HTMLElement>, articleURL: 
   if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return null;
   const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
   if (!anchor || !event.currentTarget.contains(anchor) || anchor.closest(".articleImageFallback")) return null;
-  const url = readLaterLinkURL(anchor.getAttribute("href"), articleURL);
-  if (!url || url === readLaterLinkURL(articleURL)) return null;
+  const url = articleLinkHref(anchor.getAttribute("href"), articleURL);
+  const matchURL = readLaterLinkURL(url);
+  if (!url || !matchURL || matchURL === readLaterLinkURL(articleURL)) return null;
   const rects = [...anchor.getClientRects()];
   // A keyboard click has no pointer position; a wrapped link uses the line that was clicked.
   const rect = (event.detail > 0
@@ -682,6 +688,7 @@ function articleLinkFromClick(event: React.MouseEvent<HTMLElement>, articleURL: 
     : undefined) ?? rects[0] ?? anchor.getBoundingClientRect();
   return {
     url,
+    matchURL,
     text: anchor.textContent ?? "",
     title: anchor.getAttribute("title") ?? "",
     imageAlt: anchor.querySelector("img")?.getAttribute("alt") ?? "",
@@ -3718,22 +3725,31 @@ export default function App() {
     setTopicSelection(null);
     let match: LinkMenu["match"] = null;
     for (const entry of entriesRef.current) {
-      if (entry.status === "removed" || readLaterLinkURL(entry.url) !== link.url) continue;
+      if (entry.status === "removed" || readLaterLinkURL(entry.url) !== link.matchURL) continue;
       const readLater = readLaterFeedIdsRef.current.has(entry.feed_id);
       if (!match || readLater) match = { entryId: entry.id, readLater };
       if (readLater) break;
     }
-    const width = Math.min(248, window.innerWidth - 24);
-    // The address line plus one row per action.
-    const height = 44 + ((match && !match.readLater ? 2 : 1) + 2) * 36;
-    const left = Math.max(12, Math.min(window.innerWidth - width - 12, link.rect.left));
-    const above = link.rect.bottom + 10 + height > window.innerHeight - 12 && link.rect.top - 10 - height >= 12;
+    const margin = 12;
+    const gap = 10;
+    const width = Math.min(248, window.innerWidth - margin * 2);
+    // The address line plus one row per action; a short viewport scrolls the menu instead.
+    const maxHeight = window.innerHeight - margin * 2;
+    const height = Math.min(maxHeight, 44 + ((match && !match.readLater ? 2 : 1) + 2) * 36);
+    const left = Math.max(margin, Math.min(window.innerWidth - width - margin, link.rect.left));
+    const below = link.rect.bottom + gap;
+    const above = link.rect.top - gap - height;
+    const fitsBelow = below + height <= window.innerHeight - margin;
+    const fitsAbove = above >= margin;
+    // With room on neither side, keep every action on screen even if the menu covers the link.
+    const top = fitsBelow ? below : fitsAbove ? above : Math.max(margin, Math.min(window.innerHeight - margin - height, below));
     setLinkMenu({
       ...link,
       match,
-      top: above ? link.rect.top - 10 - height : link.rect.bottom + 10,
+      top,
       left,
-      above,
+      arrow: fitsBelow ? "above" : fitsAbove ? "below" : null,
+      maxHeight,
       arrowLeft: Math.max(16, Math.min(width - 16, link.rect.left + Math.min(link.rect.width, width) / 2 - left)),
     });
   }, []);
@@ -3761,7 +3777,11 @@ export default function App() {
             : index <= 0 ? buttons.length - 1 : index - 1;
       buttons[next].focus();
     };
-    const dismiss = () => closeLinkMenu(linkMenu, false);
+    const dismiss = (event: Event) => {
+      // A menu that scrolls on a short viewport must not close itself.
+      if (event.target instanceof Node && linkMenuRef.current?.contains(event.target)) return;
+      closeLinkMenu(linkMenu, false);
+    };
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("resize", dismiss);
     window.addEventListener("scroll", dismiss, true);
@@ -3782,7 +3802,7 @@ export default function App() {
   const linkTitleSource = (menu: LinkMenu) => {
     if (!translatedContent || !readerSelected) return menu;
     const original = [...new DOMParser().parseFromString(readerSelected.content, "text/html").querySelectorAll("a[href]")]
-      .find((anchor) => readLaterLinkURL(anchor.getAttribute("href"), readerSelected.url) === menu.url);
+      .find((anchor) => readLaterLinkURL(anchor.getAttribute("href"), readerSelected.url) === menu.matchURL);
     return original
       ? { text: original.textContent, title: original.getAttribute("title"), imageAlt: original.querySelector("img")?.getAttribute("alt") }
       : menu;
@@ -4277,12 +4297,13 @@ export default function App() {
               <div className="linkMenuBackdrop" role="presentation" onMouseDown={() => closeLinkMenu(linkMenu, true)} />
               <div
                 ref={linkMenuRef}
-                className={`linkMenu ${linkMenu.above ? "above" : ""}`}
+                className={`linkMenu ${linkMenu.arrow === "below" ? "above" : ""} ${linkMenu.arrow ? "" : "detached"}`}
                 role="menu"
                 aria-label={t("readLater.menuLabel", { host: linkHost(linkMenu.url) })}
                 style={{
                   top: linkMenu.top,
                   left: linkMenu.left,
+                  maxHeight: linkMenu.maxHeight,
                   "--link-menu-arrow-left": `${linkMenu.arrowLeft}px`,
                 } as CSSProperties}
               >

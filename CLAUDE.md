@@ -143,6 +143,8 @@ or reading events. The only exception is the explicit AI action below.
 - A plain click or tap on an article link opens the link menu; modified and
   middle clicks keep browser behavior. Enter on a focused link opens the menu
   and must not trigger the reader's open-original shortcut.
+- Link actions and imports keep the URL fragment, which can name a section
+  or a hash route; only matching a link to synced entries ignores it.
 - Titles come from the link: its text unless that only describes the action
   ("read more", "原文"), then its `title`, then a linked image's `alt`, then the
   host and last path segment. A translated body takes the original link text.

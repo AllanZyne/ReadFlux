@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  articleLinkHref,
   ensureReadLaterFeed,
   fallbackReadLaterTitle,
   importReadLaterEntry,
@@ -70,6 +71,35 @@ test("the Read later feed is recognized by its file name on any deployment", () 
     { id: 8, feed_url: FEED_URL },
     { id: 9 },
   ])], [8]);
+});
+
+test("link actions keep the fragment, which can name a section or a route", () => {
+  assert.equal(articleLinkHref("https://example.com/guide#installation"), "https://example.com/guide#installation");
+  assert.equal(articleLinkHref("https://example.com/#/articles/42"), "https://example.com/#/articles/42");
+  assert.equal(articleLinkHref("/notes/1#top", "https://blog.example/2026/post"), "https://blog.example/notes/1#top");
+  assert.equal(articleLinkHref("#section", "https://example.com/post"), null);
+  assert.equal(articleLinkHref("mailto:me@example.com"), null);
+  // Matching synced entries ignores the fragment.
+  assert.equal(readLaterLinkURL(articleLinkHref("https://example.com/#/articles/42")), "https://example.com/");
+
+  return readFile(new URL("../src/App.tsx", import.meta.url), "utf8").then((app) => {
+    assert.match(app, /const url = articleLinkHref\(anchor\.getAttribute\("href"\), articleURL\);\s*const matchURL = readLaterLinkURL\(url\);/);
+    assert.match(app, /readLaterLinkURL\(entry\.url\) !== link\.matchURL/);
+    assert.match(app, /window\.open\(menu\.url, "_blank", "noopener,noreferrer"\)/);
+    assert.match(app, /navigator\.clipboard\.writeText\(menu\.url\)/);
+  });
+});
+
+test("the link menu stays on screen in short viewports", async () => {
+  const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../src/index.css", import.meta.url), "utf8");
+  assert.match(app, /const maxHeight = window\.innerHeight - margin \* 2;/);
+  assert.match(app, /const top = fitsBelow \? below : fitsAbove \? above : Math\.max\(margin, Math\.min\(window\.innerHeight - margin - height, below\)\);/);
+  assert.match(app, /maxHeight: linkMenu\.maxHeight/);
+  // Scrolling inside the menu must not dismiss it.
+  assert.match(app, /if \(event\.target instanceof Node && linkMenuRef\.current\?\.contains\(event\.target\)\) return;/);
+  assert.match(styles, /\.linkMenu\.detached\{overflow-y:auto;/);
+  assert.match(styles, /\.linkMenu\.detached:before\{display:none\}/);
 });
 
 test("article links resolve against the article and drop their fragment", () => {

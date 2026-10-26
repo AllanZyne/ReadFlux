@@ -73,11 +73,11 @@ export function readLaterFeedIds(feeds: readonly MinifluxFeed[]) {
 }
 
 /**
- * The absolute http(s) URL a link opens, without its fragment, or null for
- * in-page anchors and other schemes. Relative links resolve against the
- * article's own URL, not ReadFlux's page.
+ * The absolute http(s) URL a link opens, or null for in-page anchors and
+ * other schemes. Relative links resolve against the article's own URL, not
+ * ReadFlux's page. The fragment stays: it can name a section or a route.
  */
-export function readLaterLinkURL(href: string | null | undefined, baseURL?: string) {
+export function articleLinkHref(href: string | null | undefined, baseURL?: string) {
   const value = href?.trim();
   if (!value || value.startsWith("#")) return null;
   let url: URL;
@@ -90,7 +90,14 @@ export function readLaterLinkURL(href: string | null | undefined, baseURL?: stri
       return null;
     }
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+}
+
+/** The link's URL without its fragment, for matching it to synced entries. */
+export function readLaterLinkURL(href: string | null | undefined, baseURL?: string) {
+  const resolved = articleLinkHref(href, baseURL);
+  if (!resolved) return null;
+  const url = new URL(resolved);
   url.hash = "";
   return url.href;
 }
