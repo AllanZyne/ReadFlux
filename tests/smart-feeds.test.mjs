@@ -288,8 +288,40 @@ test("smart feed counts cover all active entries and persisted updates", () => {
   assert.deepEqual(countSmartFeedEntries(entries, labels), {
     unreadCount: 2,
     todayCount: 3,
+    todayUnreadCount: 2,
     allCount: 3,
     updatedCount: 1,
     savedCount: 1,
+    laterCount: 0,
+    laterUnreadCount: 0,
+  });
+});
+
+test("links saved for later form their own smart feed outside Today", () => {
+  const readLaterFeedIds = new Set([9]);
+  const saved = entry({ id: 5, feed_id: 9 });
+  const savedRead = entry({ id: 6, feed_id: 9, status: "read", starred: true });
+  const subscribed = entry({ id: 7, feed_id: 1 });
+
+  assert.equal(isEntryInSmartFeed(saved, "later", undefined, readLaterFeedIds), true);
+  assert.equal(isEntryInSmartFeed(savedRead, "later", undefined, readLaterFeedIds), true);
+  assert.equal(isEntryInSmartFeed(subscribed, "later", undefined, readLaterFeedIds), false);
+  assert.equal(isEntryInSmartFeed({ ...saved, status: "removed" }, "later", undefined, readLaterFeedIds), false);
+  assert.equal(isEntryInSmartFeed(saved, "today", undefined, readLaterFeedIds), false);
+  assert.equal(isEntryInSmartFeed(subscribed, "today", undefined, readLaterFeedIds), true);
+  assert.equal(isEntryInSmartFeed(saved, "all", undefined, readLaterFeedIds), true);
+  assert.equal(isEntryInSmartFeed(savedRead, "saved", undefined, readLaterFeedIds), true);
+  // Without a Read later feed nothing is saved for later.
+  assert.equal(isEntryInSmartFeed(saved, "later"), false);
+
+  assert.deepEqual(countSmartFeedEntries([saved, savedRead, subscribed], new Map(), readLaterFeedIds), {
+    unreadCount: 2,
+    todayCount: 1,
+    todayUnreadCount: 1,
+    allCount: 3,
+    updatedCount: 0,
+    savedCount: 1,
+    laterCount: 2,
+    laterUnreadCount: 1,
   });
 });

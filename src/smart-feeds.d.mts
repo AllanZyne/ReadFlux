@@ -1,7 +1,8 @@
-export type SmartFeedMode = "today" | "all" | "updated" | "saved";
+export type SmartFeedMode = "today" | "all" | "updated" | "saved" | "later";
 
 export type SmartFeedEntry = {
   id: number;
+  feed_id?: number;
   status: "read" | "unread" | "removed";
   starred: boolean;
   published_at: string;
@@ -13,9 +14,12 @@ export type SortableSmartFeedEntry = SmartFeedEntry & { score: number };
 export type SmartFeedCounts = {
   unreadCount: number;
   todayCount: number;
+  todayUnreadCount: number;
   allCount: number;
   updatedCount: number;
   savedCount: number;
+  laterCount: number;
+  laterUnreadCount: number;
 };
 
 export type TimeZoneSelection = {
@@ -49,6 +53,7 @@ export function isEntryInSmartFeed(
   entry: SmartFeedEntry,
   mode: SmartFeedMode,
   labels?: Map<number, string[]>,
+  readLaterFeedIds?: ReadonlySet<number>,
 ): boolean;
 export function compareSmartFeedEntries(
   a: SortableSmartFeedEntry & { id: number },
@@ -68,4 +73,5 @@ export function smartFeedStatusPriority(
 export function countSmartFeedEntries(
   entries: SmartFeedEntry[],
   labels?: Map<number, string[]>,
+  readLaterFeedIds?: ReadonlySet<number>,
 ): SmartFeedCounts;

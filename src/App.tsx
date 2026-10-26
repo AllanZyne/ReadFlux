@@ -42,6 +42,7 @@ import {
 } from "./entry-mutation-sync";
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { loadOptionalMinifluxTimeZone } from "./miniflux-timezone.mjs";
+import { readLaterFeedFileURL, readLaterFeedIds as findReadLaterFeedIds, readLaterLinkTitle, readLaterLinkURL, ReadLaterError, readLaterSourceFromTags, readLaterSourceTag, saveReadLaterLink } from "./read-later";
 import { articleHash, parseAppRoute, type AppRoute } from "./routes";
 import { compareSmartFeedEntries, countSmartFeedEntries, formatStoryListDate, formatZonedDateTime, formatZonedTime, isEntryInSmartFeed, nextDayBoundary, selectTimeZone, smartFeedStatusPriority, smartFeedTimeBucket, toZonedDateTimeInput, zonedDateTimeInputToIso } from "./smart-feeds.mjs";
 import { createStoryProjector, nextStoryRenderCount, STORY_RENDER_BATCH_SIZE, storyIdsPassedByScroll } from "./story-list";
@@ -118,6 +119,7 @@ import {
 type Feed = {
   id: number;
   title: string;
+  feed_url?: string;
   category?: { id: number; title: string };
   icon?: { feed_id: number; icon_id: number } | null;
 };
@@ -153,13 +155,30 @@ type BaseStory = Entry & Omit<Story, keyof Entry | "score" | "scoreBreakdown"> &
   recommendationText: string;
 };
 type EntryPage = { total: number; entries: Entry[] };
-type ListMode = "today" | "all" | "updated" | "saved";
+type ListMode = "today" | "all" | "updated" | "saved" | "later";
 type Topic = { kind: "category" | "feed"; id: number } | null;
 type TopicSelection = {
   term: string;
   top: number;
   left: number;
   arrowLeft: number;
+};
+/** A link clicked in the article body, as the link action menu needs it. */
+type ArticleLink = {
+  url: string;
+  text: string;
+  title: string;
+  imageAlt: string;
+  anchor: HTMLAnchorElement;
+  rect: DOMRect;
+};
+type LinkMenu = ArticleLink & {
+  /** A synced entry that already has this URL, preferring one saved for later. */
+  match: { entryId: number; readLater: boolean } | null;
+  top: number;
+  left: number;
+  arrowLeft: number;
+  above: boolean;
 };
 type SyncProgress = {
   kind: "full" | "incremental" | "search";
@@ -186,6 +205,15 @@ function errorDetails(cause: unknown, fallback: string): LocalizedError {
 function errorMessage(cause: unknown, t: TFunction, fallback: string) {
   const error = errorDetails(cause, fallback);
   return t(error.key, { status: error.status });
+}
+
+function readLaterErrorMessage(cause: unknown, t: TFunction) {
+  if (cause instanceof ReadLaterError) {
+    return cause.kind === "unsupported"
+      ? t("readLater.unsupported", { version: cause.version ?? "?" })
+      : t("readLater.feedUnavailable", { url: cause.feedURL ?? "" });
+  }
+  return errorMessage(cause, t, "readLater.failed");
 }
 
 function aiErrorMessage(cause: unknown, t: TFunction) {
@@ -391,6 +419,8 @@ function imageHost(url: string) {
     return "";
   }
 }
+
+const linkHost = (url: string) => imageHost(url).replace(/^www\./, "");
 
 function handleArticleImageLoad(event: React.SyntheticEvent<HTMLDivElement>) {
   const image = event.target;
@@ -634,17 +664,47 @@ function ArticleTopics({
   </span>;
 }
 
+/**
+ * A plain click or tap on an article link opens the link menu. Modified and
+ * middle clicks keep the browser's own behavior, as do links to the article
+ * itself and links that are not http(s).
+ */
+function articleLinkFromClick(event: React.MouseEvent<HTMLElement>, articleURL: string): ArticleLink | null {
+  if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return null;
+  const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
+  if (!anchor || !event.currentTarget.contains(anchor) || anchor.closest(".articleImageFallback")) return null;
+  const url = readLaterLinkURL(anchor.getAttribute("href"), articleURL);
+  if (!url || url === readLaterLinkURL(articleURL)) return null;
+  const rects = [...anchor.getClientRects()];
+  // A keyboard click has no pointer position; a wrapped link uses the line that was clicked.
+  const rect = (event.detail > 0
+    ? rects.find((box) => event.clientX >= box.left && event.clientX <= box.right && event.clientY >= box.top && event.clientY <= box.bottom)
+    : undefined) ?? rects[0] ?? anchor.getBoundingClientRect();
+  return {
+    url,
+    text: anchor.textContent ?? "",
+    title: anchor.getAttribute("title") ?? "",
+    imageAlt: anchor.querySelector("img")?.getAttribute("alt") ?? "",
+    anchor,
+    rect,
+  };
+}
+
 const ArticleBody = memo(function ArticleBody({
   content,
+  articleURL,
   minifluxURL,
   imageMode,
   onTextSelection,
+  onLinkClick,
   t,
 }: {
   content: string;
+  articleURL: string;
   minifluxURL: string;
   imageMode: ImageLoadingMode;
   onTextSelection: (text: string, rect: DOMRect) => void;
+  onLinkClick: (link: ArticleLink) => void;
   t: TFunction;
 }) {
   const markup = useMemo(() => ({
@@ -666,7 +726,11 @@ const ArticleBody = memo(function ArticleBody({
     onLoadCapture={handleArticleImageLoad}
     onErrorCapture={(event) => handleArticleImageError(event, t)}
     onClick={(event) => {
-      if (!retryArticleImage(event.target)) toggleLivePhoto(event.target);
+      if (retryArticleImage(event.target) || toggleLivePhoto(event.target)) return;
+      const link = articleLinkFromClick(event, articleURL);
+      if (!link) return;
+      event.preventDefault();
+      onLinkClick(link);
     }}
     onMouseUp={(event) => captureTextSelection(event.currentTarget, onTextSelection)}
     onTouchEnd={(event) => captureTextSelection(event.currentTarget, onTextSelection)}
@@ -675,8 +739,10 @@ const ArticleBody = memo(function ArticleBody({
     }}
     onKeyDown={(event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
-      // Keep the placeholder's own buttons away from the reader shortcuts.
+      // Keep the placeholder's own buttons and the links away from the reader
+      // shortcuts; Enter on a link opens its menu, not the original article.
       if (event.target instanceof Element && event.target.closest(".articleImageFallback")) event.stopPropagation();
+      else if (event.key === "Enter" && event.target instanceof Element && event.target.closest("a[href]")) event.stopPropagation();
       else if (toggleLivePhoto(event.target)) event.preventDefault();
     }}
     dangerouslySetInnerHTML={markup}
@@ -840,8 +906,6 @@ function RecommendationBreakdown({
   topics,
   now,
   locale,
-  feedback,
-  onFeedback,
   t,
 }: {
   story: Story;
@@ -853,8 +917,6 @@ function RecommendationBreakdown({
   topics: ReadonlyMap<string, TopicAffinity>;
   now: number;
   locale: string;
-  feedback?: ReadingEvent["feedback"];
-  onFeedback: (feedback: "helpful" | "not_interested") => void;
   t: TFunction;
 }) {
   const breakdown = story.scoreBreakdown;
@@ -922,21 +984,6 @@ function RecommendationBreakdown({
     },
   ];
   return <>
-    <div className="feedbackEnd">
-      <div
-        className="feedbackPill"
-        role="group"
-        aria-label={t("recommendation.feedback")}
-        onKeyDown={(event) => {
-          // Keep Enter and Space on these buttons away from the reader shortcuts.
-          if ((event.key === "Enter" || event.key === " ") && event.target instanceof HTMLButtonElement) event.stopPropagation();
-        }}
-      >
-        <button type="button" title={t("recommendation.helpful")} aria-label={t("recommendation.helpful")} aria-pressed={feedback === "helpful"} onClick={() => onFeedback("helpful")}><i className={`bi ${feedback === "helpful" ? "bi-hand-thumbs-up-fill" : "bi-hand-thumbs-up"}`} aria-hidden="true" /></button>
-        <i className="feedbackPillDivider" aria-hidden="true" />
-        <button type="button" title={t("recommendation.notInterested")} aria-label={t("recommendation.notInterested")} aria-pressed={feedback === "not_interested"} onClick={() => onFeedback("not_interested")}><i className={`bi ${feedback === "not_interested" ? "bi-hand-thumbs-down-fill" : "bi-hand-thumbs-down"}`} aria-hidden="true" /></button>
-      </div>
-    </div>
     <section className="feedback" aria-labelledby="recommendation-reason-title">
       <header>
         <h3 id="recommendation-reason-title">{t("recommendation.reason")}</h3>
@@ -962,6 +1009,58 @@ function RecommendationBreakdown({
       </table>
     </section>
   </>;
+}
+
+/**
+ * Article end for a saved link: when and where it was saved, and the choice
+ * to keep it or put it back. The state follows the live entry, so undo is the
+ * opposite toggle.
+ */
+function ReadLaterDetails({
+  story,
+  timeZone,
+  onToggleStarred,
+  onToggleRead,
+  t,
+}: {
+  story: Story;
+  timeZone: string;
+  onToggleStarred: () => void;
+  onToggleRead: () => void;
+  t: TFunction;
+}) {
+  const savedFrom = readLaterSourceFromTags(story.tags);
+  const savedAt = formatZonedDateTime(story.published_at, timeZone);
+  const state = story.starred ? "saved" : story.status === "unread" ? "returned" : "open";
+  return <section
+    className="readLaterDetails"
+    aria-labelledby="read-later-details-title"
+    onKeyDown={(event) => {
+      // Keep Enter and Space on these buttons away from the reader shortcuts.
+      if ((event.key === "Enter" || event.key === " ") && event.target instanceof HTMLButtonElement) event.stopPropagation();
+    }}
+  >
+    <h3 id="read-later-details-title"><i className="bi bi-bookmark-fill" aria-hidden="true" />{t("sidebar.later")}</h3>
+    <dl>
+      <dt>{t("readLater.savedAtLabel")}</dt>
+      <dd>{savedFrom ? t("readLater.savedFrom", { time: savedAt, source: savedFrom }) : savedAt}</dd>
+      <dt>{t("readLater.sourceLabel")}</dt>
+      <dd>{story.source} · {t("feed.minutes", { count: story.reading_time || 1 })}</dd>
+      <dt>{t("readLater.nextLabel")}</dt>
+      <dd>{t(state === "saved" ? "readLater.nextSaved" : state === "returned" ? "readLater.nextReturned" : "readLater.nextOpen")}</dd>
+    </dl>
+    <div className="readLaterActions">
+      {state === "open"
+        ? <>
+          <button type="button" className="primary" onClick={onToggleStarred}><i className="bi bi-star" aria-hidden="true" />{t("reader.save")}</button>
+          <button type="button" onClick={onToggleRead}><i className="bi bi-arrow-counterclockwise" aria-hidden="true" />{t("readLater.putBack")}</button>
+        </>
+        : <>
+          <span><i className={`bi ${state === "saved" ? "bi-star-fill" : "bi-bookmark-fill"}`} aria-hidden="true" />{t(state === "saved" ? "readLater.savedState" : "readLater.returnedState")}</span>
+          <button type="button" className="link" onClick={state === "saved" ? onToggleStarred : onToggleRead}>{t("readLater.undo")}</button>
+        </>}
+    </div>
+  </section>;
 }
 
 type AiSettingsStatus = { tone: "pending" | "success" | "error"; message: string } | null;
@@ -1421,8 +1520,6 @@ function SettingsDialog({
   const averageDepth = events.length
     ? Math.round(events.reduce((sum, event) => sum + event.scrollDepth, 0) / events.length * 100)
     : 0;
-  const helpfulCount = events.filter((event) => event.feedback === "helpful").length;
-  const negativeCount = events.filter((event) => event.feedback === "not_interested").length;
   const sourceName = new Map<number, string>();
   events.forEach((event) => sourceName.set(event.feedId, event.source));
   feeds.forEach((feed) => sourceName.set(feed.id, feed.title));
@@ -1743,8 +1840,6 @@ function SettingsDialog({
               <div><strong>{validEvents.length}</strong><span>{t("recommendation.validEvents")}</span></div>
               <div><strong>{t("common.secondsShort", { count: averageSeconds })}</strong><span>{t("recommendation.averageForeground")}</span></div>
               <div><strong>{t("common.percent", { count: averageDepth })}</strong><span>{t("recommendation.averageDepth")}</span></div>
-              <div><strong>{helpfulCount}</strong><span>{t("recommendation.helpfulQuoted")}</span></div>
-              <div><strong>{negativeCount}</strong><span>{t("recommendation.notInterestedQuoted")}</span></div>
               <div><strong>{starredCount}</strong><span>{t("recommendation.saved")}</span></div>
               <div><strong>{diagnostics.exposureCount}</strong><span>{t("recommendation.exposures")}</span></div>
               <div><strong>{diagnostics.displayedCount}</strong><span>{t("recommendation.impressions")}</span></div>
@@ -1803,7 +1898,6 @@ function SettingsDialog({
                 <label><span>{t("recommendation.foregroundSeconds")}</span><input type="number" min="0" value={draft.activeSeconds} onChange={(event) => setDraft({ ...draft, activeSeconds: Number(event.target.value) })} /></label>
                 <label><span>{t("recommendation.scrollDepth")}</span><input type="number" min="0" max="1" step=".01" value={draft.scrollDepth} onChange={(event) => setDraft({ ...draft, scrollDepth: Number(event.target.value) })} /></label>
                 <label><span>{t("recommendation.origin")}</span><select value={draft.origin} onChange={(event) => setDraft({ ...draft, origin: event.target.value as ReadingEvent["origin"] })}><option value="recommendation">{t("recommendation.originRecommendation")}</option><option value="feed">{t("recommendation.originFeed")}</option><option value="search">{t("recommendation.originSearch")}</option><option value="saved">{t("recommendation.originSaved")}</option></select></label>
-                <label><span>{t("recommendation.feedback")}</span><select value={draft.feedback ?? ""} onChange={(event) => setDraft({ ...draft, feedback: event.target.value ? event.target.value as ReadingEvent["feedback"] : undefined })}><option value="">{t("common.none")}</option><option value="helpful">{t("recommendation.helpful")}</option><option value="not_interested">{t("recommendation.notInterested")}</option></select></label>
                 <label className="wide"><span>{t("recommendation.keywords")}</span><input value={draft.terms.join(", ")} onChange={(event) => setDraft({ ...draft, terms: event.target.value.split(",") })} /></label>
               </div>
               <footer><button onClick={() => setDraft(null)}>{t("common.cancel")}</button><button className="primaryAction" onClick={() => void saveEvent()}>{t("recommendation.saveRecord")}</button></footer>
@@ -1816,7 +1910,7 @@ function SettingsDialog({
                 {shownEvents.length ? shownEvents.map((event) => <div className="eventRow" key={`${event.remoteClientId ?? "local"}:${event.id}`}>
                   <span><strong>{event.title}</strong><small>{event.source} · {formatZonedDateTime(event.openedAt, timeZone)}{event.remoteClientName ? ` · ${event.remoteClientName}` : ""}</small></span>
                   <span><b>{t("common.secondsShort", { count: Math.round(event.activeSeconds) })}</b><small>{t("recommendation.scrollSummary", { depth: Math.round(event.scrollDepth * 100), origin: t(`recommendation.origin${event.origin[0].toUpperCase()}${event.origin.slice(1)}`) })}</small></span>
-                  <span><b>{event.feedback === "helpful" ? t("recommendation.helpful") : event.feedback === "not_interested" ? t("recommendation.notInterested") : t("recommendation.implicit")}</b><small>{[...(selectedTermsByEntry.get(event.entryId) ?? [])].join(" · ") || t("recommendation.noSelectedTopics")}</small><small>{t("recommendation.candidateSummary", { terms: event.terms.slice(0, 5).join(" · ") || t("recommendation.noTerms") })}</small></span>
+                  <span><b>{t(isEngagedReadingEvent(event) ? "recommendation.engagedRead" : "recommendation.briefRead")}</b><small>{[...(selectedTermsByEntry.get(event.entryId) ?? [])].join(" · ") || t("recommendation.noSelectedTopics")}</small><small>{t("recommendation.candidateSummary", { terms: event.terms.slice(0, 5).join(" · ") || t("recommendation.noTerms") })}</small></span>
                   <span>{event.remoteClientId
                     ? <small>{t("webdav.remoteReadOnly")}</small>
                     : <><button onClick={() => setDraft({ ...event })}>{t("common.edit")}</button><button className="danger" onClick={() => void removeEvent(event)}>{t("common.delete")}</button></>}</span>
@@ -1922,6 +2016,8 @@ export default function App() {
     all: false,
     updated: false,
     saved: false,
+    // Read later is a queue: an opened link is done unless it was saved.
+    later: true,
   });
   const hideRead = mode !== "updated" && hideReadByMode[mode];
   const [listReadSnapshot, setListReadSnapshot] = useState<Map<number, Entry["status"]>>(new Map());
@@ -1929,11 +2025,12 @@ export default function App() {
     statuses: Map<number, Entry["status"]>;
     labels: Map<number, string[]>;
   }>(() => ({ statuses: new Map(), labels: new Map() }));
-  const [feedbackChoice, setFeedbackChoice] = useState<{ entryId: number; feedback: NonNullable<ReadingEvent["feedback"]> } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [markAllReadOpen, setMarkAllReadOpen] = useState(false);
   const [markAllReadPosition, setMarkAllReadPosition] = useState({ top: 0, left: 0, arrowLeft: 0 });
   const [topicSelection, setTopicSelection] = useState<TopicSelection | null>(null);
+  const [linkMenu, setLinkMenu] = useState<LinkMenu | null>(null);
+  const [readLaterSaving, setReadLaterSaving] = useState<Set<string>>(() => new Set());
   const [sidebarWidth, setSidebarWidth] = useState(250);
   const [listWidth, setListWidth] = useState(430);
   const [subscriptionsCollapsed, setSubscriptionsCollapsed] = useState(
@@ -1981,6 +2078,7 @@ export default function App() {
   const markAllReadButtonRef = useRef<HTMLButtonElement | null>(null);
   const markAllReadConfirmRef = useRef<HTMLButtonElement | null>(null);
   const topicSelectionConfirmRef = useRef<HTMLButtonElement | null>(null);
+  const linkMenuRef = useRef<HTMLDivElement | null>(null);
   const autoReadFrame = useRef<number | undefined>(undefined);
   const pendingSeenIds = useRef(new Set<number>());
   const seenFlushTimer = useRef<number | undefined>(undefined);
@@ -2010,6 +2108,10 @@ export default function App() {
   const capturedVisibleOrder = useRef<number[] | null>(null);
   const recommendationEvents = useMemo(() => [...events, ...remoteEvents], [events, remoteEvents]);
   const recommendationExposures = useMemo(() => [...exposures, ...remoteExposures], [exposures, remoteExposures]);
+  const readLaterFeedIds = useMemo(() => findReadLaterFeedIds(feeds), [feeds]);
+  const readLaterFeedIdsRef = useRef(readLaterFeedIds);
+  // Read later ignores the source scope but remembers it for the other smart feeds.
+  const scopedTopic = mode === "later" ? null : topic;
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -2147,6 +2249,7 @@ export default function App() {
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { topicRef.current = topic; }, [topic]);
   useEffect(() => { feedsRef.current = feeds; }, [feeds]);
+  useEffect(() => { readLaterFeedIdsRef.current = readLaterFeedIds; }, [readLaterFeedIds]);
   useEffect(() => { hideReadRef.current = hideRead; }, [hideRead]);
   useEffect(() => { queryRef.current = query; }, [query]);
   useEffect(() => { routeRef.current = route; }, [route]);
@@ -2277,11 +2380,11 @@ export default function App() {
     }
     if (!queryRef.current.trim()) {
       const currentMode = modeRef.current;
-      const currentTopic = topicRef.current;
+      const currentTopic = currentMode === "later" ? null : topicRef.current;
       const currentHideRead = hideReadRef.current && currentMode !== "updated";
       const matchesCurrentMode = (entry: Entry) => (
         currentMode === "updated" && entry.status === "read" && updatedIds.has(entry.id)
-      ) || isEntryInSmartFeed(entry, currentMode, entryLabels);
+      ) || isEntryInSmartFeed(entry, currentMode, entryLabels, readLaterFeedIdsRef.current);
       const relevant = protectedBatch.filter((entry) => {
         if (listSnapshotIds.current.has(entry.id)) return false;
         if (!matchesCurrentMode(entry)) return false;
@@ -2320,6 +2423,25 @@ export default function App() {
     }
     await putCachedEntries(mergedBatch);
   }, [config, entryLabels, replaceEntries]);
+
+  const refreshFeedCatalog = useCallback(async (activeConfig: ConnectionConfig) => {
+    const [feedData, categoryData] = await Promise.all([
+      minifluxFetch<Feed[]>(activeConfig, "/v1/feeds"),
+      minifluxFetch<Category[]>(activeConfig, "/v1/categories"),
+    ]);
+    const nextFeeds = feedData ?? [];
+    const nextCategories = categoryData ?? [];
+    setFeeds((current) => sameCatalogList(current, nextFeeds) ? current : nextFeeds);
+    setCategories((current) => sameCatalogList(current, nextCategories) ? current : nextCategories);
+    // Entries merged before the next render must already see a new Read later feed.
+    readLaterFeedIdsRef.current = findReadLaterFeedIds(nextFeeds);
+    // Persist before continuing so a following load reads the catalog
+    // instead of racing this write and refetching the same metadata.
+    await saveCachedFeedCatalog<Feed, Category>({
+      feeds: nextFeeds,
+      categories: nextCategories,
+    }).catch(() => undefined);
+  }, []);
 
   const load = useCallback(async (options?: EntrySyncOptions) => {
     if (!config) return false;
@@ -2391,20 +2513,7 @@ export default function App() {
       // Without a local catalog there is nothing to render the sidebar from, so
       // that first fetch still happens regardless of what is due.
       if (syncMode || !cachedCatalog) {
-        const [feedData, categoryData] = await Promise.all([
-          minifluxFetch<Feed[]>(config, "/v1/feeds"),
-          minifluxFetch<Category[]>(config, "/v1/categories"),
-        ]);
-        const nextFeeds = feedData ?? [];
-        const nextCategories = categoryData ?? [];
-        setFeeds((current) => sameCatalogList(current, nextFeeds) ? current : nextFeeds);
-        setCategories((current) => sameCatalogList(current, nextCategories) ? current : nextCategories);
-        // Persist before continuing so a following load reads the catalog
-        // instead of racing this write and refetching the same metadata.
-        await saveCachedFeedCatalog<Feed, Category>({
-          feeds: nextFeeds,
-          categories: nextCategories,
-        }).catch(() => undefined);
+        await refreshFeedCatalog(config);
         // The timezone request never blocks the sync. The revision guard drops
         // stale responses before they update the connection record.
         const revision = ++catalogRevision.current;
@@ -2532,7 +2641,7 @@ export default function App() {
         queueMicrotask(() => void loadRef.current({ background: true, mode: queuedMode }));
       }
     }
-  }, [captureSourceSnapshot, config, flushPendingEntryMutations, mergeEntryBatch, replaceEntries, settings.fullSyncIntervalMinutes, settings.incrementalSyncIntervalMinutes]);
+  }, [captureSourceSnapshot, config, flushPendingEntryMutations, mergeEntryBatch, refreshFeedCatalog, replaceEntries, settings.fullSyncIntervalMinutes, settings.incrementalSyncIntervalMinutes]);
   useEffect(() => {
     loadRef.current = load;
   }, [load]);
@@ -2677,8 +2786,10 @@ export default function App() {
 
   const projectStories = useMemo(() => createStoryProjector<Entry, Story>((entry) => {
     const feed = entry.feed ?? feedMap.get(entry.feed_id);
-    const source = feed?.title ?? t("feed.unknownSource");
-    const category = feed?.category?.title ?? t("settings.uncategorized");
+    // Saved links share one feed, so their source is the site they came from.
+    const readLater = readLaterFeedIds.has(entry.feed_id);
+    const source = (readLater ? linkHost(entry.url) : feed?.title) || t("feed.unknownSource");
+    const category = readLater ? t("sidebar.later") : feed?.category?.title ?? t("settings.uncategorized");
     const text = storyTextForEntry(entry);
     const story: BaseStory = {
       ...entry,
@@ -2702,8 +2813,10 @@ export default function App() {
       score: scoreBreakdown.score,
       scoreBreakdown,
     };
-  }), [feedMap, interest, recommendationSnapshot, t]);
+  }), [feedMap, interest, readLaterFeedIds, recommendationSnapshot, t]);
   const stories = useMemo<Story[]>(() => projectStories(entries), [entries, projectStories]);
+  // The Read later feed's icon would label every saved link with one site.
+  const storyIcon = (feedId: number) => readLaterFeedIds.has(feedId) ? undefined : feedIcons.get(feedId);
 
   const exportRecommendationData = () => {
     const exportedAt = new Date().toISOString();
@@ -2855,10 +2968,11 @@ export default function App() {
         { ...story, status: statusWhenListed },
         mode,
         entryLabels,
+        readLaterFeedIds,
       )) return false;
       if (mode !== "updated" && hideRead && statusWhenListed === "read") return false;
-      if (topic?.kind === "category" && story.categoryId !== topic.id) return false;
-      if (topic?.kind === "feed" && story.feed_id !== topic.id) return false;
+      if (scopedTopic?.kind === "category" && story.categoryId !== scopedTopic.id) return false;
+      if (scopedTopic?.kind === "feed" && story.feed_id !== scopedTopic.id) return false;
       if (!hasQuery) return true;
       return `${story.title} ${story.summary} ${story.source} ${story.author ?? ""}`.toLowerCase().includes(needle);
     });
@@ -2905,14 +3019,15 @@ export default function App() {
         { ...story, status: statusWhenListed },
         mode,
         entryLabels,
+        readLaterFeedIds,
       )) return [];
       if (mode !== "updated" && hideRead && statusWhenListed === "read") return [];
-      if (topic?.kind === "category" && story.categoryId !== topic.id) return [];
-      if (topic?.kind === "feed" && story.feed_id !== topic.id) return [];
+      if (scopedTopic?.kind === "category" && story.categoryId !== scopedTopic.id) return [];
+      if (scopedTopic?.kind === "feed" && story.feed_id !== scopedTopic.id) return [];
       if (hasQuery && !`${story.title} ${story.summary} ${story.source} ${story.author ?? ""}`.toLowerCase().includes(needle)) return [];
       return [story];
     });
-  }, [stories, mode, topic, query, hideRead, listReadSnapshot, frozenVisibleOrder, entryLabels]);
+  }, [stories, mode, scopedTopic, query, hideRead, listReadSnapshot, frozenVisibleOrder, entryLabels, readLaterFeedIds]);
   const visibleMarkReadCount = useMemo(
     () => visible.reduce((count, story) => count + (
       story.status === "unread" || entryLabels.get(story.id)?.includes("updated") ? 1 : 0
@@ -3591,6 +3706,133 @@ export default function App() {
     };
   }, [dismissTopicSelection, topicSelection]);
 
+  const closeLinkMenu = useCallback((menu: LinkMenu, restoreFocus: boolean) => {
+    setLinkMenu(null);
+    if (restoreFocus && menu.anchor.isConnected) {
+      window.requestAnimationFrame(() => menu.anchor.focus({ preventScroll: true }));
+    }
+  }, []);
+
+  /** Stable, so the memoized article body does not re-render with the menu. */
+  const openLinkMenu = useCallback((link: ArticleLink) => {
+    setTopicSelection(null);
+    let match: LinkMenu["match"] = null;
+    for (const entry of entriesRef.current) {
+      if (entry.status === "removed" || readLaterLinkURL(entry.url) !== link.url) continue;
+      const readLater = readLaterFeedIdsRef.current.has(entry.feed_id);
+      if (!match || readLater) match = { entryId: entry.id, readLater };
+      if (readLater) break;
+    }
+    const width = Math.min(248, window.innerWidth - 24);
+    // The address line plus one row per action.
+    const height = 44 + ((match && !match.readLater ? 2 : 1) + 2) * 36;
+    const left = Math.max(12, Math.min(window.innerWidth - width - 12, link.rect.left));
+    const above = link.rect.bottom + 10 + height > window.innerHeight - 12 && link.rect.top - 10 - height >= 12;
+    setLinkMenu({
+      ...link,
+      match,
+      top: above ? link.rect.top - 10 - height : link.rect.bottom + 10,
+      left,
+      above,
+      arrowLeft: Math.max(16, Math.min(width - 16, link.rect.left + Math.min(link.rect.width, width) / 2 - left)),
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!linkMenu) return;
+    const items = () => [...linkMenuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? []];
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" || event.key === "Tab") {
+        event.preventDefault();
+        closeLinkMenu(linkMenu, true);
+        return;
+      }
+      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const buttons = items();
+      if (!buttons.length) return;
+      const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+      const next = event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? buttons.length - 1
+          : event.key === "ArrowDown"
+            ? (index + 1) % buttons.length
+            : index <= 0 ? buttons.length - 1 : index - 1;
+      buttons[next].focus();
+    };
+    const dismiss = () => closeLinkMenu(linkMenu, false);
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", dismiss);
+    window.addEventListener("scroll", dismiss, true);
+    window.requestAnimationFrame(() => items()[0]?.focus());
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", dismiss);
+      window.removeEventListener("scroll", dismiss, true);
+    };
+  }, [closeLinkMenu, linkMenu]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the menu belongs to the open article's links
+    setLinkMenu(null);
+  }, [selectedId]);
+
+  /** A translated body has translated link text; the title comes from the original link. */
+  const linkTitleSource = (menu: LinkMenu) => {
+    if (!translatedContent || !readerSelected) return menu;
+    const original = [...new DOMParser().parseFromString(readerSelected.content, "text/html").querySelectorAll("a[href]")]
+      .find((anchor) => readLaterLinkURL(anchor.getAttribute("href"), readerSelected.url) === menu.url);
+    return original
+      ? { text: original.textContent, title: original.getAttribute("title"), imageAlt: original.querySelector("img")?.getAttribute("alt") }
+      : menu;
+  };
+
+  const saveLinkForLater = async (menu: LinkMenu) => {
+    closeLinkMenu(menu, true);
+    if (!config || readLaterSaving.has(menu.url)) return;
+    const title = readLaterLinkTitle(linkTitleSource(menu), menu.url);
+    setReadLaterSaving((current) => new Set(current).add(menu.url));
+    notify(t("readLater.saving"));
+    try {
+      const fetchJson = <T,>(path: string, init?: RequestInit) => minifluxFetch<T>(config, path, init);
+      const saved = await saveReadLaterLink(fetchJson, {
+        feedId: [...readLaterFeedIdsRef.current][0],
+        feedURL: readLaterFeedFileURL(window.location.href),
+        link: { url: menu.url, title, tags: readerSelected ? [readLaterSourceTag(readerSelected.source)] : [] },
+      });
+      if (saved.feedResolved) await refreshFeedCatalog(config);
+      const entry = await minifluxFetch<Entry>(config, `/v1/entries/${saved.entryId}`);
+      await mergeEntryBatch([entry]);
+      notify(t("readLater.saved", { title: entry.title || title }));
+    } catch (cause) {
+      notify(readLaterErrorMessage(cause, t));
+    } finally {
+      setReadLaterSaving((current) => {
+        const next = new Set(current);
+        next.delete(menu.url);
+        return next;
+      });
+    }
+  };
+
+  const openLinkMatch = (menu: LinkMenu) => {
+    closeLinkMenu(menu, false);
+    const story = stories.find((item) => item.id === menu.match?.entryId);
+    if (story) choose(story);
+  };
+
+  const openLinkInBrowser = (menu: LinkMenu) => {
+    closeLinkMenu(menu, true);
+    window.open(menu.url, "_blank", "noopener,noreferrer");
+  };
+
+  const copyArticleLink = async (menu: LinkMenu) => {
+    closeLinkMenu(menu, true);
+    await navigator.clipboard.writeText(menu.url);
+    notify(t("readLater.linkCopied"));
+  };
+
   const startResize = (kind: "sidebar" | "list", event: React.PointerEvent) => {
     event.preventDefault();
     const startX = event.clientX;
@@ -3610,7 +3852,7 @@ export default function App() {
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      if (settingsOpen || markAllReadOpen || topicSelection) return;
+      if (settingsOpen || markAllReadOpen || topicSelection || linkMenu) return;
       if (["INPUT", "TEXTAREA"].includes((event.target as HTMLElement).tagName)) return;
       if (event.key.toLowerCase() === "j" || event.key === "ArrowDown") move(1);
       if (event.key.toLowerCase() === "k" || event.key === "ArrowUp") move(-1);
@@ -3636,25 +3878,7 @@ export default function App() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, move, selected, entries, visible, selectedId, choose, toggleRead, markAllReadOpen, requestMarkVisibleRead, settingsOpen, topicSelection, resumeReaderAttention]);
-
-  const setFeedback = async (feedback: "helpful" | "not_interested") => {
-    if (!selected) return;
-    if (!activeEvent.current || activeEvent.current.entryId !== selected.id) choose(selected);
-    if (activeEvent.current) {
-      activeEvent.current.feedback = feedback;
-      await persistActive();
-    }
-    setFeedbackChoice({ entryId: selected.id, feedback });
-    if (feedback === "not_interested") {
-      const next = visible.find((story) => story.id !== selected.id);
-      if (next) choose(next);
-      else navigateToList();
-      notify(t("recommendation.reduced"));
-    } else {
-      notify(t("recommendation.reinforced"));
-    }
-  };
+  }, [config, move, selected, entries, visible, selectedId, choose, toggleRead, markAllReadOpen, requestMarkVisibleRead, settingsOpen, topicSelection, linkMenu, resumeReaderAttention]);
 
   /**
    * Hashtag clicks toggle the topic's global follow state. `addToCandidates` is
@@ -3710,10 +3934,12 @@ export default function App() {
     await toggleTopicInterest(selection.term, true);
   };
 
-  const categorySources = useMemo(() => categories.map((category) => ({
-    ...category,
-    feeds: feeds.filter((feed) => feed.category?.id === category.id),
-  })), [categories, feeds]);
+  const categorySources = useMemo(() => categories.flatMap((category) => {
+    const categoryFeeds = feeds.filter((feed) => feed.category?.id === category.id);
+    const sourceFeeds = categoryFeeds.filter((feed) => !readLaterFeedIds.has(feed.id));
+    // The Read later feed is reached through its smart feed, and so is a category holding only it.
+    return categoryFeeds.length && !sourceFeeds.length ? [] : [{ ...category, feeds: sourceFeeds }];
+  }), [categories, feeds, readLaterFeedIds]);
   const countByFeed = useMemo(() => {
     const counts = new Map<number, number>();
     entries.forEach((entry) => {
@@ -3723,26 +3949,29 @@ export default function App() {
         { ...entry, status: statusWhenCaptured },
         mode,
         sourceSnapshot.labels,
+        readLaterFeedIds,
       )) return;
       if (mode !== "updated" && hideRead && statusWhenCaptured !== "unread") return;
       counts.set(entry.feed_id, (counts.get(entry.feed_id) ?? 0) + 1);
     });
     return counts;
-  }, [entries, hideRead, mode, sourceSnapshot]);
-  const visibleCategorySources = useMemo(() => categorySources.flatMap((category) => {
+  }, [entries, hideRead, mode, readLaterFeedIds, sourceSnapshot]);
+  // Every saved link belongs to the hidden Read later feed, so no subscription
+  // narrows that list, even while a sync lists every category.
+  const visibleCategorySources = useMemo(() => mode === "later" ? [] : categorySources.flatMap((category) => {
     const visibleFeeds = category.feeds.filter((feed) =>
       (countByFeed.get(feed.id) ?? 0) > 0
-      || topic?.kind === "feed" && topic.id === feed.id,
+      || scopedTopic?.kind === "feed" && scopedTopic.id === feed.id,
     );
-    const selected = topic?.kind === "category" && topic.id === category.id;
+    const selected = scopedTopic?.kind === "category" && scopedTopic.id === category.id;
     return visibleFeeds.length || selected || syncProgress
       ? [{ ...category, feeds: syncProgress ? category.feeds : visibleFeeds }]
       : [];
-  }), [categorySources, countByFeed, syncProgress, topic]);
-  const topicTitle = topic?.kind === "category"
-    ? categories.find((category) => category.id === topic.id)?.title
-    : topic?.kind === "feed"
-      ? feeds.find((feed) => feed.id === topic.id)?.title
+  }), [categorySources, countByFeed, mode, scopedTopic, syncProgress]);
+  const topicTitle = scopedTopic?.kind === "category"
+    ? categories.find((category) => category.id === scopedTopic.id)?.title
+    : scopedTopic?.kind === "feed"
+      ? feeds.find((feed) => feed.id === scopedTopic.id)?.title
       : null;
   const toggleCategory = (categoryId: number, force?: boolean) => {
     setCollapsedCategories((current) => {
@@ -3764,12 +3993,12 @@ export default function App() {
       rows[Math.max(0, Math.min(rows.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))]?.focus();
     }
   };
-  const { unreadCount, todayCount, allCount, updatedCount, savedCount } = useMemo(
-    () => countSmartFeedEntries(entries, entryLabels),
-    [entries, entryLabels],
+  const { unreadCount, todayCount, todayUnreadCount, allCount, updatedCount, savedCount, laterCount, laterUnreadCount } = useMemo(
+    () => countSmartFeedEntries(entries, entryLabels, readLaterFeedIds),
+    [entries, entryLabels, readLaterFeedIds],
   );
   const navCounts = useMemo(() => ({
-    today: hideReadByMode.today ? unreadCount : todayCount,
+    today: hideReadByMode.today ? todayUnreadCount : todayCount,
     all: hideReadByMode.all ? unreadCount : allCount,
     updated: updatedCount,
     saved: hideReadByMode.saved
@@ -3777,7 +4006,8 @@ export default function App() {
         entry.status === "unread" && entry.starred ? 1 : 0
       ), 0)
       : savedCount,
-  }), [allCount, entries, hideReadByMode, savedCount, todayCount, unreadCount, updatedCount]);
+    later: hideReadByMode.later ? laterUnreadCount : laterCount,
+  }), [allCount, entries, hideReadByMode, laterCount, laterUnreadCount, savedCount, todayCount, todayUnreadCount, unreadCount, updatedCount]);
   const syncProgressLabel = syncProgress
     ? `${syncProgress.kind === "search"
       ? t("sync.searching")
@@ -3828,6 +4058,7 @@ export default function App() {
     ["all", "bi-inbox", t("sidebar.all"), navCounts.all],
     ["updated", "bi-bell", t("sidebar.updated"), navCounts.updated],
     ["saved", "bi-star-fill", t("sidebar.saved"), navCounts.saved],
+    ["later", "bi-bookmark-fill", t("sidebar.later"), navCounts.later],
   ] as const;
 
   return (
@@ -3847,14 +4078,15 @@ export default function App() {
           </header>
           <div className="sidebarScroll" onKeyDown={handleSidebarKey}>
             <nav>{nav.map(([key, icon, label, count]) => {
-              const resetsSource = mode === key && topic !== null;
-              const nextTopic = mode === key ? null : topic;
+              const resetsSource = mode === key && scopedTopic !== null;
+              // Read later never applies the scope, so choosing it again keeps the remembered one.
+              const nextTopic = mode === key && key !== "later" ? null : topic;
               return <button data-sidebar-row key={key} className={mode === key ? "active" : ""} onClick={() => switchListContext(key, nextTopic)} aria-label={resetsSource ? t("sidebar.resetSource", { title: label }) : undefined} title={resetsSource ? t("sidebar.resetSource", { title: label }) : undefined}><i className={`bi ${icon}`} aria-hidden="true" /><span>{label}</span><em>{resetsSource ? "↩" : settings.showFeedArticleCount ? count : ""}</em></button>;
             })}</nav>
             <div className="sideLabel"><span>{t("sidebar.subscriptions")}</span><button type="button" onClick={() => setSubscriptionsCollapsed((current) => !current)} title={t(subscriptionsCollapsed ? "sidebar.expand" : "sidebar.collapse")} aria-label={t(subscriptionsCollapsed ? "sidebar.expand" : "sidebar.collapse")} aria-expanded={!subscriptionsCollapsed}><i className={`bi ${subscriptionsCollapsed ? "bi-chevron-right" : "bi-chevron-down"}`} aria-hidden="true" /></button></div>
             {!subscriptionsCollapsed && visibleCategorySources.map((category) => {
               const collapsed = collapsedCategories.has(category.id);
-              const categorySelected = topic?.kind === "category" && topic.id === category.id;
+              const categorySelected = scopedTopic?.kind === "category" && scopedTopic.id === category.id;
               const categoryCount = category.feeds.reduce((sum, feed) => sum + (countByFeed.get(feed.id) ?? 0), 0);
               return <section className="sourceGroup" key={category.id}>
                 <div className={`groupRow ${categorySelected ? "selected" : ""}`}>
@@ -3872,7 +4104,7 @@ export default function App() {
                   ><span>{category.title}</span><em>{settings.showFeedArticleCount ? categoryCount || "" : ""}</em></button>
                 </div>
                 {!collapsed && <div className="groupFeeds">
-                  {category.feeds.map((feed) => <button data-sidebar-row className={topic?.kind === "feed" && topic.id === feed.id ? "sourceRow selected" : "sourceRow"} key={feed.id} onClick={() => switchListContext(mode, { kind: "feed", id: feed.id })}><SourceIcon src={feedIcons.get(feed.id)}>{feed.title.slice(0, 1)}</SourceIcon><span>{feed.title}</span><em>{settings.showFeedArticleCount ? countByFeed.get(feed.id) || "" : ""}</em></button>)}
+                  {category.feeds.map((feed) => <button data-sidebar-row className={scopedTopic?.kind === "feed" && scopedTopic.id === feed.id ? "sourceRow selected" : "sourceRow"} key={feed.id} onClick={() => switchListContext(mode, { kind: "feed", id: feed.id })}><SourceIcon src={feedIcons.get(feed.id)}>{feed.title.slice(0, 1)}</SourceIcon><span>{feed.title}</span><em>{settings.showFeedArticleCount ? countByFeed.get(feed.id) || "" : ""}</em></button>)}
                 </div>}
               </section>;
             })}
@@ -3922,7 +4154,7 @@ export default function App() {
               story={story}
               selected={selected?.id === story.id}
               updated={story.status === "read" && (entryLabels.get(story.id)?.includes("updated") ?? false)}
-              feedIcon={feedIcons.get(story.feed_id)}
+              feedIcon={storyIcon(story.feed_id)}
               todayClock={todayClock}
               timeZone={activeTimeZone}
               locale={i18n.resolvedLanguage ?? "en"}
@@ -3934,7 +4166,7 @@ export default function App() {
             ? <div className="empty storyListState"><b className="loadingMark">↻</b><h2>{t("feed.syncing")}</h2><p>{t("feed.syncingHint")}</p></div>
             : error && !entries.length
               ? <div className="empty storyListState errorState"><b>!</b><h2>{t("feed.connectionFailed")}</h2><p>{t(error.key, { status: error.status })}</p><button onClick={() => void load()}>{t("feed.reconnect")}</button></div>
-              : <div className="empty storyListState"><b>✓</b><h2>{t("feed.empty")}</h2><p>{t("feed.emptyHint")}</p></div>)}
+              : <div className="empty storyListState"><b>✓</b><h2>{t("feed.empty")}</h2><p>{t(mode === "later" ? "feed.laterEmptyHint" : "feed.emptyHint")}</p></div>)}
         </section>
         <div className="resizeHandle listHandle" onPointerDown={(event) => startResize("list", event)} onDoubleClick={() => setListWidth(430)} />
 
@@ -3957,7 +4189,7 @@ export default function App() {
               <ArticleMetadata
                 key={selected.id}
                 story={selected}
-                feedIcon={feedIcons.get(selected.feed_id)}
+                feedIcon={storyIcon(selected.feed_id)}
                 timeZone={activeTimeZone}
                 onReadingTick={recordReadingTick}
                 onTextSelection={requestTopicSelection}
@@ -3996,26 +4228,34 @@ export default function App() {
                     />}
                     <ArticleBody
                       content={translatedContent ?? readerSelected.content}
+                      articleURL={readerSelected.url}
                       minifluxURL={config.url}
                       imageMode={selectedImageMode}
                       onTextSelection={translatedContent ? ignoreTextSelection : requestTopicSelection}
+                      onLinkClick={openLinkMenu}
                       t={t}
                     />
                   </>}
-              <RecommendationBreakdown
-                story={selected}
-                mode={mode}
-                listedStatus={listReadSnapshot.get(selected.id) ?? selected.status}
-                timeBucket={frozenVisibleOrder.timeBuckets?.get(selected.id) ?? smartFeedTimeBucket(selected.published_at, todayClock, activeTimeZone)}
-                source={interest.sources.get(selected.feed_id)}
-                sourceBaseline={interest.sourceBaseline}
-                topics={interest.topics}
-                now={recommendationSnapshot.now}
-                locale={i18n.resolvedLanguage ?? "en"}
-                feedback={feedbackChoice?.entryId === selected.id ? feedbackChoice.feedback : undefined}
-                onFeedback={(feedback) => void setFeedback(feedback)}
-                t={t}
-              />
+              {readLaterFeedIds.has(selected.feed_id)
+                ? <ReadLaterDetails
+                  story={selected}
+                  timeZone={activeTimeZone}
+                  onToggleStarred={() => void toggleStarred(selected)}
+                  onToggleRead={() => toggleRead(selected)}
+                  t={t}
+                />
+                : <RecommendationBreakdown
+                  story={selected}
+                  mode={mode}
+                  listedStatus={listReadSnapshot.get(selected.id) ?? selected.status}
+                  timeBucket={frozenVisibleOrder.timeBuckets?.get(selected.id) ?? smartFeedTimeBucket(selected.published_at, todayClock, activeTimeZone)}
+                  source={interest.sources.get(selected.feed_id)}
+                  sourceBaseline={interest.sourceBaseline}
+                  topics={interest.topics}
+                  now={recommendationSnapshot.now}
+                  locale={i18n.resolvedLanguage ?? "en"}
+                  t={t}
+                />}
             </div>
             {topicSelection && <>
               <div className="topicSelectionBackdrop" role="presentation" onMouseDown={() => dismissTopicSelection()} />
@@ -4032,6 +4272,28 @@ export default function App() {
               >
                 <button ref={topicSelectionConfirmRef} type="button" onClick={() => void followSelectedTopic()}>{t("recommendation.followSelectedTopic")}</button>
               </section>
+            </>}
+            {linkMenu && <>
+              <div className="linkMenuBackdrop" role="presentation" onMouseDown={() => closeLinkMenu(linkMenu, true)} />
+              <div
+                ref={linkMenuRef}
+                className={`linkMenu ${linkMenu.above ? "above" : ""}`}
+                role="menu"
+                aria-label={t("readLater.menuLabel", { host: linkHost(linkMenu.url) })}
+                style={{
+                  top: linkMenu.top,
+                  left: linkMenu.left,
+                  "--link-menu-arrow-left": `${linkMenu.arrowLeft}px`,
+                } as CSSProperties}
+              >
+                <p className="linkMenuAddress" aria-hidden="true" title={linkMenu.url}>{linkMenu.url.replace(/^https?:\/\/(www\.)?/, "")}</p>
+                {linkMenu.match?.readLater
+                  ? <button type="button" role="menuitem" onClick={() => openLinkMatch(linkMenu)}><i className="bi bi-bookmark-check-fill" aria-hidden="true" />{t("readLater.openSaved")}</button>
+                  : <button type="button" role="menuitem" disabled={readLaterSaving.has(linkMenu.url)} onClick={() => void saveLinkForLater(linkMenu)}><i className="bi bi-bookmark-plus" aria-hidden="true" />{t(readLaterSaving.has(linkMenu.url) ? "readLater.saving" : "readLater.save")}</button>}
+                {linkMenu.match && !linkMenu.match.readLater && <button type="button" role="menuitem" onClick={() => openLinkMatch(linkMenu)}><i className="bi bi-journal-text" aria-hidden="true" />{t("readLater.openInReader")}</button>}
+                <button type="button" role="menuitem" onClick={() => openLinkInBrowser(linkMenu)}><i className="bi bi-box-arrow-up-right" aria-hidden="true" />{t("readLater.openLink")}</button>
+                <button type="button" role="menuitem" onClick={() => void copyArticleLink(linkMenu)}><i className="bi bi-copy" aria-hidden="true" />{t("readLater.copyLink")}</button>
+              </div>
             </>}
           </> : route.kind === "article" ? <div className={`empty readerEmpty ${contentError?.id === route.entryId ? "errorState" : ""}`}>
             <b className={contentError?.id === route.entryId ? "" : "loadingMark"}>{contentError?.id === route.entryId ? "!" : "↻"}</b>

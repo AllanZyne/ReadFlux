@@ -1,7 +1,7 @@
 import type { ReadingEvent, RankingExposure } from "./readflux-client.ts";
 import { normalizeRecommendationTerm } from "./recommendation-terms.ts";
 
-export const RECOMMENDATION_ALGORITHM_VERSION = "heuristic-v7-topic-affinity";
+export const RECOMMENDATION_ALGORITHM_VERSION = "heuristic-v8-implicit-feedback";
 export const RANKING_EXPOSURE_LIMIT = 100;
 
 export const RECENCY_DAYS = 28;
@@ -108,9 +108,8 @@ export function recencyWeight(at: number, now: number) {
 }
 
 export function readingEventQuality(
-  event: Pick<ReadingEvent, "activeSeconds" | "scrollDepth" | "readingTime" | "feedback">,
+  event: Pick<ReadingEvent, "activeSeconds" | "scrollDepth" | "readingTime">,
 ) {
-  if (event.feedback === "helpful") return 1;
   const minutes = Number.isFinite(event.readingTime) ? Math.max(1, event.readingTime ?? 1) : 1;
   const activeSeconds = Math.max(0, event.activeSeconds);
   const completion = Math.min(1, activeSeconds / (minutes * 60));
@@ -121,7 +120,7 @@ export function readingEventQuality(
 }
 
 export function isEngagedReadingEvent(
-  event: Pick<ReadingEvent, "activeSeconds" | "scrollDepth" | "readingTime" | "feedback">,
+  event: Pick<ReadingEvent, "activeSeconds" | "scrollDepth" | "readingTime">,
 ) {
   return readingEventQuality(event) > 0;
 }
@@ -156,7 +155,6 @@ export function deriveSourceAffinities(
         latestStarMark.set(event.entryId, { at: starredAt, starred: event.starred === true });
       }
     }
-    if (event.feedback === "not_interested") return;
     if (event.rankingId && event.exposedRank !== undefined) {
       attributedOpens.add(attributedOpenKey(event.rankingId, event.entryId));
     }
@@ -352,7 +350,6 @@ export function deriveTopicAffinities(
   // As for feeds, open rates carry no signal until some Today open is attributed.
   let openRateKnown = false;
   events.forEach((event) => {
-    if (event.feedback === "not_interested") return;
     if (event.rankingId && event.exposedRank !== undefined) attributedOpens.add(attributedOpenKey(event.rankingId, event.entryId));
     const openedAt = new Date(event.openedAt).getTime();
     if (!Number.isFinite(openedAt)) return;

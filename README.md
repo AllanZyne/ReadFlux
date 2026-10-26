@@ -13,6 +13,7 @@ The complete synced history remains available in **All**.
 - **All** contains the complete synced history in reverse publication order
 - **Updated** tracks previously read articles whose content changed since they
   were last opened
+- **Read later** keeps links you save from articles, outside **Today**
 - An **Unread only** list filter replaces a separate unread destination
 - Saved articles, source-scoped subscription groups, feed icons, and dynamic
   counts
@@ -58,7 +59,7 @@ dedicated Miniflux API key for ReadFlux so it can be revoked independently.
 - Miniflux, or its reverse proxy, configured to allow requests from the
   ReadFlux origin
 - CORS rules that allow `X-Auth-Token`, `Content-Type`, and the `GET`, `PUT`,
-  and `OPTIONS` methods used by ReadFlux
+  `POST`, and `OPTIONS` methods used by ReadFlux
 
 Miniflux recommends a separate API key for each application. ReadFlux sends the
 key in the `X-Auth-Token` header.
@@ -112,11 +113,38 @@ https://allanzayne.github.io/readflux/
 If a fork uses a different repository name, update the GitHub Pages base path
 in `vite.config.ts`.
 
+## Read later
+
+Clicking or tapping a link in an article opens a menu: **Read later**, **Open
+link**, and **Copy link**, plus **Open in ReadFlux** when the link is already a
+synced article. Ctrl/⌘-, Shift-, and middle-clicks open the link directly.
+
+**Read later** adds the link to Miniflux as an unread article, and Miniflux
+fetches the page's content. Saved links appear under **Read later**, newest
+first, and stay out of **Today**. They sync to every device through Miniflux.
+
+**Read later** works as a queue and shows only unread links by default. Opening
+a link marks it read, and it leaves the queue at the next list refresh. To keep
+an article, save it with the star; it then also appears in **Saved**. Miniflux
+deletes read, unsaved articles after its cleanup period (60 days by default).
+Turn off **Unread only** to see links you have already read.
+
+The first saved link creates a disabled feed named **ReadFlux · Read later**
+in a category of the same name. The feed points at the empty
+`readflux-read-later.xml` file published with ReadFlux, and Miniflux fetches it
+once when the feed is created. ReadFlux hides this feed and category from
+**Subscriptions**. Open ReadFlux from its published address for the first
+save; a local development server is not reachable from Miniflux.
+
+The link goes only to your Miniflux server. Miniflux then requests the page
+itself, as it does for feed articles.
+
 ## Recommendation data
 
 ReadFlux records the article, feed, title, keywords, open time, active
-foreground time, scroll depth, entry path, and explicit **Helpful** or
-**Not interested** feedback. Saved state remains managed by Miniflux.
+foreground time, scroll depth, and entry path. Saved state remains managed by
+Miniflux. There are no like or dislike buttons: articles you skip, scroll past,
+or leave quickly already count against their feed.
 
 Foreground time counts only while the page is visible and focused and no
 dialog is open, and only while the mouse is over the article or its card in
@@ -128,8 +156,9 @@ state, with more weight on recent behavior. Topics you follow count more when
 you read articles about them. ReadFlux never learns topics you did not follow.
 
 The end of each article explains why it is where it is, with the full score
-breakdown, and has thumbs-up (**Helpful**) and thumbs-down (**Not interested**)
-buttons for explicit feedback. Scores are not shown in the article list.
+breakdown. Scores are not shown in the article list. A link saved for later
+ends instead with when and where you saved it, and buttons to save it or put
+it back in **Read later**.
 
 The **Recommendation data** tab in Settings shows the derived feed and topic
 weights and the 30 most recent raw events by default. Local records can be
