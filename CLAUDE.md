@@ -23,11 +23,19 @@ The primary product contract is:
   publication time, newest first.
 - `Updated` contains previously read entries whose content changed after they
   were cached, and clears an entry's update label when it is reopened.
+- `Read later` contains links saved from articles, newest first. They are
+  entries of the Read later feed and never appear in `Today`; `All` and
+  `Saved` still include them. It is a queue and starts with `Unread only` on:
+  reading a link finishes it, starring keeps it in `Saved`, and Miniflux's
+  cleanup eventually deletes the rest. Miniflux has no API to delete an entry.
 - `Unread only` is a list filter, not a separate smart feed. It does not apply
   to `Updated`, whose entries are already read by definition.
 - Recommendation scores affect ordering within each `Today` time and read-status
   tier only, and are not shown in the list. The end of the open article shows
-  its sort keys and every score component with its formula and inputs.
+  its sort keys and every score component with its formula and inputs. A saved
+  link is not ranked, so its end shows the Read later details instead.
+- There are no explicit like or dislike controls. Skipping, scrolling past,
+  and quickly leaving an article are the negative signals.
 - Reading an entry updates its live state without removing it from the current
   list snapshot. Reuse recommendation scores and reasons until the next list
   refresh or context change; scroll-to-read must not rescore existing articles.
@@ -37,7 +45,9 @@ The primary product contract is:
 - `Saved` must be loaded from all paginated starred Miniflux results.
 - Category and feed selection filters the current smart feed. Switching smart
   feeds preserves that source scope and closes the current article; selecting
-  the active smart feed again clears the source scope.
+  the active smart feed again clears the source scope. `Read later` ignores the
+  scope but keeps it for the other smart feeds. Its saved links all belong to
+  the hidden Read later feed, so it lists no subscriptions.
 - Day and night are the only themes.
 - Settings are an in-app dialog. Recommendation data is inspectable, raw
   events can be added, edited, or deleted, and the tab can export a local JSON
@@ -45,8 +55,8 @@ The primary product contract is:
   credentials.
 - The reader can summarize or translate the open article with the user's own AI
   provider. Clicking a button again reuses the saved result.
-- Category names, feed names, `Today`, `All`, `Updated`, and `Saved` use the same type
-  size, weight, and row height. Hierarchy comes from disclosure controls, icons,
+- Category names, feed names, `Today`, `All`, `Updated`, `Saved`, and
+  `Read later` use the same type size, weight, and row height. Hierarchy comes from disclosure controls, icons,
   and indentation.
 
 ## Architecture
@@ -60,6 +70,10 @@ The primary product contract is:
   translations.
 - `src/article-ai.ts`: per-article summary and translation state, saved-result
   reuse, and cancellation.
+- `src/read-later.ts`: Read later feed discovery and creation, entry import,
+  and pure link URL and title helpers.
+- `public/readflux-read-later.xml`: the empty Atom file the Read later feed
+  points at.
 - `src/index.css`: all layout, themes, responsive behavior, and interaction
   states.
 - `src/main.tsx`: React entry point.
@@ -112,6 +126,35 @@ or reading events. The only exception is the explicit AI action below.
 - The provider API key is intentionally unencrypted. Keep that boundary
   explicit in the UI and documentation.
 
+## Read later
+
+- Saved links are Miniflux entries, so they sync through Miniflux and need no
+  local store. They are imported with
+  `POST /v1/feeds/{id}/entries/import` (Miniflux 2.2.16 or later) into one
+  feed, then `fetch-content` asks Miniflux to scrape the page. Always send
+  `status: "unread"`; Miniflux imports as read by default.
+- The Read later feed is identified by its feed URL ending in
+  `/readflux-read-later.xml`, never by a title or a stored ID, so every device
+  and deployment finds the same feed. ReadFlux creates it on the first save,
+  disabled, in the `ReadFlux · Read later` category. Miniflux must fetch the
+  file once at creation, so a dev server cannot create it.
+- Hide the feed, and a category that holds only it, from Subscriptions. Saved
+  links show their site as the source and no feed icon.
+- A plain click or tap on an article link opens the link menu; modified and
+  middle clicks keep browser behavior. Enter on a focused link opens the menu
+  and must not trigger the reader's open-original shortcut.
+- Link actions and imports keep the URL fragment, which can name a section
+  or a hash route; only matching a link to synced entries ignores it.
+- Titles come from the link: its text unless that only describes the action
+  ("read more", "原文"), then its `title`, then a linked image's `alt`, then the
+  host and last path segment. A translated body takes the original link text.
+- The feed a link was saved from is stored as a `via <source>` Miniflux tag,
+  the only metadata an import can carry, and shown at the article end.
+- Miniflux keeps tombstones for entries its cleanup deleted. Importing such a
+  link again retries with a fresh `external_id`.
+- The link goes only to the user's Miniflux. Do not fetch the page from the
+  browser or through a third-party service to get a title.
+
 ## WebDAV recommendation sync
 
 - WebDAV is optional and browser-to-server; no application backend or proxy is
@@ -160,7 +203,9 @@ An event records:
 - maximum scroll depth
 - the entry's Miniflux reading time, when available
 - entry path (`recommendation`, `feed`, `search`, or `saved`)
-- optional explicit feedback
+
+Events from older versions may carry explicit `helpful` or `not_interested`
+feedback. It is kept as stored data but no longer read or shown.
 
 Today exposures record the top 100 items: entry, rank, score components, and,
 for new records, the feed ID and publication time. Older items without a feed
@@ -176,9 +221,10 @@ Current derivation rules:
   reading time, reaching full credit at 10 minutes.
 - Events under 5 seconds with little length-adjusted scroll have zero quality.
   They still count as reads, which lowers the feed's average depth.
-- Positive feedback gives an event full quality.
-- Negative feedback removes the event from source affinity and open counts. It
-  does not produce negative term weights, and the negative penalty is zero.
+- There is no explicit feedback: a skipped, scrolled-past, or quickly left
+  article is the negative signal, through zero quality and the seen open rate.
+  Exposure items keep a `negativePenalty` of 0, because older clients reject
+  synced exposures without it.
 - Starred entries add `log1p(count)` pseudo-reads of full quality to their
   feed. A star decays from `starredAt` when a reading event recorded one.
   Starred entries add no term affinity.

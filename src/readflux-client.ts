@@ -98,7 +98,6 @@ export type ReadingEvent = {
   activeSeconds: number;
   scrollDepth: number;
   origin: "recommendation" | "feed" | "search" | "saved";
-  feedback?: "helpful" | "not_interested";
   readingTime?: number;
   listPosition?: number;
   rankingId?: string;
@@ -265,11 +264,23 @@ export function clearConnection() {
 
 export class MinifluxRequestError extends Error {
   readonly status: number;
+  /** Miniflux's `error_message`, which tells apart failures sharing a status. */
+  readonly detail?: string;
 
-  constructor(status: number) {
+  constructor(status: number, detail?: string) {
     super(`Miniflux request failed (${status})`);
     this.name = "MinifluxRequestError";
     this.status = status;
+    this.detail = detail;
+  }
+}
+
+async function minifluxErrorDetail(response: Response) {
+  try {
+    const body = JSON.parse(await response.text()) as { error_message?: unknown } | null;
+    return typeof body?.error_message === "string" ? body.error_message : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -287,7 +298,7 @@ export async function minifluxFetch<T>(
     },
   });
   if (!response.ok) {
-    throw new MinifluxRequestError(response.status);
+    throw new MinifluxRequestError(response.status, await minifluxErrorDetail(response));
   }
   if (response.status === 204) return null as T;
   const text = await response.text();

@@ -184,12 +184,15 @@ export function nextDayBoundary(value, timeZone) {
   return new Date(upperBound);
 }
 
-export function isEntryInSmartFeed(entry, mode, labels) {
+/** Links saved for later live in their own Miniflux feed and stay out of Today. */
+export function isEntryInSmartFeed(entry, mode, labels, readLaterFeedIds) {
   if (entry.status === "removed") return false;
+  const readLater = readLaterFeedIds?.has(entry.feed_id) ?? false;
+  if (mode === "later") return readLater;
   const updated = entry.status === "read"
     && (labels?.get(entry.id)?.includes("updated") ?? false);
   if (mode === "today") {
-    return entry.status === "unread" || updated;
+    return !readLater && (entry.status === "unread" || updated);
   }
   if (mode === "all") return true;
   if (mode === "updated") return updated;
@@ -252,13 +255,16 @@ export function compareSmartFeedEntries(a, b, mode, labels, context = {}) {
   return bTime - aTime || b.id - a.id;
 }
 
-export function countSmartFeedEntries(entries, labels) {
+export function countSmartFeedEntries(entries, labels, readLaterFeedIds) {
   const counts = {
     unreadCount: 0,
     todayCount: 0,
+    todayUnreadCount: 0,
     allCount: 0,
     updatedCount: 0,
     savedCount: 0,
+    laterCount: 0,
+    laterUnreadCount: 0,
   };
 
   for (const entry of entries) {
@@ -266,8 +272,15 @@ export function countSmartFeedEntries(entries, labels) {
     const unread = entry.status === "unread";
     const updated = entry.status === "read"
       && (labels?.get(entry.id)?.includes("updated") ?? false);
+    const readLater = readLaterFeedIds?.has(entry.feed_id) ?? false;
     if (unread) counts.unreadCount += 1;
-    if (unread || updated) counts.todayCount += 1;
+    if (readLater) {
+      counts.laterCount += 1;
+      if (unread) counts.laterUnreadCount += 1;
+    } else {
+      if (unread || updated) counts.todayCount += 1;
+      if (unread) counts.todayUnreadCount += 1;
+    }
     counts.allCount += 1;
     if (updated) counts.updatedCount += 1;
     if (entry.starred) counts.savedCount += 1;

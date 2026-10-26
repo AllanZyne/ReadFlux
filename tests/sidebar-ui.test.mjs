@@ -80,12 +80,13 @@ test("the reader does not reserve a persistent previous-next footer", () => {
 });
 
 test("unread-only state is isolated per smart feed", () => {
-  assert.match(app, /useState<Record<ListMode, boolean>>\(\{[\s\S]*?today: false,[\s\S]*?all: false,[\s\S]*?updated: false,[\s\S]*?saved: false/);
+  assert.match(app, /useState<Record<ListMode, boolean>>\(\{[\s\S]*?today: false,[\s\S]*?all: false,[\s\S]*?updated: false,[\s\S]*?saved: false,[\s\S]*?later: true,/);
   assert.match(app, /const hideRead = mode !== "updated" && hideReadByMode\[mode\]/);
   assert.match(app, /hideReadRef\.current = nextMode !== "updated" && hideReadByMode\[nextMode\]/);
-  assert.match(app, /today: hideReadByMode\.today \? unreadCount : todayCount/);
+  assert.match(app, /today: hideReadByMode\.today \? todayUnreadCount : todayCount/);
   assert.match(app, /all: hideReadByMode\.all \? unreadCount : allCount/);
   assert.match(app, /saved: hideReadByMode\.saved[\s\S]*?entry\.status === "unread" && entry\.starred/);
+  assert.match(app, /later: hideReadByMode\.later \? laterUnreadCount : laterCount/);
 });
 
 test("mark all as read requires the selected anchored confirmation", () => {
@@ -192,9 +193,9 @@ test("the subscriptions heading toggles the whole persisted section", () => {
 });
 
 test("switching smart feeds preserves the source scope while the active feed can reset it", () => {
-  assert.match(app, /const nextTopic = mode === key \? null : topic/);
+  assert.match(app, /const nextTopic = mode === key && key !== "later" \? null : topic/);
   assert.match(app, /onClick=\{\(\) => switchListContext\(key, nextTopic\)\}/);
-  assert.match(app, /const resetsSource = mode === key && topic !== null/);
+  assert.match(app, /const resetsSource = mode === key && scopedTopic !== null/);
   assert.match(app, /resetsSource \? "↩" : settings\.showFeedArticleCount \? count : ""/);
   assert.match(app, /sidebar\.resetSource/);
   assert.doesNotMatch(app, /allSubscriptions|所有订阅/);
@@ -214,6 +215,17 @@ test("changing smart feed, category, or feed closes the open article", () => {
   assert.match(app, /const switchListContext = useCallback\([\s\S]*?commitActiveEvent\(\);[\s\S]*?persistActive\(\);[\s\S]*?setSelectedId\(null\);[\s\S]*?navigateToList\(\);[\s\S]*?setMobileView\("list"\)/);
   assert.match(app, /switchListContext\(mode, \{ kind: "category", id: category\.id \}\)/);
   assert.match(app, /switchListContext\(mode, \{ kind: "feed", id: feed\.id \}\)/);
+});
+
+test("Read later ignores the source scope and lists no subscriptions", () => {
+  assert.match(app, /const scopedTopic = mode === "later" \? null : topic/);
+  assert.match(app, /const currentTopic = currentMode === "later" \? null : topicRef\.current/);
+  // No subscription narrows the saved links, not even while a sync lists every category.
+  assert.match(app, /const visibleCategorySources = useMemo\(\(\) => mode === "later" \? \[\] :/);
+  assert.match(app, /\["later",\s*"bi-bookmark-fill",\s*t\("sidebar\.later"\),\s*navCounts\.later\]/);
+  // The Read later feed and a category holding only it stay out of the subscriptions.
+  assert.match(app, /categoryFeeds\.filter\(\(feed\) => !readLaterFeedIds\.has\(feed\.id\)\)/);
+  assert.match(app, /categoryFeeds\.length && !sourceFeeds\.length \? \[\]/);
 });
 
 test("subscription counts follow the smart feed and unread-only filter", () => {
@@ -253,7 +265,7 @@ test("each category folder independently reflects and toggles its state", () => 
 });
 
 test("a selected category highlights its folder and title as one row", () => {
-  assert.match(app, /const categorySelected = topic\?\.kind === "category" && topic\.id === category\.id/);
+  assert.match(app, /const categorySelected = scopedTopic\?\.kind === "category" && scopedTopic\.id === category\.id/);
   assert.match(app, /className=\{`groupRow \$\{categorySelected \? "selected" : ""\}`\}/);
   assert.match(app, /className="groupHead"/);
   assert.match(styles, /\.groupRow\.selected\s*\{[^}]*background:[^}]*color:/);

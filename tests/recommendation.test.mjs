@@ -364,7 +364,7 @@ test("source scores map relative affinity onto a bounded scale and keep term dis
   assert.ok(breakdown.termScore > 11.9 && breakdown.termScore <= 12);
   assert.ok(breakdown.unclampedScore < 99);
   assert.equal(breakdown.score, Math.round(breakdown.unclampedScore));
-  assert.equal(RECOMMENDATION_ALGORITHM_VERSION, "heuristic-v7-topic-affinity");
+  assert.equal(RECOMMENDATION_ALGORITHM_VERSION, "heuristic-v8-implicit-feedback");
 });
 
 test("reading quality normalizes foreground time by expected length", () => {
@@ -373,7 +373,8 @@ test("reading quality normalizes foreground time by expected length", () => {
   assert.equal(readingEventQuality({ activeSeconds: 0, scrollDepth: 1, readingTime: 10 }), 1);
   assert.equal(readingEventQuality({ activeSeconds: 600, scrollDepth: 0, readingTime: 4 }), 1);
   assert.equal(readingEventQuality({ activeSeconds: 30, scrollDepth: 0 }), 0.5);
-  assert.equal(readingEventQuality({ activeSeconds: 0, scrollDepth: 0, feedback: "helpful" }), 1);
+  // Explicit feedback left on older events no longer changes how a read counts.
+  assert.equal(readingEventQuality({ activeSeconds: 0, scrollDepth: 0, feedback: "helpful" }), 0);
 });
 
 test("short-post scrolling is discounted and the bounce threshold suits quantized and precise seconds", () => {
@@ -463,8 +464,9 @@ test("feeds shown often but rarely opened lose affinity through smoothed open ra
   assert.ok(ignored.openRate < opened.openRate);
   assert.ok(ignored.relativeAffinity < opened.relativeAffinity);
   assert.ok(ignored.openRate > 0);
+  // Not-interested feedback on older events is ignored; skipping is the negative signal.
   const dismissed = reads.map((read) => read.rankingId ? { ...read, feedback: "not_interested" } : read);
-  assert.equal(deriveSourceAffinities(dismissed, [], now, { exposures, entryFeedIds }).sources.get(40).opens, 0);
+  assert.equal(deriveSourceAffinities(dismissed, [], now, { exposures, entryFeedIds }).sources.get(40).opens, opened.opens);
 });
 
 test("saved articles add diminishing source credit and decay by recorded save time", () => {
