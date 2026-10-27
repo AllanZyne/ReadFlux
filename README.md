@@ -123,10 +123,11 @@ most recently tagged first. An article stays there until you remove the tag;
 reading it does not remove it. Tagged articles keep their place in **Today**,
 **All**, and the other lists.
 
-A tagged article ends with a choice: **Save** stars it and removes it from
-**Read later**, and **Remove** only removes it. Either way, the next article
-in **Read later** opens, or the article closes when it was the last one. The
-notice that follows offers **Undo**.
+In **Read later**, each article ends with a choice: **Save** stars it and
+removes it from **Read later**, and **Remove** only removes it. Either way, the
+next article in the list opens, or the article closes when it was the last
+one. The notice that follows offers **Undo**. Other lists do not show this
+choice.
 
 Clicking or tapping a link in an article opens a menu: **Read later**, **Open
 link**, and **Copy link**, plus **Open in ReadFlux** when the link is already a
@@ -170,8 +171,8 @@ you read articles about them. ReadFlux never learns topics you did not follow.
 
 The end of each article explains why it is where it is, with the full score
 breakdown. Scores are not shown in the article list. A link saved for later
-is not ranked and ends only with the **Read later** choice. The Read later tag
-does not affect ranking.
+is not ranked, so it has no breakdown. The Read later tag does not affect
+ranking.
 
 The **Recommendation data** tab in Settings shows the derived feed and topic
 weights and the 30 most recent raw events by default. Local records can be

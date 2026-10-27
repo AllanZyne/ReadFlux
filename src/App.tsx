@@ -3241,18 +3241,15 @@ export default function App() {
 
   const selected = stories.find((story) => story.id === selectedId) ?? null;
   const selectedReadLater = selected !== null && hasEntryLabel(entryLabels, selected.id, "later");
-  // In Read later the queue is the list on screen; elsewhere it is every tagged entry, newest tag first.
+  // The Read later ticket appears only in its smart feed, whose queue is the list on screen.
+  const showReadLaterTicket = mode === "later" && selected !== null
+    && (selectedReadLater || readLaterFeedIds.has(selected.feed_id));
   const nextReadLater = useMemo(() => {
-    if (!selected || !selectedReadLater) return null;
-    const queue = mode === "later"
-      ? visible
-      : stories
-        .filter((story) => isEntryInSmartFeed(story, "later", entryLabels, readLaterFeedIds))
-        .sort((a, b) => compareSmartFeedEntries(a, b, "later", entryLabels));
-    const index = queue.findIndex((story) => story.id === selected.id);
-    return [...queue.slice(index + 1), ...queue.slice(0, Math.max(index, 0))]
+    if (!selected || !selectedReadLater || mode !== "later") return null;
+    const index = visible.findIndex((story) => story.id === selected.id);
+    return [...visible.slice(index + 1), ...visible.slice(0, Math.max(index, 0))]
       .find((story) => story.id !== selected.id && hasEntryLabel(entryLabels, story.id, "later")) ?? null;
-  }, [entryLabels, mode, readLaterFeedIds, selected, selectedReadLater, stories, visible]);
+  }, [entryLabels, mode, selected, selectedReadLater, visible]);
   const deferredSelectedId = useDeferredValue(selectedId);
   const readerSelected = deferredSelectedId === selectedId ? selected : null;
   const selectedReadingEvent = readerSelected
@@ -4307,7 +4304,7 @@ export default function App() {
                       t={t}
                     />
                   </>}
-              {(selectedReadLater || readLaterFeedIds.has(selected.feed_id)) && <ReadLaterTicket
+              {showReadLaterTicket && <ReadLaterTicket
                 story={selected}
                 tagged={selectedReadLater}
                 next={nextReadLater}

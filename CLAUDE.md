@@ -38,15 +38,14 @@ The primary product contract is:
 - Recommendation scores affect ordering within each `Today` time and read-status
   tier only, and are not shown in the list. The end of the open article shows
   its sort keys and every score component with its formula and inputs. A saved
-  link is not ranked, so its end shows only the Read later ticket. The `later`
-  label does not affect ranking.
-- A tagged entry ends with the Read later ticket: save it (star it and remove
-  the tag) or remove the tag, and either way open the next entry in the queue,
-  or close the article when it was the last.
-  The ticket previews only that next entry, not how long this one waited.
-  Inside `Read later` the queue is the list on screen; elsewhere it is every
-  tagged entry, newest tag first. The toast's undo restores the tag and star
-  and reopens the entry.
+  link is not ranked and has no score breakdown. The `later` label does not
+  affect ranking.
+- In `Read later`, each entry ends with the Read later ticket: save it (star
+  it and remove the tag) or remove the tag, and either way open the next entry
+  in the list on screen, or close the article when it was the last. The ticket
+  previews only that next entry, not how long this one waited. The toast's
+  undo restores the tag and star and reopens the entry. Other smart feeds show
+  no ticket; the reader toolbar still adds and removes the tag.
 - There are no explicit like or dislike controls. Skipping, scrolling past,
   and quickly leaving an article are the negative signals.
 - Reading an entry updates its live state without removing it from the current
@@ -173,7 +172,7 @@ or reading events. The only exception is the explicit AI action below.
   ("read more", "原文"), then its `title`, then a linked image's `alt`, then the
   host and last path segment. A translated body takes the original link text.
 - The feed a link was saved from is stored as a `via <source>` Miniflux tag,
-  the only metadata an import can carry, and shown at the article end.
+  the only metadata an import can carry, and shown on the Read later ticket.
 - Miniflux keeps tombstones for entries its cleanup deleted. Importing such a
   link again retries with a fresh `external_id`.
 - The link goes only to the user's Miniflux. Do not fetch the page from the

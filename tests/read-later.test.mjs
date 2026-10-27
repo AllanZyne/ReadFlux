@@ -249,7 +249,9 @@ test("the feed a link was saved from travels as a Miniflux tag", async () => {
 
 test("a Read later entry ends with the decision ticket, and a saved link is not ranked", async () => {
   const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
-  assert.match(app, /\{\(selectedReadLater \|\| readLaterFeedIds\.has\(selected\.feed_id\)\) && <ReadLaterTicket/);
+  // Only the Read later smart feed shows the ticket.
+  assert.match(app, /const showReadLaterTicket = mode === "later" && selected !== null\s*&& \(selectedReadLater \|\| readLaterFeedIds\.has\(selected\.feed_id\)\)/);
+  assert.match(app, /\{showReadLaterTicket && <ReadLaterTicket/);
   assert.match(app, /\{!readLaterFeedIds\.has\(selected\.feed_id\) && <RecommendationBreakdown/);
   assert.doesNotMatch(app, /ReadLaterDetails/);
   assert.match(app, /link: \{ url: menu\.url, title, tags: readerSelected \? \[readLaterSourceTag\(readerSelected\.source\)\] : \[\] \}/);
@@ -274,8 +276,8 @@ test("deciding on a Read later entry opens the next one and the toast can undo i
   assert.match(finish, /if \(next\) openStory\(next\);\s*else \{\s*navigateToList\(\);\s*setMobileView\("list"\);\s*\}/);
   assert.match(finish, /setReadLater\(story\.id, null\)/);
   assert.match(finish, /run: \(\) => \{\s*void setReadLater\(story\.id, taggedAt\);\s*if \(starring\) void toggleStarred\(\{ \.\.\.story, starred: true \}\);\s*openStory\(story\);/);
-  // Inside Read later the queue is the list on screen; elsewhere every tagged entry, newest tag first.
-  assert.match(app, /const queue = mode === "later"\s*\? visible\s*: stories[\s\S]*?compareSmartFeedEntries\(a, b, "later", entryLabels\)/);
+  // The queue is the Read later list on screen.
+  assert.match(app, /if \(!selected \|\| !selectedReadLater \|\| mode !== "later"\) return null;\s*const index = visible\.findIndex/);
   // An action keeps the toast up long enough to reach it.
   assert.match(app, /toastTimer\.current = window\.setTimeout\(\(\) => setToast\(null\), action \? 6000 : 2200\)/);
   assert.match(app, /\{toast\.action && <button type="button"/);
