@@ -72,9 +72,9 @@ test("article rows align full-width titles with right-aligned time and status ma
   assert.match(styles, /\.story\.starred \.storyStatus>i\{background:var\(--yellow\)\}/);
   assert.match(styles, /\.shell\[data-theme="day"\] \.story\.starred \.storyStatus>i\{background:#eab308\}/);
   assert.match(styles, /\.shell\[data-theme="night"\] \.story\.starred \.storyStatus>i\{background:#facc15\}/);
-  assert.match(styles, /\.story\.later:not\(\.starred\) \.storyStatus>i\{background:#a78bfa\}/);
-  assert.match(styles, /\.shell\[data-theme="day"\] \.story\.later:not\(\.starred\) \.storyStatus>i\{background:#8b5cf6\}/);
-  assert.match(styles, /\.shell\[data-theme="night"\] \.story\.later:not\(\.starred\) \.storyStatus>i\{background:#a78bfa\}/);
+  assert.match(styles, /\.story\.later:not\(\.starred\) \.storyStatus>i\{background:var\(--later\)\}/);
+  assert.match(styles, /\.shell\[data-theme="day"\]\{--later:#8b5cf6;--star:#eab308\}/);
+  assert.match(styles, /\.shell\[data-theme="night"\]\{--later:#a78bfa;--star:#facc15\}/);
   assert.match(styles, /\.story\.selected:not\(\.read\):not\(\.updated\):not\(\.starred\):not\(\.later\) \.storyStatus>i/);
   assert.doesNotMatch(styles, /storyLater/);
   assert.doesNotMatch(styles, /pulseRing/);

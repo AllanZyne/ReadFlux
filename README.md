@@ -119,9 +119,14 @@ in `vite.config.ts`.
 
 The bookmark button in the reader toolbar tags the open article for **Read
 later**. **Read later** lists every tagged article, read or unread, with the
-most recently tagged first. An article stays there until you remove the tag
-with the same button; reading it does not remove it. Tagged articles keep
-their place in **Today**, **All**, and the other lists.
+most recently tagged first. An article stays there until you remove the tag;
+reading it does not remove it. Tagged articles keep their place in **Today**,
+**All**, and the other lists.
+
+A tagged article ends with a choice: **Save, then next** stars it and removes
+it from **Read later**, and **Remove, then next** only removes it. Either way,
+the next article in **Read later** opens, and the notice that follows offers
+**Undo**.
 
 Clicking or tapping a link in an article opens a menu: **Read later**, **Open
 link**, and **Copy link**, plus **Open in ReadFlux** when the link is already a
@@ -165,8 +170,8 @@ you read articles about them. ReadFlux never learns topics you did not follow.
 
 The end of each article explains why it is where it is, with the full score
 breakdown. Scores are not shown in the article list. A link saved for later
-ends instead with when and where you saved it, and a button to remove it from
-**Read later**. The Read later tag does not affect ranking.
+is not ranked and ends only with the **Read later** choice. The Read later tag
+does not affect ranking.
 
 The **Recommendation data** tab in Settings shows the derived feed and topic
 weights and the 30 most recent raw events by default. Local records can be

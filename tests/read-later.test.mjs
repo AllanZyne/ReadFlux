@@ -247,14 +247,33 @@ test("the feed a link was saved from travels as a Miniflux tag", async () => {
   assert.equal("tags" in untagged.body, false);
 });
 
-test("a saved link ends with its Read later details instead of the ranking explanation", async () => {
+test("a Read later entry ends with the decision ticket, and a saved link is not ranked", async () => {
   const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
-  assert.match(app, /\{readLaterFeedIds\.has\(selected\.feed_id\)\s*\? <ReadLaterDetails[\s\S]*?: <RecommendationBreakdown/);
+  assert.match(app, /\{\(selectedReadLater \|\| readLaterFeedIds\.has\(selected\.feed_id\)\) && <ReadLaterTicket/);
+  assert.match(app, /\{!readLaterFeedIds\.has\(selected\.feed_id\) && <RecommendationBreakdown/);
+  assert.doesNotMatch(app, /ReadLaterDetails/);
   assert.match(app, /link: \{ url: menu\.url, title, tags: readerSelected \? \[readLaterSourceTag\(readerSelected\.source\)\] : \[\] \}/);
-  // The state follows the live tag, so undo is the opposite toggle.
-  assert.match(app, /taggedAt=\{entryLabels\.get\(selected\.id\)\?\.later\}/);
-  assert.match(app, /const tagged = taggedAt !== undefined/);
-  assert.match(app, /className="link" onClick=\{onToggleReadLater\}/);
+  // The ticket shows only the next entry, not how long this one waited.
+  const ticket = app.slice(app.indexOf("function ReadLaterTicket("), app.indexOf("type AiSettingsStatus"));
+  assert.match(ticket, /readLater\.nextUp[\s\S]*?next\.title/);
+  assert.match(ticket, /next \? "readLater\.saveAndNext" : "readLater\.saveAndFinish"/);
+  assert.match(ticket, /next \? "readLater\.removeAndNext" : "readLater\.remove"/);
+  assert.match(ticket, /readLater\.fromLink/);
+  assert.doesNotMatch(ticket, /formatZonedDateTime|taggedAt/);
+});
+
+test("deciding on a Read later entry opens the next one and the toast can undo it", async () => {
+  const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const finish = app.slice(app.indexOf("const finishReadLater = async"), app.indexOf("const toggleRead = useCallback"));
+  // Starring starts before leaving, so the open reading event records it.
+  assert.match(finish, /const starred = starring \? toggleStarred\(story\) : Promise\.resolve\(true\);\s*if \(next\) openStory\(next\);/);
+  assert.match(finish, /setReadLater\(story\.id, null\)/);
+  assert.match(finish, /run: \(\) => \{\s*void setReadLater\(story\.id, taggedAt\);\s*if \(starring\) void toggleStarred\(\{ \.\.\.story, starred: true \}\);\s*if \(next\) openStory\(story\);/);
+  // Inside Read later the queue is the list on screen; elsewhere every tagged entry, newest tag first.
+  assert.match(app, /const queue = mode === "later"\s*\? visible\s*: stories[\s\S]*?compareSmartFeedEntries\(a, b, "later", entryLabels\)/);
+  // An action keeps the toast up long enough to reach it.
+  assert.match(app, /toastTimer\.current = window\.setTimeout\(\(\) => setToast\(null\), action \? 6000 : 2200\)/);
+  assert.match(app, /\{toast\.action && <button type="button"/);
 });
 
 test("any article can be tagged for Read later from the reader toolbar or a link", async () => {
@@ -268,8 +287,8 @@ test("any article can be tagged for Read later from the reader toolbar or a link
   assert.match(setReadLater, /catch \{\s*setEntryLabels\(\(current\) => withEntryLabel\(current, "later", restore\)\)/);
   assert.doesNotMatch(setReadLater, /minifluxFetch|updateEntry/);
   // A link to a synced entry tags it in place; only an unknown link is imported.
-  assert.match(app, /if \(menu\.match\) \{[\s\S]*?setReadLater\(menu\.match\.entryId, true\)[\s\S]*?return;\s*\}/);
-  assert.match(app, /await mergeEntryBatch\(\[entry\]\);\s*if \(await setReadLater\(entry\.id, true\)\)/);
+  assert.match(app, /if \(menu\.match\) \{[\s\S]*?setReadLater\(menu\.match\.entryId, new Date\(\)\.toISOString\(\)\)[\s\S]*?return;\s*\}/);
+  assert.match(app, /await mergeEntryBatch\(\[entry\]\);\s*if \(await setReadLater\(entry\.id, new Date\(\)\.toISOString\(\)\)\)/);
   assert.match(app, /const readLater = hasEntryLabel\(entryLabelsRef\.current, entry\.id, "later"\)/);
 });
 

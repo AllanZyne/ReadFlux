@@ -38,8 +38,14 @@ The primary product contract is:
 - Recommendation scores affect ordering within each `Today` time and read-status
   tier only, and are not shown in the list. The end of the open article shows
   its sort keys and every score component with its formula and inputs. A saved
-  link is not ranked, so its end shows the Read later details instead. The
-  `later` label does not affect ranking.
+  link is not ranked, so its end shows only the Read later ticket. The `later`
+  label does not affect ranking.
+- A tagged entry ends with the Read later ticket: save it (star it and remove
+  the tag) or remove the tag, and either way open the next entry in the queue.
+  The ticket previews only that next entry, not how long this one waited.
+  Inside `Read later` the queue is the list on screen; elsewhere it is every
+  tagged entry, newest tag first. The toast's undo restores the tag and star
+  and reopens the entry.
 - There are no explicit like or dislike controls. Skipping, scrolling past,
   and quickly leaving an article are the negative signals.
 - Reading an entry updates its live state without removing it from the current

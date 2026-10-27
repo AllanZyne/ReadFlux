@@ -192,6 +192,7 @@ type LinkMenu = ArticleLink & {
   arrow: "above" | "below" | null;
   maxHeight: number;
 };
+type Toast = { message: string; action?: { label: string; run: () => void } };
 type SyncProgress = {
   kind: "full" | "incremental" | "search";
   phase?: EntrySyncPhase;
@@ -1030,54 +1031,64 @@ function RecommendationBreakdown({
 }
 
 /**
- * Article end for a saved link: when and where it was saved, and removing its
- * Read later tag. The state follows the live tag, so undo is the opposite toggle.
+ * Article end for an entry in Read later: the decision to save it or let it
+ * go, each opening the next entry in the queue, and that entry as a preview.
+ * A saved link whose tag was removed can be put back.
  */
-function ReadLaterDetails({
+function ReadLaterTicket({
   story,
-  taggedAt,
-  timeZone,
-  onToggleReadLater,
+  tagged,
+  next,
+  onSave,
+  onRemove,
+  onOpenNext,
+  onPutBack,
   t,
 }: {
   story: Story;
-  /** When the Read later tag was added, or undefined once it is removed. */
-  taggedAt?: string;
-  timeZone: string;
-  onToggleReadLater: () => void;
+  tagged: boolean;
+  /** The Read later entry that follows this one, or null when it is the last. */
+  next: Story | null;
+  onSave: () => void;
+  onRemove: () => void;
+  onOpenNext: () => void;
+  onPutBack: () => void;
   t: TFunction;
 }) {
   const savedFrom = readLaterSourceFromTags(story.tags);
-  const savedAt = formatZonedDateTime(taggedAt ?? story.published_at, timeZone);
-  const tagged = taggedAt !== undefined;
   return <section
-    className="readLaterDetails"
-    aria-labelledby="read-later-details-title"
+    className={`readLaterTicket ${tagged ? "" : "untagged"}`}
+    aria-labelledby="read-later-ticket-title"
     onKeyDown={(event) => {
       // Keep Enter and Space on these buttons away from the reader shortcuts.
       if ((event.key === "Enter" || event.key === " ") && event.target instanceof HTMLButtonElement) event.stopPropagation();
     }}
   >
-    <h3 id="read-later-details-title"><i className="bi bi-bookmark-fill" aria-hidden="true" />{t("sidebar.later")}</h3>
-    <dl>
-      <dt>{t("readLater.savedAtLabel")}</dt>
-      <dd>{savedFrom ? t("readLater.savedFrom", { time: savedAt, source: savedFrom }) : savedAt}</dd>
-      <dt>{t("readLater.sourceLabel")}</dt>
-      <dd>{story.source} · {t("feed.minutes", { count: story.reading_time || 1 })}</dd>
-      <dt>{t("readLater.nextLabel")}</dt>
-      <dd>{t(tagged ? "readLater.nextTagged" : story.starred ? "readLater.nextStarred" : "readLater.nextRemoved")}</dd>
-    </dl>
-    <div className="readLaterActions">
-      {tagged
-        ? <button type="button" onClick={onToggleReadLater}><i className="bi bi-bookmark-x" aria-hidden="true" />{t("readLater.remove")}</button>
+    <div className="readLaterStub">
+      <h3 id="read-later-ticket-title"><i className="bi bi-ticket-perforated" aria-hidden="true" />{t("sidebar.later")}</h3>
+      {savedFrom && <p className="readLaterFrom">{t("readLater.fromLink", { source: savedFrom })}</p>}
+      {!tagged
+        ? <p className="readLaterNote">{t(story.starred ? "readLater.nextStarred" : "readLater.nextRemoved")}</p>
+        : next
+          ? <button type="button" className="readLaterNext" onClick={onOpenNext}>
+            <i className="bi bi-arrow-return-right" aria-hidden="true" />
+            <span><small>{t("readLater.nextUp")}</small><b>{next.title}</b></span>
+            <em>{t("feed.minutes", { count: next.reading_time || 1 })}</em>
+          </button>
+          : <p className="readLaterNote">{t("readLater.queueEnd")}</p>}
+    </div>
+    <div className="readLaterTear">
+      {!tagged
+        ? <button type="button" onClick={onPutBack}><i className="bi bi-bookmark-plus" aria-hidden="true" />{t("readLater.putBack")}</button>
         : <>
-          <span><i className="bi bi-bookmark" aria-hidden="true" />{t("readLater.removedState")}</span>
-          <button type="button" className="link" onClick={onToggleReadLater}>{t("readLater.undo")}</button>
+          {story.starred
+            ? <span className="readLaterStarred"><i className="bi bi-star-fill" aria-hidden="true" />{t("reader.saved")}</span>
+            : <button type="button" className="keep" onClick={onSave}><i className="bi bi-star-fill" aria-hidden="true" />{t(next ? "readLater.saveAndNext" : "readLater.saveAndFinish")}</button>}
+          <button type="button" onClick={onRemove}><i className="bi bi-x-lg" aria-hidden="true" />{t(next ? "readLater.removeAndNext" : "readLater.remove")}</button>
         </>}
     </div>
   </section>;
 }
-
 type AiSettingsStatus = { tone: "pending" | "success" | "error"; message: string } | null;
 
 const AI_EFFORT_LABELS: Record<AiEffort, string> = { low: "ai.effortLow", medium: "ai.effortMedium", high: "ai.effortHigh" };
@@ -2048,7 +2059,8 @@ export default function App() {
   });
   const [feedIcons, setFeedIcons] = useState<Map<number, string>>(new Map());
   const [mobileView, setMobileView] = useState<"sources" | "list" | "reader">("list");
-  const [toast, setToast] = useState("");
+  const [toast, setToast] = useState<Toast | null>(null);
+  const toastTimer = useRef<number | undefined>(undefined);
   const [syncedAt, setSyncedAt] = useState<Date | null>(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -2112,9 +2124,11 @@ export default function App() {
   const readLaterFeedIdsRef = useRef(readLaterFeedIds);
   const entryLabelsRef = useRef(entryLabels);
 
-  const notify = useCallback((message: string) => {
-    setToast(message);
-    window.setTimeout(() => setToast(""), 2200);
+  const notify = useCallback((message: string, action?: Toast["action"]) => {
+    window.clearTimeout(toastTimer.current);
+    setToast({ message, action });
+    // An action such as undo stays long enough to reach.
+    toastTimer.current = window.setTimeout(() => setToast(null), action ? 6000 : 2200);
   }, []);
 
   const trackQueuedEntryMutations = useCallback((mutations: StoredEntryMutation[]) => {
@@ -3218,6 +3232,18 @@ export default function App() {
 
   const selected = stories.find((story) => story.id === selectedId) ?? null;
   const selectedReadLater = selected !== null && hasEntryLabel(entryLabels, selected.id, "later");
+  // In Read later the queue is the list on screen; elsewhere it is every tagged entry, newest tag first.
+  const nextReadLater = useMemo(() => {
+    if (!selected || !selectedReadLater) return null;
+    const queue = mode === "later"
+      ? visible
+      : stories
+        .filter((story) => isEntryInSmartFeed(story, "later", entryLabels, readLaterFeedIds))
+        .sort((a, b) => compareSmartFeedEntries(a, b, "later", entryLabels));
+    const index = queue.findIndex((story) => story.id === selected.id);
+    return [...queue.slice(index + 1), ...queue.slice(0, Math.max(index, 0))]
+      .find((story) => story.id !== selected.id && hasEntryLabel(entryLabels, story.id, "later")) ?? null;
+  }, [entryLabels, mode, readLaterFeedIds, selected, selectedReadLater, stories, visible]);
   const deferredSelectedId = useDeferredValue(selectedId);
   const readerSelected = deferredSelectedId === selectedId ? selected : null;
   const selectedReadingEvent = readerSelected
@@ -3330,7 +3356,7 @@ export default function App() {
   };
 
   const toggleStarred = async (story: Story) => {
-    if (!config) return;
+    if (!config) return false;
     const starred = !story.starred;
     const readingEvent = activeEvent.current?.entryId === story.id ? activeEvent.current : null;
     const saved = await updateEntry(
@@ -3338,19 +3364,23 @@ export default function App() {
       { starred },
       starred ? t("reader.saved") : t("reader.unsaved"),
     );
-    if (!saved || !readingEvent) return;
+    if (!saved || !readingEvent) return saved;
     const starredAt = new Date().toISOString();
     const updatedEvent = { ...readingEvent, starred, starredAt, updatedAt: starredAt };
     if (activeEvent.current?.id === readingEvent.id) activeEvent.current = updatedEvent;
     await putReadingEvent(updatedEvent);
     setEvents((current) => current.map((event) => event.id === updatedEvent.id ? updatedEvent : event));
     scheduleWebDavUpload();
+    return true;
   };
 
-  /** Adds or removes the local Read later tag, rolling back if it cannot be stored. */
-  const setReadLater = useCallback(async (entryId: number, tagged: boolean) => {
+  /**
+   * Adds the local Read later tag at the given time, or removes it with null,
+   * rolling back if it cannot be stored.
+   */
+  const setReadLater = useCallback(async (entryId: number, taggedAt: string | null) => {
     const restore = entryLabelRestore(entryLabelsRef.current, "later", [entryId]);
-    const change = [[entryId, tagged ? new Date().toISOString() : null]] as const;
+    const change = [[entryId, taggedAt]] as const;
     setEntryLabels((current) => withEntryLabel(current, "later", change));
     try {
       await putEntryLabels("later", change);
@@ -3364,7 +3394,7 @@ export default function App() {
 
   const toggleReadLater = async (story: Story) => {
     const tagged = !hasEntryLabel(entryLabels, story.id, "later");
-    if (await setReadLater(story.id, tagged)) notify(t(tagged ? "readLater.added" : "readLater.removed"));
+    if (await setReadLater(story.id, tagged ? new Date().toISOString() : null)) notify(t(tagged ? "readLater.added" : "readLater.removed"));
   };
 
   const loadEntryContent = useCallback(async (id: number) => {
@@ -3540,6 +3570,29 @@ export default function App() {
     choose(story);
     setMobileView("reader");
   }, [choose]);
+
+  /**
+   * Saves or lets go of a Read later entry, removes its tag, and opens the
+   * next entry in the queue. The toast's undo restores both and reopens it.
+   */
+  const finishReadLater = async (story: Story, save: boolean) => {
+    const next = nextReadLater;
+    const taggedAt = entryLabels.get(story.id)?.later ?? null;
+    const starring = save && !story.starred;
+    // Star before leaving, so the open reading event records it.
+    const starred = starring ? toggleStarred(story) : Promise.resolve(true);
+    if (next) openStory(next);
+    if (!await starred) return;
+    if (!await setReadLater(story.id, null)) return;
+    notify(t(starring ? "readLater.savedAndRemoved" : "readLater.removed"), {
+      label: t("readLater.undo"),
+      run: () => {
+        void setReadLater(story.id, taggedAt);
+        if (starring) void toggleStarred({ ...story, starred: true });
+        if (next) openStory(story);
+      },
+    });
+  };
 
   const toggleRead = useCallback((story: Story) => {
     if (!config) return;
@@ -3794,7 +3847,7 @@ export default function App() {
     // A link to an entry that is already synced tags that entry instead of importing a copy.
     if (menu.match) {
       const matched = entriesRef.current.find((entry) => entry.id === menu.match?.entryId);
-      if (await setReadLater(menu.match.entryId, true)) notify(t("readLater.saved", { title: matched?.title || title }));
+      if (await setReadLater(menu.match.entryId, new Date().toISOString())) notify(t("readLater.saved", { title: matched?.title || title }));
       return;
     }
     setReadLaterSaving((current) => new Set(current).add(menu.url));
@@ -3809,7 +3862,7 @@ export default function App() {
       if (saved.feedResolved) await refreshFeedCatalog(config);
       const entry = await minifluxFetch<Entry>(config, `/v1/entries/${saved.entryId}`);
       await mergeEntryBatch([entry]);
-      if (await setReadLater(entry.id, true)) notify(t("readLater.saved", { title: entry.title || title }));
+      if (await setReadLater(entry.id, new Date().toISOString())) notify(t("readLater.saved", { title: entry.title || title }));
     } catch (cause) {
       notify(readLaterErrorMessage(cause, t));
     } finally {
@@ -4240,26 +4293,29 @@ export default function App() {
                       t={t}
                     />
                   </>}
-              {readLaterFeedIds.has(selected.feed_id)
-                ? <ReadLaterDetails
-                  story={selected}
-                  taggedAt={entryLabels.get(selected.id)?.later}
-                  timeZone={activeTimeZone}
-                  onToggleReadLater={() => void toggleReadLater(selected)}
-                  t={t}
-                />
-                : <RecommendationBreakdown
-                  story={selected}
-                  mode={mode}
-                  listedStatus={listReadSnapshot.get(selected.id) ?? selected.status}
-                  timeBucket={frozenVisibleOrder.timeBuckets?.get(selected.id) ?? smartFeedTimeBucket(selected.published_at, todayClock, activeTimeZone)}
-                  source={interest.sources.get(selected.feed_id)}
-                  sourceBaseline={interest.sourceBaseline}
-                  topics={interest.topics}
-                  now={recommendationSnapshot.now}
-                  locale={i18n.resolvedLanguage ?? "en"}
-                  t={t}
-                />}
+              {(selectedReadLater || readLaterFeedIds.has(selected.feed_id)) && <ReadLaterTicket
+                story={selected}
+                tagged={selectedReadLater}
+                next={nextReadLater}
+                onSave={() => void finishReadLater(selected, true)}
+                onRemove={() => void finishReadLater(selected, false)}
+                onOpenNext={() => { if (nextReadLater) openStory(nextReadLater); }}
+                onPutBack={() => void toggleReadLater(selected)}
+                t={t}
+              />}
+              {/* A saved link is not ranked. */}
+              {!readLaterFeedIds.has(selected.feed_id) && <RecommendationBreakdown
+                story={selected}
+                mode={mode}
+                listedStatus={listReadSnapshot.get(selected.id) ?? selected.status}
+                timeBucket={frozenVisibleOrder.timeBuckets?.get(selected.id) ?? smartFeedTimeBucket(selected.published_at, todayClock, activeTimeZone)}
+                source={interest.sources.get(selected.feed_id)}
+                sourceBaseline={interest.sourceBaseline}
+                topics={interest.topics}
+                now={recommendationSnapshot.now}
+                locale={i18n.resolvedLanguage ?? "en"}
+                t={t}
+              />}
             </div>
             {topicSelection && <>
               <div className="topicSelectionBackdrop" role="presentation" onMouseDown={() => dismissTopicSelection()} />
@@ -4398,7 +4454,12 @@ export default function App() {
         syncBusy={loading}
         notify={notify}
       />}
-      {toast && <div className="toast">✓　{toast}</div>}
+      {toast && <div className="toast" role="status">✓　{toast.message}{toast.action && <button type="button" onClick={() => {
+        const { run } = toast.action!;
+        window.clearTimeout(toastTimer.current);
+        setToast(null);
+        run();
+      }}>{toast.action.label}</button>}</div>}
     </main>
   );
 }
