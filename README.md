@@ -123,8 +123,8 @@ most recently tagged first. An article stays there until you remove the tag;
 reading it does not remove it. Tagged articles keep their place in **Today**,
 **All**, and the other lists.
 
-A tagged article ends with a choice: **Save, then next** stars it and removes
-it from **Read later**, and **Remove, then next** only removes it. Either way,
+A tagged article ends with a choice: **Save** stars it and removes it from
+**Read later**, and **Remove** only removes it. Either way,
 the next article in **Read later** opens, and the notice that follows offers
 **Undo**.
 

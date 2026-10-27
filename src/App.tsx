@@ -1083,8 +1083,14 @@ function ReadLaterTicket({
         : <>
           {story.starred
             ? <span className="readLaterStarred"><i className="bi bi-star-fill" aria-hidden="true" />{t("reader.saved")}</span>
-            : <button type="button" className="keep" onClick={onSave}><i className="bi bi-star-fill" aria-hidden="true" />{t(next ? "readLater.saveAndNext" : "readLater.saveAndFinish")}</button>}
-          <button type="button" onClick={onRemove}><i className="bi bi-x-lg" aria-hidden="true" />{t(next ? "readLater.removeAndNext" : "readLater.remove")}</button>
+            : <button type="button" className="keep" onClick={onSave}>
+              <span><i className="bi bi-star-fill" aria-hidden="true" />{t(next ? "readLater.saveShort" : "readLater.saveAndFinish")}</span>
+              {next && <small>{t("readLater.thenNext")}</small>}
+            </button>}
+          <button type="button" onClick={onRemove}>
+            <span><i className="bi bi-x-lg" aria-hidden="true" />{t(next ? "readLater.removeShort" : "readLater.remove")}</span>
+            {next && <small>{t("readLater.thenNext")}</small>}
+          </button>
         </>}
     </div>
   </section>;

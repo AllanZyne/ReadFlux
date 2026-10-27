@@ -256,8 +256,9 @@ test("a Read later entry ends with the decision ticket, and a saved link is not 
   // The ticket shows only the next entry, not how long this one waited.
   const ticket = app.slice(app.indexOf("function ReadLaterTicket("), app.indexOf("type AiSettingsStatus"));
   assert.match(ticket, /readLater\.nextUp[\s\S]*?next\.title/);
-  assert.match(ticket, /next \? "readLater\.saveAndNext" : "readLater\.saveAndFinish"/);
-  assert.match(ticket, /next \? "readLater\.removeAndNext" : "readLater\.remove"/);
+  // Each action names itself first; the quieter "then next" sits on the right.
+  assert.match(ticket, /<span><i className="bi bi-star-fill" aria-hidden="true" \/>\{t\(next \? "readLater\.saveShort" : "readLater\.saveAndFinish"\)\}<\/span>\s*\{next && <small>\{t\("readLater\.thenNext"\)\}<\/small>\}/);
+  assert.match(ticket, /<span><i className="bi bi-x-lg" aria-hidden="true" \/>\{t\(next \? "readLater\.removeShort" : "readLater\.remove"\)\}<\/span>\s*\{next && <small>\{t\("readLater\.thenNext"\)\}<\/small>\}/);
   assert.match(ticket, /readLater\.fromLink/);
   assert.doesNotMatch(ticket, /formatZonedDateTime|taggedAt/);
 });
