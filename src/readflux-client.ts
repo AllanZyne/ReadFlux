@@ -12,6 +12,7 @@ import {
   type AiTargetLanguage,
   type AiTask,
 } from "./ai-client.ts";
+import type { EntryLabel, EntryLabelChange, EntryLabels, EntryLabelTimes } from "./entry-labels.ts";
 import { isSupportedLanguage, type SupportedLanguage } from "./languages.ts";
 
 export type ConnectionConfig = {
@@ -174,7 +175,7 @@ export type WebDavConfig = {
 const LOCAL_CONFIG = "readflux.miniflux.local";
 const PREFERENCES = "readflux.preferences";
 const DB_NAME = "readflux-profile";
-const DB_VERSION = 10;
+const DB_VERSION = 11;
 const EVENTS = "reading-events";
 const SETTINGS = "settings";
 const ARTICLES = "articles";
@@ -196,24 +197,29 @@ const WEBDAV_DIRTY_MONTHS = "webdav-dirty-months";
 const WEBDAV_DIRTY_EXPOSURE_MONTHS = "webdav-dirty-exposure-months";
 const AI_CONFIG = "readflux.ai";
 const AI_RESULTS = "ai-results";
+const ENTRY_LABELS = "labels";
 
 type CacheableEntry = {
   id: number;
   status: "read" | "unread" | "removed";
   starred: boolean;
-  updated?: boolean;
 };
 
 type ArticleRecord<T extends CacheableEntry = CacheableEntry> = {
   id: number;
-  article: Omit<T, "id" | "status" | "starred" | "updated">;
+  article: Omit<T, "id" | "status" | "starred">;
 };
 
 type ArticleStateRecord = {
   entryId: number;
   status: CacheableEntry["status"];
   starred: boolean;
-  updated: boolean;
+};
+
+type EntryLabelRecord = {
+  entryId: number;
+  label: EntryLabel;
+  addedAt: string;
 };
 
 type FeedCatalogRecord<F = unknown, C = unknown> = CachedFeedCatalog<F, C> & {
@@ -363,6 +369,21 @@ function openDb(): Promise<IDBDatabase> {
         store.createIndex("clientId", "clientId");
       }
       if (!db.objectStoreNames.contains(AI_RESULTS)) db.createObjectStore(AI_RESULTS, { keyPath: "key" });
+      if (!db.objectStoreNames.contains(ENTRY_LABELS)) {
+        const labels = db.createObjectStore(ENTRY_LABELS, { keyPath: ["entryId", "label"] });
+        labels.createIndex("label", "label");
+        // Updated used to be a flag on the article state.
+        const migratedAt = new Date().toISOString();
+        const cursorRequest = request.transaction!.objectStore(ARTICLE_STATE).openCursor();
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          const { updated, ...state } = cursor.value as ArticleStateRecord & { updated?: boolean };
+          if (updated) labels.put({ entryId: state.entryId, label: "updated", addedAt: migratedAt } satisfies EntryLabelRecord);
+          if (updated !== undefined) cursor.update(state);
+          cursor.continue();
+        };
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -393,7 +414,6 @@ export async function getCachedEntries<T extends CacheableEntry>(): Promise<T[]>
       id,
       status: state?.status ?? "unread",
       starred: state?.starred ?? false,
-      ...(state?.updated ? { updated: true } : {}),
     } as T;
   });
 }
@@ -405,29 +425,36 @@ export async function putCachedEntries<T extends CacheableEntry>(entries: T[]) {
   const articleStore = transaction.objectStore(ARTICLES);
   const stateStore = transaction.objectStore(ARTICLE_STATE);
   entries.forEach((entry) => {
-    const { id, status, starred, updated, ...article } = entry;
+    const { id, status, starred, ...article } = entry;
     articleStore.put({ id, article });
-    stateStore.put({ entryId: id, status, starred, updated: updated === true } satisfies ArticleStateRecord);
+    stateStore.put({ entryId: id, status, starred } satisfies ArticleStateRecord);
   });
   await transactionComplete(transaction);
   db.close();
 }
 
-export async function setArticleUpdated(entryIds: number[], updated: boolean) {
-  if (!entryIds.length) return;
+export async function getEntryLabels(): Promise<EntryLabels> {
   const db = await openDb();
-  const transaction = db.transaction(ARTICLE_STATE, "readwrite");
-  const store = transaction.objectStore(ARTICLE_STATE);
-  const completed = transactionComplete(transaction);
-  entryIds.forEach((entryId) => {
-    const request = store.get(entryId);
-    request.onsuccess = () => {
-      const current = request.result as ArticleStateRecord | undefined;
-      if (current) store.put({ ...current, updated });
-    };
+  const records = await requestResult(db.transaction(ENTRY_LABELS).objectStore(ENTRY_LABELS).getAll()) as EntryLabelRecord[];
+  db.close();
+  const labels = new Map<number, EntryLabelTimes>();
+  records.forEach(({ entryId, label, addedAt }) => labels.set(entryId, { ...labels.get(entryId), [label]: addedAt }));
+  return labels;
+}
+
+/** Adds one label to entries, or removes it from those whose time is null. */
+export async function putEntryLabels(label: EntryLabel, changes: Iterable<EntryLabelChange>) {
+  const records = [...changes];
+  if (!records.length) return;
+  const db = await openDb();
+  const transaction = db.transaction(ENTRY_LABELS, "readwrite");
+  const store = transaction.objectStore(ENTRY_LABELS);
+  records.forEach(([entryId, addedAt]) => {
+    if (addedAt === null) store.delete([entryId, label]);
+    else store.put({ entryId, label, addedAt } satisfies EntryLabelRecord);
   });
   try {
-    await completed;
+    await transactionComplete(transaction);
   } finally {
     db.close();
   }
@@ -453,7 +480,6 @@ export async function queueEntryMutations<T extends CacheableEntry>(
       entryId: entry.id,
       status: entry.status,
       starred: entry.starred,
-      updated: entry.updated === true,
     } satisfies ArticleStateRecord);
   });
   const now = new Date().toISOString();
@@ -577,12 +603,23 @@ export async function saveEntrySyncState(state: EntrySyncState) {
   db.close();
 }
 
+/**
+ * Clears the synced cache. Updated labels describe that cache and go with it;
+ * Read later tags are the user's own and stay for the entries synced again.
+ */
 export async function resetEntrySync() {
   const db = await openDb();
-  const transaction = db.transaction([ARTICLES, ARTICLE_STATE, FEED_ICONS, FEED_CATALOG, SYNC_STATE], "readwrite");
+  const transaction = db.transaction([ARTICLES, ARTICLE_STATE, FEED_ICONS, FEED_CATALOG, SYNC_STATE, ENTRY_LABELS], "readwrite");
   [ARTICLES, ARTICLE_STATE, FEED_ICONS, FEED_CATALOG, SYNC_STATE].forEach((storeName) => {
     transaction.objectStore(storeName).clear();
   });
+  const cursorRequest = transaction.objectStore(ENTRY_LABELS).index("label").openCursor("updated" satisfies EntryLabel);
+  cursorRequest.onsuccess = () => {
+    const cursor = cursorRequest.result;
+    if (!cursor) return;
+    cursor.delete();
+    cursor.continue();
+  };
   await transactionComplete(transaction);
   db.close();
 }

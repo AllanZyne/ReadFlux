@@ -251,9 +251,26 @@ test("a saved link ends with its Read later details instead of the ranking expla
   const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
   assert.match(app, /\{readLaterFeedIds\.has\(selected\.feed_id\)\s*\? <ReadLaterDetails[\s\S]*?: <RecommendationBreakdown/);
   assert.match(app, /link: \{ url: menu\.url, title, tags: readerSelected \? \[readLaterSourceTag\(readerSelected\.source\)\] : \[\] \}/);
-  // The state follows the live entry, so undo is the opposite toggle.
-  assert.match(app, /const state = story\.starred \? "saved" : story\.status === "unread" \? "returned" : "open"/);
-  assert.match(app, /onClick=\{state === "saved" \? onToggleStarred : onToggleRead\}/);
+  // The state follows the live tag, so undo is the opposite toggle.
+  assert.match(app, /taggedAt=\{entryLabels\.get\(selected\.id\)\?\.later\}/);
+  assert.match(app, /const tagged = taggedAt !== undefined/);
+  assert.match(app, /className="link" onClick=\{onToggleReadLater\}/);
+});
+
+test("any article can be tagged for Read later from the reader toolbar or a link", async () => {
+  const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const toolbar = app.match(/<div className="readerToolbar">[\s\S]*?<\/div><\/div>/)?.[0] ?? "";
+  assert.match(toolbar, /aria-pressed=\{selectedReadLater\} onClick=\{\(\) => void toggleReadLater\(selected\)\}/);
+  assert.match(toolbar, /selectedReadLater \? "bi-bookmark-fill" : "bi-bookmark"/);
+  // The tag is local, stored with rollback, and never sent to Miniflux.
+  const setReadLater = app.slice(app.indexOf("const setReadLater = useCallback"), app.indexOf("const toggleReadLater"));
+  assert.match(setReadLater, /putEntryLabels\("later", change\)/);
+  assert.match(setReadLater, /catch \{\s*setEntryLabels\(\(current\) => withEntryLabel\(current, "later", restore\)\)/);
+  assert.doesNotMatch(setReadLater, /minifluxFetch|updateEntry/);
+  // A link to a synced entry tags it in place; only an unknown link is imported.
+  assert.match(app, /if \(menu\.match\) \{[\s\S]*?setReadLater\(menu\.match\.entryId, true\)[\s\S]*?return;\s*\}/);
+  assert.match(app, /await mergeEntryBatch\(\[entry\]\);\s*if \(await setReadLater\(entry\.id, true\)\)/);
+  assert.match(app, /const readLater = hasEntryLabel\(entryLabelsRef\.current, entry\.id, "later"\)/);
 });
 
 test("ReadFlux no longer asks for or shows helpful and not-interested feedback", async () => {

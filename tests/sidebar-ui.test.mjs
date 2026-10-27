@@ -39,7 +39,7 @@ test("article list actions live in the title bar as NetNewsWire-style icons", ()
   const titleBar = app.match(/<header className="feedTitle">([\s\S]*?)<\/header>/)?.[1] ?? "";
 
   assert.match(titleBar, /aria-label=\{t\("feed\.markAllRead"\)\}[\s\S]*?bi-check2-all/);
-  assert.match(titleBar, /disabled=\{mode === "updated"\}[\s\S]*?aria-label=\{t\("feed\.unreadOnly"\)\}[\s\S]*?aria-pressed=\{hideRead\}[\s\S]*?bi-filter-circle/);
+  assert.match(titleBar, /disabled=\{!unreadOnlyApplies\(mode\)\}[\s\S]*?aria-label=\{t\("feed\.unreadOnly"\)\}[\s\S]*?aria-pressed=\{hideRead\}[\s\S]*?bi-filter-circle/);
   assert.match(titleBar, /setHideReadByMode\(\(current\) => \(\{ \.\.\.current, \[mode\]: !current\[mode\] \}\)\)/);
   assert.doesNotMatch(app, /className="feedTools"/);
   assert.match(styles, /\.feedTitleActions\s*\{/);
@@ -53,7 +53,7 @@ test("article rows align full-width titles with right-aligned time and status ma
   assert.match(app, /className="storyStatus"[\s\S]*?<time[\s\S]*?dateTime=\{story\.published_at\}[\s\S]*?formatStoryListDate\(story\.published_at, todayClock, timeZone, locale\)[\s\S]*?<\/time>[\s\S]*?<i aria-hidden="true" \/>/);
   assert.doesNotMatch(app, /<h2>\{story\.title\}<\/h2><p>\{story\.summary\}<\/p>/);
   assert.match(app, /\$\{story\.starred \? "starred" : ""\}/);
-  assert.match(app, /updated=\{story\.status === "read" && \(entryLabels\.get\(story\.id\)\?\.includes\("updated"\) \?\? false\)\}/);
+  assert.match(app, /updated=\{story\.status === "read" && hasEntryLabel\(entryLabels, story\.id, "updated"\)\}/);
   assert.match(app, /story\.status === "unread"[\s\S]*?"feed\.unread"[\s\S]*?updated[\s\S]*?"feed\.updated"/);
   assert.match(app, /currentMode === "updated" && entry\.status === "read" && updatedIds\.has\(entry\.id\)/);
   assert.match(app, /timeBuckets: new Map|const timeBuckets = mode === "today"/);
@@ -80,20 +80,22 @@ test("the reader does not reserve a persistent previous-next footer", () => {
 });
 
 test("unread-only state is isolated per smart feed", () => {
-  assert.match(app, /useState<Record<ListMode, boolean>>\(\{[\s\S]*?today: false,[\s\S]*?all: false,[\s\S]*?updated: false,[\s\S]*?saved: false,[\s\S]*?later: true,/);
-  assert.match(app, /const hideRead = mode !== "updated" && hideReadByMode\[mode\]/);
-  assert.match(app, /hideReadRef\.current = nextMode !== "updated" && hideReadByMode\[nextMode\]/);
+  assert.match(app, /useState<Record<ListMode, boolean>>\(\{[\s\S]*?today: false,[\s\S]*?all: false,[\s\S]*?updated: false,[\s\S]*?saved: false,[\s\S]*?later: false,/);
+  // Updated entries are read by definition, and Read later lists tagged entries whatever their status.
+  assert.match(app, /const unreadOnlyApplies = \(mode: ListMode\) => mode !== "updated" && mode !== "later"/);
+  assert.match(app, /const hideRead = unreadOnlyApplies\(mode\) && hideReadByMode\[mode\]/);
+  assert.match(app, /hideReadRef\.current = unreadOnlyApplies\(nextMode\) && hideReadByMode\[nextMode\]/);
   assert.match(app, /today: hideReadByMode\.today \? todayUnreadCount : todayCount/);
   assert.match(app, /all: hideReadByMode\.all \? unreadCount : allCount/);
   assert.match(app, /saved: hideReadByMode\.saved[\s\S]*?entry\.status === "unread" && entry\.starred/);
-  assert.match(app, /later: hideReadByMode\.later \? laterUnreadCount : laterCount/);
+  assert.match(app, /later: laterCount,/);
 });
 
 test("mark all as read requires the selected anchored confirmation", () => {
   const confirmation = app.match(/<section\s+className="markAllReadConfirm"([\s\S]*?)<\/section>/)?.[0] ?? "";
 
   assert.match(app, /onClick=\{requestMarkVisibleRead\}/);
-  assert.match(app, /const visibleMarkReadCount = useMemo\([\s\S]*?story\.status === "unread" \|\| entryLabels\.get\(story\.id\)\?\.includes\("updated"\)[\s\S]*?\[entryLabels, visible\]/);
+  assert.match(app, /const visibleMarkReadCount = useMemo\([\s\S]*?story\.status === "unread" \|\| hasEntryLabel\(entryLabels, story\.id, "updated"\)[\s\S]*?\[entryLabels, visible\]/);
   assert.match(app, /disabled=\{!visibleMarkReadCount\}/);
   assert.match(confirmation, /count: visibleMarkReadCount/);
   assert.match(app, /className=\{markAllReadOpen \? "markAllReadSpotlight" : ""\}/);
@@ -156,14 +158,14 @@ test("scroll-to-read is enabled by default and configurable from General setting
   assert.match(app, /storyIdsPassedByScroll\(/);
   assert.match(app, /data-entry-id=\{story\.id\}/);
   assert.match(markEntriesReadFromScroll, /unreadIds\.map\(\(entryId\) => \(\{ entryId, field: "status", value: "read" \}\)\)/);
-  assert.match(markEntriesReadFromScroll, /const updatedIds = candidateIds\.filter[\s\S]*?entryLabels\.get\(id\)\?\.includes\("updated"\)/);
-  assert.match(markEntriesReadFromScroll, /setArticleUpdated\(updatedIds,\s*false\)/);
+  assert.match(markEntriesReadFromScroll, /const updatedIds = candidateIds\.filter[\s\S]*?hasEntryLabel\(entryLabels, id, "updated"\)/);
+  assert.match(markEntriesReadFromScroll, /putEntryLabels\("updated", clearUpdated\)/);
 });
 
 test("opening an updated article preserves the current Today or Updated snapshot", () => {
   assert.match(
     app,
-    /const wasUpdatedWhenListed = \(mode === "today" \|\| mode === "updated"\)[\s\S]*?frozenVisibleOrder\.initialLabels\.get\(story\.id\)\?\.includes\("updated"\)/,
+    /const wasUpdatedWhenListed = \(mode === "today" \|\| mode === "updated"\)[\s\S]*?hasEntryLabel\(frozenVisibleOrder\.initialLabels, story\.id, "updated"\)/,
   );
   assert.match(app, /if \(!wasUpdatedWhenListed && !isEntryInSmartFeed/);
 });
@@ -174,9 +176,9 @@ test("mark all as read also clears Updated labels from the visible list", () => 
   const markVisibleRead = app.slice(start, end);
 
   assert.ok(start >= 0 && end > start);
-  assert.match(markVisibleRead, /const updatedIds = visible[\s\S]*?entryLabels\.get\(story\.id\)\?\.includes\("updated"\)/);
+  assert.match(markVisibleRead, /const updatedIds = visible[\s\S]*?hasEntryLabel\(entryLabels, story\.id, "updated"\)/);
   assert.match(markVisibleRead, /setEntryLabels\(labelsAfter\)/);
-  assert.match(markVisibleRead, /setArticleUpdated\(updatedIds,\s*false\)/);
+  assert.match(markVisibleRead, /putEntryLabels\("updated", clearUpdated\)/);
   assert.match(markVisibleRead, /setListReadSnapshot\(new Map\(after\.map/);
 });
 
@@ -193,9 +195,9 @@ test("the subscriptions heading toggles the whole persisted section", () => {
 });
 
 test("switching smart feeds preserves the source scope while the active feed can reset it", () => {
-  assert.match(app, /const nextTopic = mode === key && key !== "later" \? null : topic/);
+  assert.match(app, /const nextTopic = mode === key \? null : topic/);
   assert.match(app, /onClick=\{\(\) => switchListContext\(key, nextTopic\)\}/);
-  assert.match(app, /const resetsSource = mode === key && scopedTopic !== null/);
+  assert.match(app, /const resetsSource = mode === key && topic !== null/);
   assert.match(app, /resetsSource \? "↩" : settings\.showFeedArticleCount \? count : ""/);
   assert.match(app, /sidebar\.resetSource/);
   assert.doesNotMatch(app, /allSubscriptions|所有订阅/);
@@ -217,11 +219,10 @@ test("changing smart feed, category, or feed closes the open article", () => {
   assert.match(app, /switchListContext\(mode, \{ kind: "feed", id: feed\.id \}\)/);
 });
 
-test("Read later ignores the source scope and lists no subscriptions", () => {
-  assert.match(app, /const scopedTopic = mode === "later" \? null : topic/);
-  assert.match(app, /const currentTopic = currentMode === "later" \? null : topicRef\.current/);
-  // No subscription narrows the saved links, not even while a sync lists every category.
-  assert.match(app, /const visibleCategorySources = useMemo\(\(\) => mode === "later" \? \[\] :/);
+test("Read later applies the source scope like the other smart feeds", () => {
+  assert.doesNotMatch(app, /scopedTopic/);
+  assert.match(app, /const currentTopic = topicRef\.current;/);
+  assert.match(app, /const visibleCategorySources = useMemo\(\(\) => categorySources\.flatMap/);
   assert.match(app, /\["later",\s*"bi-bookmark-fill",\s*t\("sidebar\.later"\),\s*navCounts\.later\]/);
   // The Read later feed and a category holding only it stay out of the subscriptions.
   assert.match(app, /categoryFeeds\.filter\(\(feed\) => !readLaterFeedIds\.has\(feed\.id\)\)/);
@@ -265,7 +266,7 @@ test("each category folder independently reflects and toggles its state", () => 
 });
 
 test("a selected category highlights its folder and title as one row", () => {
-  assert.match(app, /const categorySelected = scopedTopic\?\.kind === "category" && scopedTopic\.id === category\.id/);
+  assert.match(app, /const categorySelected = topic\?\.kind === "category" && topic\.id === category\.id/);
   assert.match(app, /className=\{`groupRow \$\{categorySelected \? "selected" : ""\}`\}/);
   assert.match(app, /className="groupHead"/);
   assert.match(styles, /\.groupRow\.selected\s*\{[^}]*background:[^}]*color:/);

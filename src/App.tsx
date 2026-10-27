@@ -40,6 +40,7 @@ import {
   protectPendingEntryMutations,
   type EntryMutationPatch,
 } from "./entry-mutation-sync";
+import { entryLabelRestore, hasEntryLabel, sameEntryLabels, withEntryLabel, type EntryLabels } from "./entry-labels";
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "./i18n";
 import { loadOptionalMinifluxTimeZone } from "./miniflux-timezone.mjs";
 import { articleLinkHref, readLaterFeedFileURL, readLaterFeedIds as findReadLaterFeedIds, readLaterLinkTitle, readLaterLinkURL, ReadLaterError, readLaterSourceFromTags, readLaterSourceTag, saveReadLaterLink } from "./read-later";
@@ -70,6 +71,7 @@ import {
   getCachedFeedCatalog,
   getCachedFeedIcons,
   getConnection,
+  getEntryLabels,
   getEntrySyncState,
   getProfileSettings,
   getRankingExposures,
@@ -87,6 +89,7 @@ import {
   patchReadingEvent,
   putCachedEntries,
   putCachedFeedIcons,
+  putEntryLabels,
   queueEntryMutations,
   ProfileSettings,
   putRankingExposure,
@@ -100,7 +103,6 @@ import {
   saveEntrySyncState,
   saveProfileSettings,
   saveWebDavConfig,
-  setArticleUpdated,
   ThemeName,
   WebDavConfig,
   WebDavSyncInterval,
@@ -137,7 +139,6 @@ type Entry = {
   published_at: string;
   changed_at?: string;
   starred: boolean;
-  updated?: boolean;
   reading_time?: number;
   tags?: string[];
   feed?: Feed;
@@ -157,6 +158,12 @@ type BaseStory = Entry & Omit<Story, keyof Entry | "score" | "scoreBreakdown"> &
 type EntryPage = { total: number; entries: Entry[] };
 type ListMode = "today" | "all" | "updated" | "saved" | "later";
 type Topic = { kind: "category" | "feed"; id: number } | null;
+
+/**
+ * Updated entries are read by definition, and Read later keeps an entry,
+ * read or not, until its tag is removed.
+ */
+const unreadOnlyApplies = (mode: ListMode) => mode !== "updated" && mode !== "later";
 type TopicSelection = {
   term: string;
   top: number;
@@ -176,7 +183,7 @@ type ArticleLink = {
   rect: DOMRect;
 };
 type LinkMenu = ArticleLink & {
-  /** A synced entry that already has this URL, preferring one saved for later. */
+  /** A synced entry that already has this URL, preferring one tagged Read later, then a subscribed one. */
   match: { entryId: number; readLater: boolean } | null;
   top: number;
   left: number;
@@ -541,6 +548,7 @@ const StoryRow = memo(function StoryRow({
   story,
   selected,
   updated,
+  readLater,
   feedIcon,
   todayClock,
   timeZone,
@@ -551,6 +559,7 @@ const StoryRow = memo(function StoryRow({
   story: Story;
   selected: boolean;
   updated: boolean;
+  readLater: boolean;
   feedIcon?: string;
   todayClock: number;
   timeZone: string;
@@ -582,7 +591,7 @@ const StoryRow = memo(function StoryRow({
     <div className="storyMain">
       <div className="storySource"><SourceIcon src={feedIcon}>{story.mark}</SourceIcon><span>{story.source}</span></div>
       <h2>{story.title}</h2>
-      <footer>{t("feed.minutes", { count: story.reading_time || 1 })}</footer>
+      <footer>{t("feed.minutes", { count: story.reading_time || 1 })}{readLater && <><i className="bi bi-bookmark-fill storyLater" aria-hidden="true" /><span className="sr-only">{t("sidebar.later")}</span></>}</footer>
     </div>
     <div className="storyStatus">
       <time
@@ -1019,26 +1028,26 @@ function RecommendationBreakdown({
 }
 
 /**
- * Article end for a saved link: when and where it was saved, and the choice
- * to keep it or put it back. The state follows the live entry, so undo is the
- * opposite toggle.
+ * Article end for a saved link: when and where it was saved, and removing its
+ * Read later tag. The state follows the live tag, so undo is the opposite toggle.
  */
 function ReadLaterDetails({
   story,
+  taggedAt,
   timeZone,
-  onToggleStarred,
-  onToggleRead,
+  onToggleReadLater,
   t,
 }: {
   story: Story;
+  /** When the Read later tag was added, or undefined once it is removed. */
+  taggedAt?: string;
   timeZone: string;
-  onToggleStarred: () => void;
-  onToggleRead: () => void;
+  onToggleReadLater: () => void;
   t: TFunction;
 }) {
   const savedFrom = readLaterSourceFromTags(story.tags);
-  const savedAt = formatZonedDateTime(story.published_at, timeZone);
-  const state = story.starred ? "saved" : story.status === "unread" ? "returned" : "open";
+  const savedAt = formatZonedDateTime(taggedAt ?? story.published_at, timeZone);
+  const tagged = taggedAt !== undefined;
   return <section
     className="readLaterDetails"
     aria-labelledby="read-later-details-title"
@@ -1054,17 +1063,14 @@ function ReadLaterDetails({
       <dt>{t("readLater.sourceLabel")}</dt>
       <dd>{story.source} · {t("feed.minutes", { count: story.reading_time || 1 })}</dd>
       <dt>{t("readLater.nextLabel")}</dt>
-      <dd>{t(state === "saved" ? "readLater.nextSaved" : state === "returned" ? "readLater.nextReturned" : "readLater.nextOpen")}</dd>
+      <dd>{t(tagged ? "readLater.nextTagged" : story.starred ? "readLater.nextStarred" : "readLater.nextRemoved")}</dd>
     </dl>
     <div className="readLaterActions">
-      {state === "open"
-        ? <>
-          <button type="button" className="primary" onClick={onToggleStarred}><i className="bi bi-star" aria-hidden="true" />{t("reader.save")}</button>
-          <button type="button" onClick={onToggleRead}><i className="bi bi-arrow-counterclockwise" aria-hidden="true" />{t("readLater.putBack")}</button>
-        </>
+      {tagged
+        ? <button type="button" onClick={onToggleReadLater}><i className="bi bi-bookmark-x" aria-hidden="true" />{t("readLater.remove")}</button>
         : <>
-          <span><i className={`bi ${state === "saved" ? "bi-star-fill" : "bi-bookmark-fill"}`} aria-hidden="true" />{t(state === "saved" ? "readLater.savedState" : "readLater.returnedState")}</span>
-          <button type="button" className="link" onClick={state === "saved" ? onToggleStarred : onToggleRead}>{t("readLater.undo")}</button>
+          <span><i className="bi bi-bookmark" aria-hidden="true" />{t("readLater.removedState")}</span>
+          <button type="button" className="link" onClick={onToggleReadLater}>{t("readLater.undo")}</button>
         </>}
     </div>
   </section>;
@@ -1087,20 +1093,6 @@ function AiStatusLine({ status }: { status: AiSettingsStatus }) {
   </p>;
 }
 
-function sameEntryLabels(current: Map<number, string[]>, next: Map<number, string[]>) {
-  if (current === next) return true;
-  if (current.size !== next.size) return false;
-  for (const [entryId, labels] of current) {
-    const other = next.get(entryId);
-    if (!other || other.length !== labels.length) return false;
-    if (!labels.every((label) => other.includes(label))) return false;
-  }
-  return true;
-}
-
-function updatedEntryLabels(entries: Entry[]) {
-  return new Map(entries.filter((entry) => entry.updated).map((entry) => [entry.id, ["updated"]]));
-}
 
 /**
  * Sidebar metadata is re-read on every load. Keeping the previous array when it
@@ -2023,14 +2015,13 @@ export default function App() {
     all: false,
     updated: false,
     saved: false,
-    // Read later is a queue: an opened link is done unless it was saved.
-    later: true,
+    later: false,
   });
-  const hideRead = mode !== "updated" && hideReadByMode[mode];
+  const hideRead = unreadOnlyApplies(mode) && hideReadByMode[mode];
   const [listReadSnapshot, setListReadSnapshot] = useState<Map<number, Entry["status"]>>(new Map());
   const [sourceSnapshot, setSourceSnapshot] = useState<{
     statuses: Map<number, Entry["status"]>;
-    labels: Map<number, string[]>;
+    labels: EntryLabels;
   }>(() => ({ statuses: new Map(), labels: new Map() }));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [markAllReadOpen, setMarkAllReadOpen] = useState(false);
@@ -2066,7 +2057,7 @@ export default function App() {
   const [error, setError] = useState<LocalizedError | null>(null);
   const [pendingNew, setPendingNew] = useState(0);
   const [activeCandidates, setActiveCandidates] = useState<{ entryId: number; terms: string[]; loading: boolean } | null>(null);
-  const [entryLabels, setEntryLabels] = useState<Map<number, string[]>>(new Map());
+  const [entryLabels, setEntryLabels] = useState<EntryLabels>(() => new Map());
   const [listOrderVersion, setListOrderVersion] = useState(0);
   const [renderedStoryCount, setRenderedStoryCount] = useState(STORY_RENDER_BATCH_SIZE);
   const [referrerScopeState, setReferrerScopeState] = useState({ url: "", scope: "" });
@@ -2117,8 +2108,7 @@ export default function App() {
   const recommendationExposures = useMemo(() => [...exposures, ...remoteExposures], [exposures, remoteExposures]);
   const readLaterFeedIds = useMemo(() => findReadLaterFeedIds(feeds), [feeds]);
   const readLaterFeedIdsRef = useRef(readLaterFeedIds);
-  // Read later ignores the source scope but remembers it for the other smart feeds.
-  const scopedTopic = mode === "later" ? null : topic;
+  const entryLabelsRef = useRef(entryLabels);
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -2226,7 +2216,7 @@ export default function App() {
     return next;
   }, []);
 
-  const captureSourceSnapshot = useCallback((snapshotEntries: Entry[], labels: Map<number, string[]>) => {
+  const captureSourceSnapshot = useCallback((snapshotEntries: Entry[], labels: EntryLabels) => {
     sourceSnapshotInitialized.current = true;
     setSourceSnapshot({
       statuses: new Map(snapshotEntries.map((entry) => [entry.id, entry.status])),
@@ -2257,6 +2247,7 @@ export default function App() {
   useEffect(() => { topicRef.current = topic; }, [topic]);
   useEffect(() => { feedsRef.current = feeds; }, [feeds]);
   useEffect(() => { readLaterFeedIdsRef.current = readLaterFeedIds; }, [readLaterFeedIds]);
+  useEffect(() => { entryLabelsRef.current = entryLabels; }, [entryLabels]);
   useEffect(() => { hideReadRef.current = hideRead; }, [hideRead]);
   useEffect(() => { queryRef.current = query; }, [query]);
   useEffect(() => { routeRef.current = route; }, [route]);
@@ -2373,24 +2364,20 @@ export default function App() {
     const { entries: mergedEntries, mergedBatch, updatedIds } = mergeSyncedEntries(entriesRef.current, protectedBatch);
     replaceEntries(mergedEntries);
     if (updatedIds.size) {
+      const detectedAt = new Date().toISOString();
+      const changes = [...updatedIds].map((id) => [id, detectedAt] as const);
       try {
-        await setArticleUpdated([...updatedIds], true);
+        await putEntryLabels("updated", changes);
       } catch { /* update-state persistence is best-effort */ }
-      setEntryLabels((current) => {
-        const next = new Map(current);
-        updatedIds.forEach((id) => {
-          const labels = next.get(id) ?? [];
-          if (!labels.includes("updated")) next.set(id, [...labels, "updated"]);
-        });
-        return next;
-      });
+      setEntryLabels((current) => withEntryLabel(current, "updated", changes));
     }
     if (!queryRef.current.trim()) {
       const currentMode = modeRef.current;
-      const currentTopic = currentMode === "later" ? null : topicRef.current;
+      const currentTopic = topicRef.current;
       const currentHideRead = hideReadRef.current && currentMode !== "updated";
       const matchesCurrentMode = (entry: Entry) => (
         currentMode === "updated" && entry.status === "read" && updatedIds.has(entry.id)
+        && !readLaterFeedIdsRef.current.has(entry.feed_id)
       ) || isEntryInSmartFeed(entry, currentMode, entryLabels, readLaterFeedIdsRef.current);
       const relevant = protectedBatch.filter((entry) => {
         if (listSnapshotIds.current.has(entry.id)) return false;
@@ -2465,12 +2452,12 @@ export default function App() {
       try {
         await flushPendingEntryMutations();
       } catch { /* pending local state remains protected while article refresh continues */ }
-      const [cached, storedState, cachedCatalog] = await Promise.all([
+      const [cached, storedState, cachedCatalog, labels] = await Promise.all([
         getCachedEntries<Entry>(),
         getEntrySyncState(),
         getCachedFeedCatalog<Feed, Category>().catch(() => null),
+        getEntryLabels(),
       ]);
-      const labels = updatedEntryLabels(cached);
       setEntryLabels((current) => sameEntryLabels(current, labels) ? current : labels);
       replaceEntries(cached);
       syncStateRef.current = storedState;
@@ -2831,7 +2818,7 @@ export default function App() {
       exportedAt,
       timeZone: activeTimeZone,
       markReadOnScroll: settings.markReadOnScroll,
-      entries,
+      entries: entries.map((entry) => ({ ...entry, updated: hasEntryLabel(entryLabels, entry.id, "updated") })),
       feeds,
       events: withActiveReadingEvent(recommendationEvents, activeEvent.current),
       exposures: recommendationExposures,
@@ -2960,7 +2947,7 @@ export default function App() {
     setPendingNew(0);
     modeRef.current = nextMode;
     topicRef.current = nextTopic;
-    hideReadRef.current = nextMode !== "updated" && hideReadByMode[nextMode];
+    hideReadRef.current = unreadOnlyApplies(nextMode) && hideReadByMode[nextMode];
     setMode(nextMode);
     setTopic(nextTopic);
   }, [captureSourceSnapshot, commitActiveEvent, entryLabels, hideReadByMode, navigateToList, persistActive, resetRenderedStories]);
@@ -2978,8 +2965,8 @@ export default function App() {
         readLaterFeedIds,
       )) return false;
       if (mode !== "updated" && hideRead && statusWhenListed === "read") return false;
-      if (scopedTopic?.kind === "category" && story.categoryId !== scopedTopic.id) return false;
-      if (scopedTopic?.kind === "feed" && story.feed_id !== scopedTopic.id) return false;
+      if (topic?.kind === "category" && story.categoryId !== topic.id) return false;
+      if (topic?.kind === "feed" && story.feed_id !== topic.id) return false;
       if (!hasQuery) return true;
       return `${story.title} ${story.summary} ${story.source} ${story.author ?? ""}`.toLowerCase().includes(needle);
     });
@@ -3021,7 +3008,7 @@ export default function App() {
       if (!hasQuery && !listReadSnapshot.has(story.id)) return [];
       const statusWhenListed = listReadSnapshot.get(story.id) ?? story.status;
       const wasUpdatedWhenListed = (mode === "today" || mode === "updated")
-        && (frozenVisibleOrder.initialLabels.get(story.id)?.includes("updated") ?? false);
+        && hasEntryLabel(frozenVisibleOrder.initialLabels, story.id, "updated");
       if (!wasUpdatedWhenListed && !isEntryInSmartFeed(
         { ...story, status: statusWhenListed },
         mode,
@@ -3029,15 +3016,15 @@ export default function App() {
         readLaterFeedIds,
       )) return [];
       if (mode !== "updated" && hideRead && statusWhenListed === "read") return [];
-      if (scopedTopic?.kind === "category" && story.categoryId !== scopedTopic.id) return [];
-      if (scopedTopic?.kind === "feed" && story.feed_id !== scopedTopic.id) return [];
+      if (topic?.kind === "category" && story.categoryId !== topic.id) return [];
+      if (topic?.kind === "feed" && story.feed_id !== topic.id) return [];
       if (hasQuery && !`${story.title} ${story.summary} ${story.source} ${story.author ?? ""}`.toLowerCase().includes(needle)) return [];
       return [story];
     });
-  }, [stories, mode, scopedTopic, query, hideRead, listReadSnapshot, frozenVisibleOrder, entryLabels, readLaterFeedIds]);
+  }, [stories, mode, topic, query, hideRead, listReadSnapshot, frozenVisibleOrder, entryLabels, readLaterFeedIds]);
   const visibleMarkReadCount = useMemo(
     () => visible.reduce((count, story) => count + (
-      story.status === "unread" || entryLabels.get(story.id)?.includes("updated") ? 1 : 0
+      story.status === "unread" || hasEntryLabel(entryLabels, story.id, "updated") ? 1 : 0
     ), 0),
     [entryLabels, visible],
   );
@@ -3060,33 +3047,22 @@ export default function App() {
         : []
     ));
     const updatedIds = candidateIds.filter((id) => (
-      entryLabels.get(id)?.includes("updated")
+      hasEntryLabel(entryLabels, id, "updated")
       && !autoReadPendingIds.current.has(id)
     ));
-    const updatedIdSet = new Set(updatedIds);
     const affectedIds = [...new Set([...unreadIds, ...updatedIds])];
     if (!affectedIds.length) return;
 
     affectedIds.forEach((id) => autoReadPendingIds.current.add(id));
     const idSet = new Set(unreadIds);
+    const restoreUpdated = entryLabelRestore(entryLabels, "updated", updatedIds);
+    const clearUpdated = updatedIds.map((id) => [id, null] as const);
     const after = replaceEntries((current) => current.map((entry) => (
-      idSet.has(entry.id) && entry.status === "unread"
-        ? { ...entry, status: "read" as const, ...(updatedIdSet.has(entry.id) ? { updated: false } : {}) }
-        : updatedIdSet.has(entry.id) ? { ...entry, updated: false } : entry
+      idSet.has(entry.id) && entry.status === "unread" ? { ...entry, status: "read" as const } : entry
     )));
-    if (updatedIds.length) {
-      setEntryLabels((current) => {
-        const next = new Map(current);
-        updatedIds.forEach((id) => {
-          const labels = (next.get(id) ?? []).filter((label) => label !== "updated");
-          if (labels.length) next.set(id, labels);
-          else next.delete(id);
-        });
-        return next;
-      });
-    }
+    if (updatedIds.length) setEntryLabels((current) => withEntryLabel(current, "updated", clearUpdated));
     try {
-      await setArticleUpdated(updatedIds, false);
+      await putEntryLabels("updated", clearUpdated);
       if (unreadIds.length) {
         const queued = await queueEntryMutations(
           after.filter((entry) => idSet.has(entry.id)),
@@ -3096,22 +3072,11 @@ export default function App() {
         void flushPendingEntryMutations().catch(() => undefined);
       }
     } catch (cause) {
-      await setArticleUpdated(updatedIds, true).catch(() => undefined);
+      await putEntryLabels("updated", restoreUpdated).catch(() => undefined);
       replaceEntries((current) => current.map((entry) => (
-        idSet.has(entry.id) && entry.status === "read"
-          ? { ...entry, status: "unread" as const, ...(updatedIdSet.has(entry.id) ? { updated: true } : {}) }
-          : updatedIdSet.has(entry.id) ? { ...entry, updated: true } : entry
+        idSet.has(entry.id) && entry.status === "read" ? { ...entry, status: "unread" as const } : entry
       )));
-      if (updatedIds.length) {
-        setEntryLabels((current) => {
-          const next = new Map(current);
-          updatedIds.forEach((id) => {
-            const labels = next.get(id) ?? [];
-            if (!labels.includes("updated")) next.set(id, [...labels, "updated"]);
-          });
-          return next;
-        });
-      }
+      if (updatedIds.length) setEntryLabels((current) => withEntryLabel(current, "updated", restoreUpdated));
       notify(errorMessage(cause, t, "errors.sync"));
     } finally {
       affectedIds.forEach((id) => autoReadPendingIds.current.delete(id));
@@ -3250,6 +3215,7 @@ export default function App() {
   useEffect(() => { visibleEmptyRef.current = !visible.length; }, [visible]);
 
   const selected = stories.find((story) => story.id === selectedId) ?? null;
+  const selectedReadLater = selected !== null && hasEntryLabel(entryLabels, selected.id, "later");
   const deferredSelectedId = useDeferredValue(selectedId);
   const readerSelected = deferredSelectedId === selectedId ? selected : null;
   const selectedReadingEvent = readerSelected
@@ -3379,6 +3345,26 @@ export default function App() {
     scheduleWebDavUpload();
   };
 
+  /** Adds or removes the local Read later tag, rolling back if it cannot be stored. */
+  const setReadLater = useCallback(async (entryId: number, tagged: boolean) => {
+    const restore = entryLabelRestore(entryLabelsRef.current, "later", [entryId]);
+    const change = [[entryId, tagged ? new Date().toISOString() : null]] as const;
+    setEntryLabels((current) => withEntryLabel(current, "later", change));
+    try {
+      await putEntryLabels("later", change);
+      return true;
+    } catch {
+      setEntryLabels((current) => withEntryLabel(current, "later", restore));
+      notify(t("readLater.tagFailed"));
+      return false;
+    }
+  }, [notify, t]);
+
+  const toggleReadLater = async (story: Story) => {
+    const tagged = !hasEntryLabel(entryLabels, story.id, "later");
+    if (await setReadLater(story.id, tagged)) notify(t(tagged ? "readLater.added" : "readLater.removed"));
+  };
+
   const loadEntryContent = useCallback(async (id: number) => {
     if (!config) return;
     setContentLoadingId(id);
@@ -3387,7 +3373,7 @@ export default function App() {
       const remote = await minifluxFetch<Entry>(config, `/v1/entries/${id}`);
       const local = entries.find((entry) => entry.id === id);
       const merged = local
-        ? { ...local, ...remote, status: local.status, starred: local.starred, updated: local.updated }
+        ? { ...local, ...remote, status: local.status, starred: local.starred }
         : remote;
       replaceEntries((all) => all.some((entry) => entry.id === id)
         ? all.map((entry) => entry.id === id ? merged : entry)
@@ -3499,19 +3485,11 @@ export default function App() {
         setActiveCandidates({ entryId: story.id, terms: [], loading: false });
       }
     });
-    if (config && entryLabels.get(story.id)?.includes("updated")) {
-      void setArticleUpdated([story.id], false);
+    if (config && hasEntryLabel(entryLabels, story.id, "updated")) {
+      const clearUpdated = [[story.id, null]] as const;
+      void putEntryLabels("updated", clearUpdated).catch(() => undefined);
       startTransition(() => {
-        replaceEntries((current) => current.map((entry) => (
-          entry.id === story.id ? { ...entry, updated: false } : entry
-        )));
-        setEntryLabels((current) => {
-          const next = new Map(current);
-          const labels = (next.get(story.id) ?? []).filter((l) => l !== "updated");
-          if (labels.length) next.set(story.id, labels);
-          else next.delete(story.id);
-          return next;
-        });
+        setEntryLabels((current) => withEntryLabel(current, "updated", clearUpdated));
       });
     }
     if (story.status === "unread" && config) {
@@ -3572,28 +3550,22 @@ export default function App() {
     if (!config) return;
     const ids = visible.filter((story) => story.status === "unread").map((story) => story.id);
     const updatedIds = visible
-      .filter((story) => entryLabels.get(story.id)?.includes("updated"))
+      .filter((story) => hasEntryLabel(entryLabels, story.id, "updated"))
       .map((story) => story.id);
     const affectedIds = new Set([...ids, ...updatedIds]);
     if (!affectedIds.size) return notify(t("feed.noUnread"));
     const idSet = new Set(ids);
     const before = entries;
     const labelsBefore = entryLabels;
-    const updatedIdSet = new Set(updatedIds);
-    const after = entries.map((entry) => idSet.has(entry.id)
-      ? { ...entry, status: "read" as const, ...(updatedIdSet.has(entry.id) ? { updated: false } : {}) }
-      : updatedIdSet.has(entry.id) ? { ...entry, updated: false } : entry);
-    const labelsAfter = new Map(entryLabels);
-    updatedIds.forEach((id) => {
-      const labels = (labelsAfter.get(id) ?? []).filter((label) => label !== "updated");
-      if (labels.length) labelsAfter.set(id, labels);
-      else labelsAfter.delete(id);
-    });
+    const restoreUpdated = entryLabelRestore(entryLabels, "updated", updatedIds);
+    const clearUpdated = updatedIds.map((id) => [id, null] as const);
+    const after = entries.map((entry) => idSet.has(entry.id) ? { ...entry, status: "read" as const } : entry);
+    const labelsAfter = withEntryLabel(entryLabels, "updated", clearUpdated);
     replaceEntries(after);
     setEntryLabels(labelsAfter);
     setListReadSnapshot(new Map(after.map((entry) => [entry.id, entry.status])));
     try {
-      await setArticleUpdated(updatedIds, false);
+      await putEntryLabels("updated", clearUpdated);
       if (ids.length) {
         const queued = await queueEntryMutations(
           after.filter((entry) => idSet.has(entry.id)),
@@ -3615,7 +3587,7 @@ export default function App() {
       }
       notify(t("feed.markedRead", { count: affectedIds.size }));
     } catch (cause) {
-      await setArticleUpdated(updatedIds, true).catch(() => undefined);
+      await putEntryLabels("updated", restoreUpdated).catch(() => undefined);
       replaceEntries(before);
       setEntryLabels(labelsBefore);
       setListReadSnapshot(new Map(before.map((entry) => [entry.id, entry.status])));
@@ -3724,10 +3696,15 @@ export default function App() {
   const openLinkMenu = useCallback((link: ArticleLink) => {
     setTopicSelection(null);
     let match: LinkMenu["match"] = null;
+    let matchRank = -1;
     for (const entry of entriesRef.current) {
       if (entry.status === "removed" || readLaterLinkURL(entry.url) !== link.matchURL) continue;
-      const readLater = readLaterFeedIdsRef.current.has(entry.feed_id);
-      if (!match || readLater) match = { entryId: entry.id, readLater };
+      const readLater = hasEntryLabel(entryLabelsRef.current, entry.id, "later");
+      const rank = readLater ? 2 : readLaterFeedIdsRef.current.has(entry.feed_id) ? 0 : 1;
+      if (rank > matchRank) {
+        match = { entryId: entry.id, readLater };
+        matchRank = rank;
+      }
       if (readLater) break;
     }
     const margin = 12;
@@ -3812,6 +3789,12 @@ export default function App() {
     closeLinkMenu(menu, true);
     if (!config || readLaterSaving.has(menu.url)) return;
     const title = readLaterLinkTitle(linkTitleSource(menu), menu.url);
+    // A link to an entry that is already synced tags that entry instead of importing a copy.
+    if (menu.match) {
+      const matched = entriesRef.current.find((entry) => entry.id === menu.match?.entryId);
+      if (await setReadLater(menu.match.entryId, true)) notify(t("readLater.saved", { title: matched?.title || title }));
+      return;
+    }
     setReadLaterSaving((current) => new Set(current).add(menu.url));
     notify(t("readLater.saving"));
     try {
@@ -3824,7 +3807,7 @@ export default function App() {
       if (saved.feedResolved) await refreshFeedCatalog(config);
       const entry = await minifluxFetch<Entry>(config, `/v1/entries/${saved.entryId}`);
       await mergeEntryBatch([entry]);
-      notify(t("readLater.saved", { title: entry.title || title }));
+      if (await setReadLater(entry.id, true)) notify(t("readLater.saved", { title: entry.title || title }));
     } catch (cause) {
       notify(readLaterErrorMessage(cause, t));
     } finally {
@@ -3976,22 +3959,20 @@ export default function App() {
     });
     return counts;
   }, [entries, hideRead, mode, readLaterFeedIds, sourceSnapshot]);
-  // Every saved link belongs to the hidden Read later feed, so no subscription
-  // narrows that list, even while a sync lists every category.
-  const visibleCategorySources = useMemo(() => mode === "later" ? [] : categorySources.flatMap((category) => {
+  const visibleCategorySources = useMemo(() => categorySources.flatMap((category) => {
     const visibleFeeds = category.feeds.filter((feed) =>
       (countByFeed.get(feed.id) ?? 0) > 0
-      || scopedTopic?.kind === "feed" && scopedTopic.id === feed.id,
+      || topic?.kind === "feed" && topic.id === feed.id,
     );
-    const selected = scopedTopic?.kind === "category" && scopedTopic.id === category.id;
+    const selected = topic?.kind === "category" && topic.id === category.id;
     return visibleFeeds.length || selected || syncProgress
       ? [{ ...category, feeds: syncProgress ? category.feeds : visibleFeeds }]
       : [];
-  }), [categorySources, countByFeed, mode, scopedTopic, syncProgress]);
-  const topicTitle = scopedTopic?.kind === "category"
-    ? categories.find((category) => category.id === scopedTopic.id)?.title
-    : scopedTopic?.kind === "feed"
-      ? feeds.find((feed) => feed.id === scopedTopic.id)?.title
+  }), [categorySources, countByFeed, topic, syncProgress]);
+  const topicTitle = topic?.kind === "category"
+    ? categories.find((category) => category.id === topic.id)?.title
+    : topic?.kind === "feed"
+      ? feeds.find((feed) => feed.id === topic.id)?.title
       : null;
   const toggleCategory = (categoryId: number, force?: boolean) => {
     setCollapsedCategories((current) => {
@@ -4013,7 +3994,7 @@ export default function App() {
       rows[Math.max(0, Math.min(rows.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))]?.focus();
     }
   };
-  const { unreadCount, todayCount, todayUnreadCount, allCount, updatedCount, savedCount, laterCount, laterUnreadCount } = useMemo(
+  const { unreadCount, todayCount, todayUnreadCount, allCount, updatedCount, savedCount, laterCount } = useMemo(
     () => countSmartFeedEntries(entries, entryLabels, readLaterFeedIds),
     [entries, entryLabels, readLaterFeedIds],
   );
@@ -4026,8 +4007,8 @@ export default function App() {
         entry.status === "unread" && entry.starred ? 1 : 0
       ), 0)
       : savedCount,
-    later: hideReadByMode.later ? laterUnreadCount : laterCount,
-  }), [allCount, entries, hideReadByMode, laterCount, laterUnreadCount, savedCount, todayCount, todayUnreadCount, unreadCount, updatedCount]);
+    later: laterCount,
+  }), [allCount, entries, hideReadByMode, laterCount, savedCount, todayCount, todayUnreadCount, unreadCount, updatedCount]);
   const syncProgressLabel = syncProgress
     ? `${syncProgress.kind === "search"
       ? t("sync.searching")
@@ -4098,15 +4079,14 @@ export default function App() {
           </header>
           <div className="sidebarScroll" onKeyDown={handleSidebarKey}>
             <nav>{nav.map(([key, icon, label, count]) => {
-              const resetsSource = mode === key && scopedTopic !== null;
-              // Read later never applies the scope, so choosing it again keeps the remembered one.
-              const nextTopic = mode === key && key !== "later" ? null : topic;
+              const resetsSource = mode === key && topic !== null;
+              const nextTopic = mode === key ? null : topic;
               return <button data-sidebar-row key={key} className={mode === key ? "active" : ""} onClick={() => switchListContext(key, nextTopic)} aria-label={resetsSource ? t("sidebar.resetSource", { title: label }) : undefined} title={resetsSource ? t("sidebar.resetSource", { title: label }) : undefined}><i className={`bi ${icon}`} aria-hidden="true" /><span>{label}</span><em>{resetsSource ? "↩" : settings.showFeedArticleCount ? count : ""}</em></button>;
             })}</nav>
             <div className="sideLabel"><span>{t("sidebar.subscriptions")}</span><button type="button" onClick={() => setSubscriptionsCollapsed((current) => !current)} title={t(subscriptionsCollapsed ? "sidebar.expand" : "sidebar.collapse")} aria-label={t(subscriptionsCollapsed ? "sidebar.expand" : "sidebar.collapse")} aria-expanded={!subscriptionsCollapsed}><i className={`bi ${subscriptionsCollapsed ? "bi-chevron-right" : "bi-chevron-down"}`} aria-hidden="true" /></button></div>
             {!subscriptionsCollapsed && visibleCategorySources.map((category) => {
               const collapsed = collapsedCategories.has(category.id);
-              const categorySelected = scopedTopic?.kind === "category" && scopedTopic.id === category.id;
+              const categorySelected = topic?.kind === "category" && topic.id === category.id;
               const categoryCount = category.feeds.reduce((sum, feed) => sum + (countByFeed.get(feed.id) ?? 0), 0);
               return <section className="sourceGroup" key={category.id}>
                 <div className={`groupRow ${categorySelected ? "selected" : ""}`}>
@@ -4124,7 +4104,7 @@ export default function App() {
                   ><span>{category.title}</span><em>{settings.showFeedArticleCount ? categoryCount || "" : ""}</em></button>
                 </div>
                 {!collapsed && <div className="groupFeeds">
-                  {category.feeds.map((feed) => <button data-sidebar-row className={scopedTopic?.kind === "feed" && scopedTopic.id === feed.id ? "sourceRow selected" : "sourceRow"} key={feed.id} onClick={() => switchListContext(mode, { kind: "feed", id: feed.id })}><SourceIcon src={feedIcons.get(feed.id)}>{feed.title.slice(0, 1)}</SourceIcon><span>{feed.title}</span><em>{settings.showFeedArticleCount ? countByFeed.get(feed.id) || "" : ""}</em></button>)}
+                  {category.feeds.map((feed) => <button data-sidebar-row className={topic?.kind === "feed" && topic.id === feed.id ? "sourceRow selected" : "sourceRow"} key={feed.id} onClick={() => switchListContext(mode, { kind: "feed", id: feed.id })}><SourceIcon src={feedIcons.get(feed.id)}>{feed.title.slice(0, 1)}</SourceIcon><span>{feed.title}</span><em>{settings.showFeedArticleCount ? countByFeed.get(feed.id) || "" : ""}</em></button>)}
                 </div>}
               </section>;
             })}
@@ -4147,7 +4127,7 @@ export default function App() {
             </div>
             <div className="feedTitleActions" role="group" aria-label={t("feed.listActions")}>
               <button ref={markAllReadButtonRef} type="button" className={markAllReadOpen ? "markAllReadSpotlight" : ""} onClick={requestMarkVisibleRead} disabled={!visibleMarkReadCount} aria-label={t("feed.markAllRead")} title={t("feed.markAllRead")}><i className="bi bi-check2-all" aria-hidden="true" /></button>
-              <button type="button" className={hideRead ? "active" : ""} disabled={mode === "updated"} onClick={() => { if (mode === "updated") return; resetRenderedStories(); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideReadByMode((current) => ({ ...current, [mode]: !current[mode] })); }} aria-label={t("feed.unreadOnly")} title={t(mode === "updated" ? "feed.unreadOnly" : hideRead ? "feed.showAll" : "feed.unreadOnly")} aria-pressed={hideRead}><i className="bi bi-filter-circle" aria-hidden="true" /></button>
+              <button type="button" className={hideRead ? "active" : ""} disabled={!unreadOnlyApplies(mode)} onClick={() => { if (!unreadOnlyApplies(mode)) return; resetRenderedStories(); setListReadSnapshot(new Map(entries.map((entry) => [entry.id, entry.status]))); setHideReadByMode((current) => ({ ...current, [mode]: !current[mode] })); }} aria-label={t("feed.unreadOnly")} title={t(!unreadOnlyApplies(mode) ? "feed.unreadOnly" : hideRead ? "feed.showAll" : "feed.unreadOnly")} aria-pressed={hideRead}><i className="bi bi-filter-circle" aria-hidden="true" /></button>
             </div>
           </header>
           {markAllReadOpen && <>
@@ -4173,7 +4153,8 @@ export default function App() {
               key={story.id}
               story={story}
               selected={selected?.id === story.id}
-              updated={story.status === "read" && (entryLabels.get(story.id)?.includes("updated") ?? false)}
+              updated={story.status === "read" && hasEntryLabel(entryLabels, story.id, "updated")}
+              readLater={hasEntryLabel(entryLabels, story.id, "later")}
               feedIcon={storyIcon(story.feed_id)}
               todayClock={todayClock}
               timeZone={activeTimeZone}
@@ -4202,6 +4183,7 @@ export default function App() {
               <div className="readerToolbar"><button className="mobileBack" onClick={() => { navigateToList(); setMobileView("list"); }}><i className="bi bi-chevron-left" aria-hidden="true" />{t("reader.backToArticles")}</button><div>
                 <button title={t(selected.status === "read" ? "reader.markUnread" : "reader.markRead")} aria-label={t(selected.status === "read" ? "reader.markUnread" : "reader.markRead")} onClick={() => toggleRead(selected)}><i className={`bi ${selected.status === "read" ? "bi-circle" : "bi-circle-fill"}`} aria-hidden="true" /></button>
                 <button className={selected.starred ? "pressed" : ""} title={t(selected.starred ? "reader.unsave" : "reader.save")} aria-label={t(selected.starred ? "reader.unsave" : "reader.save")} aria-pressed={selected.starred} onClick={() => void toggleStarred(selected)}><i className={`bi ${selected.starred ? "bi-star-fill" : "bi-star"}`} aria-hidden="true" /></button>
+                <button className={selectedReadLater ? "pressed" : ""} title={t(selectedReadLater ? "readLater.remove" : "readLater.save")} aria-label={t(selectedReadLater ? "readLater.remove" : "readLater.save")} aria-pressed={selectedReadLater} onClick={() => void toggleReadLater(selected)}><i className={`bi ${selectedReadLater ? "bi-bookmark-fill" : "bi-bookmark"}`} aria-hidden="true" /></button>
                 <a href={selected.url} target="_blank" rel="noopener noreferrer" title={t("reader.openOriginal")} aria-label={t("reader.openOriginal")}><i className="bi bi-box-arrow-up-right" aria-hidden="true" /></a>
                 <button title={t("reader.copyLink")} aria-label={t("reader.copyLink")} onClick={async () => { await navigator.clipboard.writeText(selected.url); notify(t("reader.linkCopied")); }}><i className="bi bi-copy" aria-hidden="true" /></button>
               </div></div>
@@ -4259,9 +4241,9 @@ export default function App() {
               {readLaterFeedIds.has(selected.feed_id)
                 ? <ReadLaterDetails
                   story={selected}
+                  taggedAt={entryLabels.get(selected.id)?.later}
                   timeZone={activeTimeZone}
-                  onToggleStarred={() => void toggleStarred(selected)}
-                  onToggleRead={() => toggleRead(selected)}
+                  onToggleReadLater={() => void toggleReadLater(selected)}
                   t={t}
                 />
                 : <RecommendationBreakdown
@@ -4398,6 +4380,7 @@ export default function App() {
             sourceSnapshotInitialized.current = false;
             setSourceSnapshot({ statuses: new Map(), labels: new Map() });
             replaceEntries([]);
+            setEntryLabels((current) => withEntryLabel(current, "updated", [...current.keys()].map((id) => [id, null] as const)));
             setListReadSnapshot(new Map());
             setSelectedId(null);
             setSyncedAt(null);
