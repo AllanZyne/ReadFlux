@@ -247,13 +247,65 @@ test("the feed a link was saved from travels as a Miniflux tag", async () => {
   assert.equal("tags" in untagged.body, false);
 });
 
-test("a saved link ends with its Read later details instead of the ranking explanation", async () => {
+test("a Read later entry ends with the decision ticket, and a saved link is not ranked", async () => {
   const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
-  assert.match(app, /\{readLaterFeedIds\.has\(selected\.feed_id\)\s*\? <ReadLaterDetails[\s\S]*?: <RecommendationBreakdown/);
+  // Only the Read later smart feed shows the ticket.
+  assert.match(app, /const showReadLaterTicket = mode === "later" && selected !== null\s*&& \(selectedReadLater \|\| readLaterFeedIds\.has\(selected\.feed_id\)\)/);
+  assert.match(app, /\{showReadLaterTicket && <ReadLaterTicket/);
+  assert.match(app, /\{!readLaterFeedIds\.has\(selected\.feed_id\) && <RecommendationBreakdown/);
+  assert.doesNotMatch(app, /ReadLaterDetails/);
   assert.match(app, /link: \{ url: menu\.url, title, tags: readerSelected \? \[readLaterSourceTag\(readerSelected\.source\)\] : \[\] \}/);
-  // The state follows the live entry, so undo is the opposite toggle.
-  assert.match(app, /const state = story\.starred \? "saved" : story\.status === "unread" \? "returned" : "open"/);
-  assert.match(app, /onClick=\{state === "saved" \? onToggleStarred : onToggleRead\}/);
+  // The ticket shows only the next entry, not how long this one waited.
+  const ticket = app.slice(app.indexOf("function ReadLaterTicket("), app.indexOf("type AiSettingsStatus"));
+  assert.match(ticket, /readLater\.nextUp[\s\S]*?next\.title/);
+  // Each action names itself first; the quieter consequence sits on the right, also for the last entry.
+  assert.match(ticket, /<span><i className="bi bi-star-fill" aria-hidden="true" \/>\{t\("readLater\.saveShort"\)\}<\/span>\s*<small>\{t\(next \? "readLater\.thenNext" : "readLater\.thenFinish"\)\}<\/small>/);
+  assert.match(ticket, /<span><i className="bi bi-x-lg" aria-hidden="true" \/>\{t\("readLater\.removeShort"\)\}<\/span>\s*<small>\{t\(next \? "readLater\.thenNext" : "readLater\.thenFinish"\)\}<\/small>/);
+  // The last entry keeps the next-up row's shape, without its link.
+  assert.match(ticket, /<div className="readLaterNext readLaterLast">[\s\S]*?<small>\{t\("readLater\.nextUp"\)\}<\/small><b>\{t\("readLater\.queueEnd"\)\}<\/b>/);
+  assert.match(ticket, /readLater\.fromLink/);
+  assert.doesNotMatch(ticket, /formatZonedDateTime|taggedAt/);
+});
+
+test("deciding on a Read later entry opens the next one and the toast can undo it", async () => {
+  const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const finish = app.slice(app.indexOf("const finishReadLater = async"), app.indexOf("const toggleRead = useCallback"));
+  // Starring starts before leaving, so the open reading event records it.
+  assert.match(finish, /const starred = starring \? toggleStarred\(story\) : Promise\.resolve\(true\);\s*if \(next\) openStory\(next\);/);
+  // The last entry closes instead.
+  assert.match(finish, /if \(next\) openStory\(next\);\s*else \{\s*navigateToList\(\);\s*setMobileView\("list"\);\s*\}/);
+  assert.match(finish, /setReadLater\(story\.id, null\)/);
+  assert.match(finish, /run: \(\) => \{\s*void setReadLater\(story\.id, taggedAt\);\s*if \(starring\) void toggleStarred\(\{ \.\.\.story, starred: true \}\);\s*openStory\(story\);/);
+  // The queue is the part of the Read later list below the open entry, so the last one never wraps.
+  assert.match(app, /if \(!selected \|\| !selectedReadLater \|\| mode !== "later"\) return null;[\s\S]*?return visible\.slice\(index \+ 1\)\s*\.find/);
+  assert.doesNotMatch(app, /visible\.slice\(0, Math\.max\(index, 0\)\)/);
+  // A tag added while Read later is open waits for the list refresh like a newly synced entry.
+  const setReadLater = app.slice(app.indexOf("const setReadLater = useCallback"), app.indexOf("const toggleReadLater"));
+  assert.match(setReadLater, /if \(taggedAt !== null && modeRef\.current === "later" && inScope && !capturedVisibleOrder\.current\?\.includes\(entryId\)\) \{\s*if \(visibleEmptyRef\.current\) setListReadSnapshot[\s\S]*?else setPendingNew\(\(count\) => count \+ 1\);/);
+  // Enter and Space on the toolbar, the ticket, and the toast's undo stay with their buttons.
+  assert.match(app, /function keepButtonKeysFromReader\(event: React\.KeyboardEvent\) \{\s*if \(\(event\.key === "Enter" \|\| event\.key === " "\) && event\.target instanceof HTMLButtonElement\) event\.stopPropagation\(\);/);
+  assert.match(app, /\{t\("reader\.backToArticles"\)\}<\/button><div onKeyDown=\{keepButtonKeysFromReader\}>/);
+  assert.match(app, /\{toast\.action && <button type="button" onKeyDown=\{keepButtonKeysFromReader\}/);
+  assert.match(app.slice(app.indexOf("function ReadLaterTicket("), app.indexOf("type AiSettingsStatus")), /onKeyDown=\{keepButtonKeysFromReader\}/);
+  // An action keeps the toast up long enough to reach it.
+  assert.match(app, /toastTimer\.current = window\.setTimeout\(\(\) => setToast\(null\), action \? 6000 : 2200\)/);
+  assert.match(app, /\{toast\.action && <button type="button"/);
+});
+
+test("any article can be tagged for Read later from the reader toolbar or a link", async () => {
+  const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const toolbar = app.match(/<div className="readerToolbar">[\s\S]*?<\/div><\/div>/)?.[0] ?? "";
+  assert.match(toolbar, /aria-pressed=\{selectedReadLater\} onClick=\{\(\) => void toggleReadLater\(selected\)\}/);
+  assert.match(toolbar, /selectedReadLater \? "bi-bookmark-fill" : "bi-bookmark"/);
+  // The tag is local, stored with rollback, and never sent to Miniflux.
+  const setReadLater = app.slice(app.indexOf("const setReadLater = useCallback"), app.indexOf("const toggleReadLater"));
+  assert.match(setReadLater, /putEntryLabels\("later", change\)/);
+  assert.match(setReadLater, /catch \{\s*setEntryLabels\(\(current\) => withEntryLabel\(current, "later", restore\)\)/);
+  assert.doesNotMatch(setReadLater, /minifluxFetch|updateEntry/);
+  // A link to a synced entry tags it in place; only an unknown link is imported.
+  assert.match(app, /if \(menu\.match\) \{[\s\S]*?setReadLater\(menu\.match\.entryId, new Date\(\)\.toISOString\(\)\)[\s\S]*?return;\s*\}/);
+  assert.match(app, /await mergeEntryBatch\(\[entry\]\);\s*if \(await setReadLater\(entry\.id, new Date\(\)\.toISOString\(\)\)\)/);
+  assert.match(app, /const readLater = hasEntryLabel\(entryLabelsRef\.current, entry\.id, "later"\)/);
 });
 
 test("ReadFlux no longer asks for or shows helpful and not-interested feedback", async () => {

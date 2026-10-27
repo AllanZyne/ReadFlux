@@ -184,24 +184,27 @@ export function nextDayBoundary(value, timeZone) {
   return new Date(upperBound);
 }
 
-/** Links saved for later live in their own Miniflux feed and stay out of Today. */
+const hasLabel = (labels, entryId, label) => labels?.get(entryId)?.[label] !== undefined;
+
+/**
+ * Read later lists every entry carrying the user's tag, read or not. Links
+ * saved from articles live in a hidden Miniflux feed and appear only there and,
+ * when starred, in Saved.
+ */
 export function isEntryInSmartFeed(entry, mode, labels, readLaterFeedIds) {
   if (entry.status === "removed") return false;
-  const readLater = readLaterFeedIds?.has(entry.feed_id) ?? false;
-  if (mode === "later") return readLater;
-  const updated = entry.status === "read"
-    && (labels?.get(entry.id)?.includes("updated") ?? false);
-  if (mode === "today") {
-    return !readLater && (entry.status === "unread" || updated);
-  }
+  if (mode === "later") return hasLabel(labels, entry.id, "later");
+  if (mode === "saved") return entry.starred;
+  if (readLaterFeedIds?.has(entry.feed_id)) return false;
+  const updated = entry.status === "read" && hasLabel(labels, entry.id, "updated");
+  if (mode === "today") return entry.status === "unread" || updated;
   if (mode === "all") return true;
-  if (mode === "updated") return updated;
-  return entry.starred;
+  return updated;
 }
 
 export function smartFeedStatusPriority(entry, labels) {
   if (entry.status === "unread") return 2;
-  if (labels?.get(entry.id)?.includes("updated")) return 1;
+  if (hasLabel(labels, entry.id, "updated")) return 1;
   return 0;
 }
 
@@ -249,10 +252,12 @@ export function compareSmartFeedEntries(a, b, mode, labels, context = {}) {
     const recommendationOrder = b.score - a.score;
     if (recommendationOrder !== 0) return recommendationOrder;
   }
-  const sortField = mode === "updated" ? "changed_at" : "published_at";
-  const aTime = new Date(a[sortField] ?? a.published_at).getTime();
-  const bTime = new Date(b[sortField] ?? b.published_at).getTime();
-  return bTime - aTime || b.id - a.id;
+  // Read later is newest tag first; Updated is newest change first.
+  const time = (entry) => new Date(
+    (mode === "later" ? labels?.get(entry.id)?.later : mode === "updated" ? entry.changed_at : undefined)
+      ?? entry.published_at,
+  ).getTime();
+  return time(b) - time(a) || b.id - a.id;
 }
 
 export function countSmartFeedEntries(entries, labels, readLaterFeedIds) {
@@ -264,26 +269,20 @@ export function countSmartFeedEntries(entries, labels, readLaterFeedIds) {
     updatedCount: 0,
     savedCount: 0,
     laterCount: 0,
-    laterUnreadCount: 0,
   };
 
   for (const entry of entries) {
     if (entry.status === "removed") continue;
+    if (hasLabel(labels, entry.id, "later")) counts.laterCount += 1;
+    if (entry.starred) counts.savedCount += 1;
+    if (readLaterFeedIds?.has(entry.feed_id)) continue;
     const unread = entry.status === "unread";
-    const updated = entry.status === "read"
-      && (labels?.get(entry.id)?.includes("updated") ?? false);
-    const readLater = readLaterFeedIds?.has(entry.feed_id) ?? false;
+    const updated = entry.status === "read" && hasLabel(labels, entry.id, "updated");
     if (unread) counts.unreadCount += 1;
-    if (readLater) {
-      counts.laterCount += 1;
-      if (unread) counts.laterUnreadCount += 1;
-    } else {
-      if (unread || updated) counts.todayCount += 1;
-      if (unread) counts.todayUnreadCount += 1;
-    }
+    if (unread || updated) counts.todayCount += 1;
+    if (unread) counts.todayUnreadCount += 1;
     counts.allCount += 1;
     if (updated) counts.updatedCount += 1;
-    if (entry.starred) counts.savedCount += 1;
   }
 
   return counts;

@@ -13,7 +13,8 @@ The complete synced history remains available in **All**.
 - **All** contains the complete synced history in reverse publication order
 - **Updated** tracks previously read articles whose content changed since they
   were last opened
-- **Read later** keeps links you save from articles, outside **Today**
+- **Read later** keeps any article you tag, and links you save from articles,
+  until you remove the tag
 - An **Unread only** list filter replaces a separate unread destination
 - Saved articles, source-scoped subscription groups, feed icons, and dynamic
   counts
@@ -41,8 +42,9 @@ ReadFlux has no application server:
 
 - The Miniflux URL, API key, timezone, and preferences are stored only in
   this browser's `localStorage`.
-- Article content, article state, feed metadata, sync state, reading events,
-  ranking exposures, and pending Miniflux writes are stored in IndexedDB.
+- Article content, article state, Updated and Read later labels, feed
+  metadata, sync state, reading events, ranking exposures, and pending Miniflux
+  writes are stored in IndexedDB.
 - The browser sends requests directly to your Miniflux server.
 - The repository and build output contain no credentials.
 - Article text leaves the browser only when you click **Summarize** or
@@ -115,19 +117,31 @@ in `vite.config.ts`.
 
 ## Read later
 
+The bookmark button in the reader toolbar tags the open article for **Read
+later**. **Read later** lists every tagged article, read or unread, with the
+most recently tagged first. An article stays there until you remove the tag;
+reading it does not remove it. Tagged articles keep their place in **Today**,
+**All**, and the other lists.
+
+In **Read later**, each article ends with a choice: **Save** stars it and
+removes it from **Read later**, and **Remove** only removes it. Either way, the
+next article in the list opens, or the article closes when it was the last
+one. The notice that follows offers **Undo**. Other lists do not show this
+choice.
+
 Clicking or tapping a link in an article opens a menu: **Read later**, **Open
 link**, and **Copy link**, plus **Open in ReadFlux** when the link is already a
 synced article. Ctrl/⌘-, Shift-, and middle-clicks open the link directly.
 
-**Read later** adds the link to Miniflux as an unread article, and Miniflux
-fetches the page's content. Saved links appear under **Read later**, newest
-first, and stay out of **Today**. They sync to every device through Miniflux.
+**Read later** on a link that is already a synced article tags that article.
+Any other link is added to Miniflux as an unread article, and Miniflux fetches
+the page's content. Saved links appear only in **Read later**, and in **Saved**
+if you star them. After you remove the tag from a link you have not starred,
+it no longer appears anywhere, and Miniflux deletes it after its cleanup period
+(60 days by default).
 
-**Read later** works as a queue and shows only unread links by default. Opening
-a link marks it read, and it leaves the queue at the next list refresh. To keep
-an article, save it with the star; it then also appears in **Saved**. Miniflux
-deletes read, unsaved articles after its cleanup period (60 days by default).
-Turn off **Unread only** to see links you have already read.
+Tags are stored only in this browser and are not synced to other devices.
+On another device, links you saved appear only if you starred them.
 
 The first saved link creates a disabled feed named **ReadFlux · Read later**
 in a category of the same name. The feed points at the empty
@@ -157,8 +171,8 @@ you read articles about them. ReadFlux never learns topics you did not follow.
 
 The end of each article explains why it is where it is, with the full score
 breakdown. Scores are not shown in the article list. A link saved for later
-ends instead with when and where you saved it, and buttons to save it or put
-it back in **Read later**.
+is not ranked, so it has no breakdown. The Read later tag does not affect
+ranking.
 
 The **Recommendation data** tab in Settings shows the derived feed and topic
 weights and the 30 most recent raw events by default. Local records can be

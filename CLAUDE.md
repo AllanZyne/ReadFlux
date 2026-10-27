@@ -23,17 +23,30 @@ The primary product contract is:
   publication time, newest first.
 - `Updated` contains previously read entries whose content changed after they
   were cached, and clears an entry's update label when it is reopened.
-- `Read later` contains links saved from articles, newest first. They are
-  entries of the Read later feed and never appear in `Today`; `All` and
-  `Saved` still include them. It is a queue and starts with `Unread only` on:
-  reading a link finishes it, starring keeps it in `Saved`, and Miniflux's
-  cleanup eventually deletes the rest. Miniflux has no API to delete an entry.
+- `Read later` contains every entry carrying the local `later` label, read or
+  not, newest label first. Any article can be tagged from the reader toolbar,
+  and a link in an article from its link menu. The only way out is removing
+  the tag; reading never removes it. Tagging does not move an article out of
+  the other smart feeds.
+- Links saved from articles are entries of the hidden Read later feed. They
+  appear only in `Read later` while tagged and in `Saved` while starred, never
+  in `Today`, `All`, or `Updated`. Miniflux has no API to delete an entry, so
+  an untagged, unstarred link stays hidden until Miniflux's cleanup deletes it.
 - `Unread only` is a list filter, not a separate smart feed. It does not apply
-  to `Updated`, whose entries are already read by definition.
+  to `Updated`, whose entries are already read by definition, or to
+  `Read later`, which keeps tagged entries whatever their status.
 - Recommendation scores affect ordering within each `Today` time and read-status
   tier only, and are not shown in the list. The end of the open article shows
   its sort keys and every score component with its formula and inputs. A saved
-  link is not ranked, so its end shows the Read later details instead.
+  link is not ranked and has no score breakdown. The `later` label does not
+  affect ranking.
+- In `Read later`, each entry ends with the Read later ticket: save it (star
+  it and remove the tag) or remove the tag, and either way open the next entry
+  below it in the list on screen, or close the article when none is left below;
+  the queue never wraps to the top. The ticket
+  previews only that next entry, not how long this one waited. The toast's
+  undo restores the tag and star and reopens the entry. Other smart feeds show
+  no ticket; the reader toolbar still adds and removes the tag.
 - There are no explicit like or dislike controls. Skipping, scrolling past,
   and quickly leaving an article are the negative signals.
 - Reading an entry updates its live state without removing it from the current
@@ -45,9 +58,9 @@ The primary product contract is:
 - `Saved` must be loaded from all paginated starred Miniflux results.
 - Category and feed selection filters the current smart feed. Switching smart
   feeds preserves that source scope and closes the current article; selecting
-  the active smart feed again clears the source scope. `Read later` ignores the
-  scope but keeps it for the other smart feeds. Its saved links all belong to
-  the hidden Read later feed, so it lists no subscriptions.
+  the active smart feed again clears the source scope. `Read later` applies it
+  like `Saved`; saved links have no subscription row, so they show only
+  without a scope.
 - Day and night are the only themes.
 - Settings are an in-app dialog. Recommendation data is inspectable, raw
   events can be added, edited, or deleted, and the tab can export a local JSON
@@ -70,6 +83,8 @@ The primary product contract is:
   translations.
 - `src/article-ai.ts`: per-article summary and translation state, saved-result
   reuse, and cancellation.
+- `src/entry-labels.ts`: the local `updated` and `later` entry labels and pure
+  helpers to change and compare them.
 - `src/read-later.ts`: Read later feed discovery and creation, entry import,
   and pure link URL and title helpers.
 - `public/readflux-read-later.xml`: the empty Atom file the Read later feed
@@ -89,6 +104,11 @@ build variable unless the user explicitly changes the architecture.
 - Miniflux connection and preferences: localStorage.
 - Local reading events, read-only remote event mirrors, article content and
   state, feed metadata, sync progress, and the Miniflux outbox: IndexedDB.
+- Entry labels: IndexedDB `labels`, one record per entry and label with the
+  time it was added. `updated` is derived from synced content: reopening or
+  marking the entry read clears it, and resetting sync deletes it. `later`
+  belongs to the user: only removing the tag clears it, resetting sync keeps
+  it, and it is neither sent to Miniflux nor synced through WebDAV.
 - Optional WebDAV connection and stable client identity: localStorage.
 - Category and subscriptions-section collapse state: localStorage.
 - Optional AI provider connection: localStorage. Saved AI summaries and
@@ -128,11 +148,18 @@ or reading events. The only exception is the explicit AI action below.
 
 ## Read later
 
-- Saved links are Miniflux entries, so they sync through Miniflux and need no
-  local store. They are imported with
+- The Read later tag is the local `later` entry label. Miniflux cannot set
+  tags on an existing entry, so the tag stays in this browser; another device
+  sees saved links only as starred entries in `Saved`.
+- The database upgrade to tags tagged the unread entries of the Read later
+  feed, the old queue, at their import time. Its read entries had already left
+  the queue.
+- A link that matches a synced entry tags that entry instead of importing a
+  copy, preferring an entry already tagged, then a subscribed one.
+- Other links become Miniflux entries, imported with
   `POST /v1/feeds/{id}/entries/import` (Miniflux 2.2.16 or later) into one
-  feed, then `fetch-content` asks Miniflux to scrape the page. Always send
-  `status: "unread"`; Miniflux imports as read by default.
+  feed and then tagged; `fetch-content` asks Miniflux to scrape the page.
+  Always send `status: "unread"`; Miniflux imports as read by default.
 - The Read later feed is identified by its feed URL ending in
   `/readflux-read-later.xml`, never by a title or a stored ID, so every device
   and deployment finds the same feed. ReadFlux creates it on the first save,
@@ -149,7 +176,7 @@ or reading events. The only exception is the explicit AI action below.
   ("read more", "原文"), then its `title`, then a linked image's `alt`, then the
   host and last path segment. A translated body takes the original link text.
 - The feed a link was saved from is stored as a `via <source>` Miniflux tag,
-  the only metadata an import can carry, and shown at the article end.
+  the only metadata an import can carry, and shown on the Read later ticket.
 - Miniflux keeps tombstones for entries its cleanup deleted. Importing such a
   link again retries with a fresh `external_id`.
 - The link goes only to the user's Miniflux. Do not fetch the page from the

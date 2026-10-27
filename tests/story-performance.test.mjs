@@ -62,7 +62,7 @@ test("live article updates reuse scores and untouched rows until list refresh", 
     evaluations += 1;
     return { ...entry, score: entry.starred ? 100 : 10, reason: `score-${evaluations}` };
   };
-  const entries = Array.from({ length: 10_000 }, (_, id) => ({ id, status: "unread", starred: false, updated: true }));
+  const entries = Array.from({ length: 10_000 }, (_, id) => ({ id, status: "unread", starred: false }));
   const project = createStoryProjector(derive);
   const initial = project(entries);
   const changed = entries.map((entry, index) => index === 0
@@ -72,7 +72,6 @@ test("live article updates reuse scores and untouched rows until list refresh", 
   assert.equal(evaluations, entries.length);
   assert.equal(live[0].status, "read");
   assert.equal(live[0].starred, true);
-  assert.equal(live[0].updated, undefined);
   assert.equal(live[0].content, "loaded");
   assert.equal(live[0].score, initial[0].score);
   assert.equal(live[0].reason, initial[0].reason);
@@ -100,8 +99,7 @@ test("article selection paints before deferred reader work and list mutations", 
   assert.match(app, /const deferredSelectedId = useDeferredValue\(selectedId\)/);
   assert.match(app, /const readerSelected = deferredSelectedId === selectedId \? selected : null/);
   assert.match(app, /readerSelected\?\.id !== selected\.id[\s\S]*?reader\.loadingContent/);
-  assert.match(app, /startTransition\(\(\) => \{\s*replaceEntries\(\(current\)/);
-  assert.match(app, /replaceEntries\(\(current\)[\s\S]*?setEntryLabels/);
+  assert.match(app, /startTransition\(\(\) => \{\s*setEntryLabels\(\(current\) => withEntryLabel\(current, "updated", clearUpdated\)\)/);
   assert.match(app, /startTransition\(\(\) => \{\s*void updateEntry\(story\.id, \{ status: "read" \}/);
 });
 

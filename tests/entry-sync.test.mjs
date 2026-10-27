@@ -23,8 +23,9 @@ test("full entry sync loads the complete Miniflux history in resumable phases", 
 });
 
 test("entry content and mutable state use separate single-user stores", () => {
-  assert.match(client, /DB_VERSION\s*=\s*10/);
+  assert.match(client, /DB_VERSION\s*=\s*11/);
   assert.match(client, /AI_RESULTS\s*=\s*"ai-results"/);
+  assert.match(client, /ENTRY_LABELS\s*=\s*"labels"/);
   assert.match(client, /ARTICLES\s*=\s*"articles"/);
   assert.match(client, /ARTICLE_STATE\s*=\s*"article-state"/);
   assert.match(client, /SYNC_STATE\s*=\s*"sync-state"/);
@@ -74,8 +75,11 @@ test("manual intervals never become due", () => {
 
 test("sync data can be reset without deleting profile data or credentials", () => {
   assert.match(client, /export async function resetEntrySync/);
-  assert.match(client, /db\.transaction\(\[ARTICLES,\s*ARTICLE_STATE,\s*FEED_ICONS,\s*FEED_CATALOG,\s*SYNC_STATE\],\s*"readwrite"\)/);
+  assert.match(client, /db\.transaction\(\[ARTICLES,\s*ARTICLE_STATE,\s*FEED_ICONS,\s*FEED_CATALOG,\s*SYNC_STATE,\s*ENTRY_LABELS\],\s*"readwrite"\)/);
   assert.match(client, /\[ARTICLES,\s*ARTICLE_STATE,\s*FEED_ICONS,\s*FEED_CATALOG,\s*SYNC_STATE\]\.forEach/);
+  // Updated labels describe the cleared cache; Read later tags are kept.
+  assert.match(client, /objectStore\(ENTRY_LABELS\)\.index\("label"\)\.openCursor\("updated"/);
+  assert.match(app, /setEntryLabels\(\(current\) => withEntryLabel\(current, "updated", \[\.\.\.current\.keys\(\)\]/);
   assert.match(app, /t\("sync\.resetData"\)/);
   assert.match(app, /syncResetInProgress\.current\s*=\s*true/);
   assert.match(app, /while\s*\(syncInFlight\.current\)/);
@@ -192,7 +196,7 @@ test("repeated loads keep sidebar state identity when nothing changed", () => {
 test("entry labels keep their identity when the cached labels are unchanged", () => {
   // An unconditional setEntryLabels(new Map) invalidated mergeEntryBatch, which
   // invalidated load, which re-fired the load effect in a loop.
-  assert.match(app, /function sameEntryLabels/);
+  assert.match(app, /import \{[^}]*\bsameEntryLabels\b[^}]*\} from "\.\/entry-labels"/);
   assert.match(
     app,
     /setEntryLabels\(\(current\) => sameEntryLabels\(current, labels\) \? current : labels\)/,
@@ -235,6 +239,9 @@ test("changed read entries are labeled before React state scheduling", () => {
 
   assert.deepEqual([...result.updatedIds], [7]);
   assert.equal(result.entries[0].content, "<p>Updated</p>");
+  // The label lives in the entry label store, not on the entry.
+  assert.equal("updated" in result.entries[0], false);
+  assert.match(app, /putEntryLabels\("updated", changes\)[\s\S]*?setEntryLabels\(\(current\) => withEntryLabel\(current, "updated", changes\)\)/);
   assert.match(app, /protectPendingEntryMutations\(batch,[\s\S]*?mergeSyncedEntries\(entriesRef\.current,\s*protectedBatch\)/);
   assert.doesNotMatch(app, /setEntries\(\(current\) => \{[\s\S]*?updatedIds\.add/);
 });

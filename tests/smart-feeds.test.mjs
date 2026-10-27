@@ -18,6 +18,7 @@ import {
 
 const TODAY = "2026-08-02";
 const localTimestamp = (day, hour = 12) => new Date(2026, 7, day, hour).toISOString();
+const UPDATED = { updated: "2026-08-02T00:00:00.000Z" };
 
 const entry = (overrides = {}) => ({
   id: 1,
@@ -123,7 +124,7 @@ test("ambiguous daylight-saving input preserves the existing occurrence", () => 
 });
 
 test("Today contains unread and updated entries only", () => {
-  const labels = new Map([[2, ["updated"]]]);
+  const labels = new Map([[2, UPDATED]]);
 
   assert.equal(isEntryInSmartFeed(entry(), "today"), true);
   assert.equal(isEntryInSmartFeed(entry({ id: 2, status: "read" }), "today", labels), true);
@@ -132,7 +133,7 @@ test("Today contains unread and updated entries only", () => {
 });
 
 test("Today status priority reflects unread before updated", () => {
-  const labels = new Map([[2, ["updated"]], [3, ["updated"]]]);
+  const labels = new Map([[2, UPDATED], [3, UPDATED]]);
 
   assert.equal(smartFeedStatusPriority(entry({ id: 1 }), labels), 2);
   assert.equal(smartFeedStatusPriority(entry({ id: 2, status: "read" }), labels), 1);
@@ -147,7 +148,7 @@ test("All contains the complete active history", () => {
 });
 
 test("Updated contains labeled entries until their update has been viewed", () => {
-  const labels = new Map([[1, ["updated"]], [3, ["updated"]]]);
+  const labels = new Map([[1, UPDATED], [3, UPDATED]]);
 
   assert.equal(isEntryInSmartFeed(entry({ status: "read" }), "updated", labels), true);
   assert.equal(isEntryInSmartFeed(entry({ id: 2, status: "read" }), "updated", labels), false);
@@ -283,7 +284,7 @@ test("smart feed counts cover all active entries and persisted updates", () => {
     entry({ id: 3, status: "read", starred: true }),
     entry({ id: 4, status: "removed", starred: true }),
   ];
-  const labels = new Map([[1, ["updated"]], [3, ["updated"]], [4, ["updated"]]]);
+  const labels = new Map([[1, UPDATED], [3, UPDATED], [4, UPDATED]]);
 
   assert.deepEqual(countSmartFeedEntries(entries, labels), {
     unreadCount: 2,
@@ -293,35 +294,50 @@ test("smart feed counts cover all active entries and persisted updates", () => {
     updatedCount: 1,
     savedCount: 1,
     laterCount: 0,
-    laterUnreadCount: 0,
   });
 });
 
-test("links saved for later form their own smart feed outside Today", () => {
+test("Read later lists every tagged entry, read or not, and saved links stay out of the other lists", () => {
   const readLaterFeedIds = new Set([9]);
-  const saved = entry({ id: 5, feed_id: 9 });
-  const savedRead = entry({ id: 6, feed_id: 9, status: "read", starred: true });
-  const subscribed = entry({ id: 7, feed_id: 1 });
+  const link = entry({ id: 5, feed_id: 9 });
+  const starredLink = entry({ id: 6, feed_id: 9, status: "read", starred: true });
+  const untaggedLink = entry({ id: 8, feed_id: 9 });
+  const article = entry({ id: 7, feed_id: 1, status: "read" });
+  const untagged = entry({ id: 10, feed_id: 1 });
+  const labels = new Map([
+    [5, { later: "2026-08-02T08:00:00.000Z" }],
+    [6, { later: "2026-08-01T08:00:00.000Z" }],
+    [7, { later: "2026-08-02T09:00:00.000Z", updated: "2026-08-02T00:00:00.000Z" }],
+  ]);
+  const inFeed = (item, mode) => isEntryInSmartFeed(item, mode, labels, readLaterFeedIds);
 
-  assert.equal(isEntryInSmartFeed(saved, "later", undefined, readLaterFeedIds), true);
-  assert.equal(isEntryInSmartFeed(savedRead, "later", undefined, readLaterFeedIds), true);
-  assert.equal(isEntryInSmartFeed(subscribed, "later", undefined, readLaterFeedIds), false);
-  assert.equal(isEntryInSmartFeed({ ...saved, status: "removed" }, "later", undefined, readLaterFeedIds), false);
-  assert.equal(isEntryInSmartFeed(saved, "today", undefined, readLaterFeedIds), false);
-  assert.equal(isEntryInSmartFeed(subscribed, "today", undefined, readLaterFeedIds), true);
-  assert.equal(isEntryInSmartFeed(saved, "all", undefined, readLaterFeedIds), true);
-  assert.equal(isEntryInSmartFeed(savedRead, "saved", undefined, readLaterFeedIds), true);
-  // Without a Read later feed nothing is saved for later.
-  assert.equal(isEntryInSmartFeed(saved, "later"), false);
+  assert.equal(inFeed(link, "later"), true);
+  assert.equal(inFeed(starredLink, "later"), true);
+  assert.equal(inFeed(article, "later"), true);
+  assert.equal(inFeed(untaggedLink, "later"), false);
+  assert.equal(inFeed(untagged, "later"), false);
+  assert.equal(inFeed({ ...article, status: "removed" }, "later"), false);
+  // Saved links appear in Read later and, when starred, in Saved only.
+  assert.equal(inFeed(link, "today"), false);
+  assert.equal(inFeed(link, "all"), false);
+  assert.equal(inFeed(untaggedLink, "all"), false);
+  assert.equal(inFeed(starredLink, "saved"), true);
+  // A tagged article keeps its place in the other smart feeds.
+  assert.equal(inFeed(article, "today"), true);
+  assert.equal(inFeed(article, "updated"), true);
+  assert.equal(inFeed(article, "all"), true);
 
-  assert.deepEqual(countSmartFeedEntries([saved, savedRead, subscribed], new Map(), readLaterFeedIds), {
-    unreadCount: 2,
-    todayCount: 1,
+  // Newest tag first, whatever the publication time.
+  const sorted = [link, starredLink, article].sort((a, b) => compareSmartFeedEntries(a, b, "later", labels));
+  assert.deepEqual(sorted.map(({ id }) => id), [7, 5, 6]);
+
+  assert.deepEqual(countSmartFeedEntries([link, starredLink, untaggedLink, article, untagged], labels, readLaterFeedIds), {
+    unreadCount: 1,
+    todayCount: 2,
     todayUnreadCount: 1,
-    allCount: 3,
-    updatedCount: 0,
+    allCount: 2,
+    updatedCount: 1,
     savedCount: 1,
-    laterCount: 2,
-    laterUnreadCount: 1,
+    laterCount: 3,
   });
 });

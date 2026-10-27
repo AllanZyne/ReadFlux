@@ -1,7 +1,6 @@
 type SyncEntry = {
   id: number;
   status: "read" | "unread" | "removed";
-  updated?: boolean;
   title?: string;
   url?: string;
   content: string;
@@ -167,7 +166,6 @@ export function mergeSyncedEntries<T extends SyncEntry>(
     };
     if (cached && cached.status === "read" && articleContentChanged(cached, mergedEntry)) {
       updatedIds.add(entry.id);
-      mergedEntry.updated = true;
     }
     merged.set(entry.id, mergedEntry);
   });

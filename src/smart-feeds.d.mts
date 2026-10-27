@@ -11,6 +11,9 @@ export type SmartFeedEntry = {
 
 export type SortableSmartFeedEntry = SmartFeedEntry & { score: number };
 
+/** Entry labels and when each was added; see `entry-labels.ts`. */
+export type SmartFeedLabels = ReadonlyMap<number, Readonly<Partial<Record<"updated" | "later", string>>>>;
+
 export type SmartFeedCounts = {
   unreadCount: number;
   todayCount: number;
@@ -19,7 +22,6 @@ export type SmartFeedCounts = {
   updatedCount: number;
   savedCount: number;
   laterCount: number;
-  laterUnreadCount: number;
 };
 
 export type TimeZoneSelection = {
@@ -52,14 +54,14 @@ export function smartFeedTimeBucket(
 export function isEntryInSmartFeed(
   entry: SmartFeedEntry,
   mode: SmartFeedMode,
-  labels?: Map<number, string[]>,
+  labels?: SmartFeedLabels,
   readLaterFeedIds?: ReadonlySet<number>,
 ): boolean;
 export function compareSmartFeedEntries(
   a: SortableSmartFeedEntry & { id: number },
   b: SortableSmartFeedEntry & { id: number },
   mode: SmartFeedMode,
-  labels?: Map<number, string[]>,
+  labels?: SmartFeedLabels,
   context?: {
     now?: string | number | Date;
     timeZone?: string;
@@ -68,10 +70,10 @@ export function compareSmartFeedEntries(
 ): number;
 export function smartFeedStatusPriority(
   entry: { id: number; status: "read" | "unread" | "removed" },
-  labels?: Map<number, string[]>,
+  labels?: SmartFeedLabels,
 ): number;
 export function countSmartFeedEntries(
   entries: SmartFeedEntry[],
-  labels?: Map<number, string[]>,
+  labels?: SmartFeedLabels,
   readLaterFeedIds?: ReadonlySet<number>,
 ): SmartFeedCounts;
