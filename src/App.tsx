@@ -1075,7 +1075,10 @@ function ReadLaterTicket({
             <span><small>{t("readLater.nextUp")}</small><b>{next.title}</b></span>
             <em>{t("feed.minutes", { count: next.reading_time || 1 })}</em>
           </button>
-          : <p className="readLaterNote">{t("readLater.queueEnd")}</p>}
+          : <div className="readLaterNext readLaterLast">
+            <i className="bi bi-flag" aria-hidden="true" />
+            <span><small>{t("readLater.nextUp")}</small><b>{t("readLater.queueEnd")}</b></span>
+          </div>}
     </div>
     <div className="readLaterTear">
       {!tagged
@@ -1084,12 +1087,12 @@ function ReadLaterTicket({
           {story.starred
             ? <span className="readLaterStarred"><i className="bi bi-star-fill" aria-hidden="true" />{t("reader.saved")}</span>
             : <button type="button" className="keep" onClick={onSave}>
-              <span><i className="bi bi-star-fill" aria-hidden="true" />{t(next ? "readLater.saveShort" : "readLater.saveAndFinish")}</span>
-              {next && <small>{t("readLater.thenNext")}</small>}
+              <span><i className="bi bi-star-fill" aria-hidden="true" />{t("readLater.saveShort")}</span>
+              <small>{t(next ? "readLater.thenNext" : "readLater.thenFinish")}</small>
             </button>}
           <button type="button" onClick={onRemove}>
-            <span><i className="bi bi-x-lg" aria-hidden="true" />{t(next ? "readLater.removeShort" : "readLater.remove")}</span>
-            {next && <small>{t("readLater.thenNext")}</small>}
+            <span><i className="bi bi-x-lg" aria-hidden="true" />{t("readLater.removeShort")}</span>
+            <small>{t(next ? "readLater.thenNext" : "readLater.thenFinish")}</small>
           </button>
         </>}
     </div>

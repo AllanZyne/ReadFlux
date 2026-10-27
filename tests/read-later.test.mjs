@@ -256,9 +256,11 @@ test("a Read later entry ends with the decision ticket, and a saved link is not 
   // The ticket shows only the next entry, not how long this one waited.
   const ticket = app.slice(app.indexOf("function ReadLaterTicket("), app.indexOf("type AiSettingsStatus"));
   assert.match(ticket, /readLater\.nextUp[\s\S]*?next\.title/);
-  // Each action names itself first; the quieter "then next" sits on the right.
-  assert.match(ticket, /<span><i className="bi bi-star-fill" aria-hidden="true" \/>\{t\(next \? "readLater\.saveShort" : "readLater\.saveAndFinish"\)\}<\/span>\s*\{next && <small>\{t\("readLater\.thenNext"\)\}<\/small>\}/);
-  assert.match(ticket, /<span><i className="bi bi-x-lg" aria-hidden="true" \/>\{t\(next \? "readLater\.removeShort" : "readLater\.remove"\)\}<\/span>\s*\{next && <small>\{t\("readLater\.thenNext"\)\}<\/small>\}/);
+  // Each action names itself first; the quieter consequence sits on the right, also for the last entry.
+  assert.match(ticket, /<span><i className="bi bi-star-fill" aria-hidden="true" \/>\{t\("readLater\.saveShort"\)\}<\/span>\s*<small>\{t\(next \? "readLater\.thenNext" : "readLater\.thenFinish"\)\}<\/small>/);
+  assert.match(ticket, /<span><i className="bi bi-x-lg" aria-hidden="true" \/>\{t\("readLater\.removeShort"\)\}<\/span>\s*<small>\{t\(next \? "readLater\.thenNext" : "readLater\.thenFinish"\)\}<\/small>/);
+  // The last entry keeps the next-up row's shape, without its link.
+  assert.match(ticket, /<div className="readLaterNext readLaterLast">[\s\S]*?<small>\{t\("readLater\.nextUp"\)\}<\/small><b>\{t\("readLater\.queueEnd"\)\}<\/b>/);
   assert.match(ticket, /readLater\.fromLink/);
   assert.doesNotMatch(ticket, /formatZonedDateTime|taggedAt/);
 });
