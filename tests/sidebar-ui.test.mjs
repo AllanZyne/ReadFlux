@@ -62,6 +62,9 @@ test("article rows align full-width titles with right-aligned time and status ma
   assert.match(styles, /\.story h2\{grid-area:title;[^}]*padding-right:8px;/);
   assert.match(styles, /\.storyStatus time\{grid-area:time;justify-self:end;/);
   assert.match(styles, /\.storyStatus>i\{grid-area:dot;align-self:end;justify-self:end;/);
+  // Only the status dot is drawn as a circle; the footer's Read later bookmark stays an icon.
+  assert.doesNotMatch(styles, /\.story footer>i\{/);
+  assert.match(styles, /\.story footer \.storyLater\{color:var\(--mint\)\}/);
   assert.match(styles, /\.storySource\{[^}]*gap:5px;[^}]*font-size:10px\}/);
   assert.match(styles, /\.story \.sourceIcon\{width:14px;height:14px;[^}]*font-size:7px\}/);
   assert.match(styles, /\.story:not\(\.read\) \.storyStatus>i\{background:var\(--mint\)\}/);
