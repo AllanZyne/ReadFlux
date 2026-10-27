@@ -52,9 +52,12 @@ test("article rows align full-width titles with right-aligned time and status ma
   assert.match(app, /className="storyMain"[\s\S]*?className="storySource"[\s\S]*?<h2>\{story\.title\}<\/h2>[\s\S]*?<footer>\{t\("feed\.minutes"/);
   assert.match(app, /className="storyStatus"[\s\S]*?<time[\s\S]*?dateTime=\{story\.published_at\}[\s\S]*?formatStoryListDate\(story\.published_at, todayClock, timeZone, locale\)[\s\S]*?<\/time>[\s\S]*?<i aria-hidden="true" \/>/);
   assert.doesNotMatch(app, /<h2>\{story\.title\}<\/h2><p>\{story\.summary\}<\/p>/);
-  assert.match(app, /\$\{story\.starred \? "starred" : ""\}/);
+  assert.match(app, /\$\{story\.starred \? "starred" : ""\} \$\{readLater \? "later" : ""\}/);
   assert.match(app, /updated=\{story\.status === "read" && hasEntryLabel\(entryLabels, story\.id, "updated"\)\}/);
-  assert.match(app, /story\.status === "unread"[\s\S]*?"feed\.unread"[\s\S]*?updated[\s\S]*?"feed\.updated"/);
+  assert.match(app, /readLater=\{hasEntryLabel\(entryLabels, story\.id, "later"\)\}/);
+  // Like Saved, Read later only recolors the status dot.
+  assert.match(app, /story\.starred\s*\? "feed\.saved"\s*: readLater\s*\? "sidebar\.later"\s*: story\.status === "unread"[\s\S]*?"feed\.unread"[\s\S]*?updated[\s\S]*?"feed\.updated"/);
+  assert.match(app, /<footer>\{t\("feed\.minutes", \{ count: story\.reading_time \|\| 1 \}\)\}<\/footer>/);
   assert.match(app, /currentMode === "updated" && entry\.status === "read" && updatedIds\.has\(entry\.id\)/);
   assert.match(app, /timeBuckets: new Map|const timeBuckets = mode === "today"/);
   assert.match(styles, /\.story\{display:grid;[^}]*grid-template-columns:minmax\(0,1fr\) auto;[^}]*grid-template-rows:auto auto auto;[^}]*grid-template-areas:"source time" "title title" "footer dot";[^}]*column-gap:10px;[^}]*padding:13px 14px 12px/);
@@ -62,9 +65,6 @@ test("article rows align full-width titles with right-aligned time and status ma
   assert.match(styles, /\.story h2\{grid-area:title;[^}]*padding-right:8px;/);
   assert.match(styles, /\.storyStatus time\{grid-area:time;justify-self:end;/);
   assert.match(styles, /\.storyStatus>i\{grid-area:dot;align-self:end;justify-self:end;/);
-  // Only the status dot is drawn as a circle; the footer's Read later bookmark stays an icon.
-  assert.doesNotMatch(styles, /\.story footer>i\{/);
-  assert.match(styles, /\.story footer \.storyLater\{color:var\(--mint\)\}/);
   assert.match(styles, /\.storySource\{[^}]*gap:5px;[^}]*font-size:10px\}/);
   assert.match(styles, /\.story \.sourceIcon\{width:14px;height:14px;[^}]*font-size:7px\}/);
   assert.match(styles, /\.story:not\(\.read\) \.storyStatus>i\{background:var\(--mint\)\}/);
@@ -72,6 +72,11 @@ test("article rows align full-width titles with right-aligned time and status ma
   assert.match(styles, /\.story\.starred \.storyStatus>i\{background:var\(--yellow\)\}/);
   assert.match(styles, /\.shell\[data-theme="day"\] \.story\.starred \.storyStatus>i\{background:#eab308\}/);
   assert.match(styles, /\.shell\[data-theme="night"\] \.story\.starred \.storyStatus>i\{background:#facc15\}/);
+  assert.match(styles, /\.story\.later:not\(\.starred\) \.storyStatus>i\{background:#a78bfa\}/);
+  assert.match(styles, /\.shell\[data-theme="day"\] \.story\.later:not\(\.starred\) \.storyStatus>i\{background:#8b5cf6\}/);
+  assert.match(styles, /\.shell\[data-theme="night"\] \.story\.later:not\(\.starred\) \.storyStatus>i\{background:#a78bfa\}/);
+  assert.match(styles, /\.story\.selected:not\(\.read\):not\(\.updated\):not\(\.starred\):not\(\.later\) \.storyStatus>i/);
+  assert.doesNotMatch(styles, /storyLater/);
   assert.doesNotMatch(styles, /pulseRing/);
 });
 

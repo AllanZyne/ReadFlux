@@ -569,16 +569,18 @@ const StoryRow = memo(function StoryRow({
 }) {
   const statusKey = story.starred
     ? "feed.saved"
-    : story.status === "unread"
-      ? "feed.unread"
-      : updated
-        ? "feed.updated"
-        : "feed.read";
+    : readLater
+      ? "sidebar.later"
+      : story.status === "unread"
+        ? "feed.unread"
+        : updated
+          ? "feed.updated"
+          : "feed.read";
   return <article
     data-entry-id={story.id}
     role="button"
     tabIndex={0}
-    className={`story ${selected ? "selected" : ""} ${story.status === "read" ? "read" : ""} ${updated ? "updated" : ""} ${story.starred ? "starred" : ""}`}
+    className={`story ${selected ? "selected" : ""} ${story.status === "read" ? "read" : ""} ${updated ? "updated" : ""} ${story.starred ? "starred" : ""} ${readLater ? "later" : ""}`}
     onClick={() => onChoose(story)}
     onKeyDown={(event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
@@ -591,7 +593,7 @@ const StoryRow = memo(function StoryRow({
     <div className="storyMain">
       <div className="storySource"><SourceIcon src={feedIcon}>{story.mark}</SourceIcon><span>{story.source}</span></div>
       <h2>{story.title}</h2>
-      <footer>{t("feed.minutes", { count: story.reading_time || 1 })}{readLater && <><i className="bi bi-bookmark-fill storyLater" aria-hidden="true" /><span className="sr-only">{t("sidebar.later")}</span></>}</footer>
+      <footer>{t("feed.minutes", { count: story.reading_time || 1 })}</footer>
     </div>
     <div className="storyStatus">
       <time
