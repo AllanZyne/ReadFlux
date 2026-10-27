@@ -124,9 +124,9 @@ reading it does not remove it. Tagged articles keep their place in **Today**,
 **All**, and the other lists.
 
 A tagged article ends with a choice: **Save** stars it and removes it from
-**Read later**, and **Remove** only removes it. Either way,
-the next article in **Read later** opens, and the notice that follows offers
-**Undo**.
+**Read later**, and **Remove** only removes it. Either way, the next article
+in **Read later** opens, or the article closes when it was the last one. The
+notice that follows offers **Undo**.
 
 Clicking or tapping a link in an article opens a menu: **Read later**, **Open
 link**, and **Copy link**, plus **Open in ReadFlux** when the link is already a

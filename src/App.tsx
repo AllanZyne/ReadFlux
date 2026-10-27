@@ -3582,7 +3582,8 @@ export default function App() {
 
   /**
    * Saves or lets go of a Read later entry, removes its tag, and opens the
-   * next entry in the queue. The toast's undo restores both and reopens it.
+   * next entry in the queue, or closes the last one. The toast's undo
+   * restores both and reopens it.
    */
   const finishReadLater = async (story: Story, save: boolean) => {
     const next = nextReadLater;
@@ -3591,6 +3592,10 @@ export default function App() {
     // Star before leaving, so the open reading event records it.
     const starred = starring ? toggleStarred(story) : Promise.resolve(true);
     if (next) openStory(next);
+    else {
+      navigateToList();
+      setMobileView("list");
+    }
     if (!await starred) return;
     if (!await setReadLater(story.id, null)) return;
     notify(t(starring ? "readLater.savedAndRemoved" : "readLater.removed"), {
@@ -3598,7 +3603,7 @@ export default function App() {
       run: () => {
         void setReadLater(story.id, taggedAt);
         if (starring) void toggleStarred({ ...story, starred: true });
-        if (next) openStory(story);
+        openStory(story);
       },
     });
   };

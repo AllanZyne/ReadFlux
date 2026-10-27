@@ -270,8 +270,10 @@ test("deciding on a Read later entry opens the next one and the toast can undo i
   const finish = app.slice(app.indexOf("const finishReadLater = async"), app.indexOf("const toggleRead = useCallback"));
   // Starring starts before leaving, so the open reading event records it.
   assert.match(finish, /const starred = starring \? toggleStarred\(story\) : Promise\.resolve\(true\);\s*if \(next\) openStory\(next\);/);
+  // The last entry closes instead.
+  assert.match(finish, /if \(next\) openStory\(next\);\s*else \{\s*navigateToList\(\);\s*setMobileView\("list"\);\s*\}/);
   assert.match(finish, /setReadLater\(story\.id, null\)/);
-  assert.match(finish, /run: \(\) => \{\s*void setReadLater\(story\.id, taggedAt\);\s*if \(starring\) void toggleStarred\(\{ \.\.\.story, starred: true \}\);\s*if \(next\) openStory\(story\);/);
+  assert.match(finish, /run: \(\) => \{\s*void setReadLater\(story\.id, taggedAt\);\s*if \(starring\) void toggleStarred\(\{ \.\.\.story, starred: true \}\);\s*openStory\(story\);/);
   // Inside Read later the queue is the list on screen; elsewhere every tagged entry, newest tag first.
   assert.match(app, /const queue = mode === "later"\s*\? visible\s*: stories[\s\S]*?compareSmartFeedEntries\(a, b, "later", entryLabels\)/);
   // An action keeps the toast up long enough to reach it.

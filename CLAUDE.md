@@ -41,7 +41,8 @@ The primary product contract is:
   link is not ranked, so its end shows only the Read later ticket. The `later`
   label does not affect ranking.
 - A tagged entry ends with the Read later ticket: save it (star it and remove
-  the tag) or remove the tag, and either way open the next entry in the queue.
+  the tag) or remove the tag, and either way open the next entry in the queue,
+  or close the article when it was the last.
   The ticket previews only that next entry, not how long this one waited.
   Inside `Read later` the queue is the list on screen; elsewhere it is every
   tagged entry, newest tag first. The toast's undo restores the tag and star
