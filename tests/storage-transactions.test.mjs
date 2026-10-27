@@ -98,6 +98,37 @@ test("the schema upgrade moves the Updated flag from article state into labels",
   assert.deepEqual(cached, [{ content: "Body", id: 1, status: "read", starred: false }]);
 });
 
+test("the schema upgrade tags the unread links of the old Read later queue at their save time", async () => {
+  const savedAt = "2026-10-20T08:00:00.000Z";
+  await new Promise((resolve, reject) => {
+    const request = indexedDB.open("readflux-profile", 10);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      db.createObjectStore("feed-catalog", { keyPath: "id" }).put({
+        id: "catalog",
+        feeds: [{ id: 9, feed_url: "https://reader.example/readflux-read-later.xml" }, { id: 1, feed_url: "https://blog.example/feed.xml" }],
+        categories: [],
+        savedAt,
+      });
+      const articles = db.createObjectStore("articles", { keyPath: "id" });
+      const state = db.createObjectStore("article-state", { keyPath: "entryId" });
+      [
+        [5, 9, "unread", false],
+        [6, 9, "read", true],
+        [7, 9, "read", false],
+        [8, 1, "unread", false],
+      ].forEach(([id, feedId, status, starred]) => {
+        articles.put({ id, article: { feed_id: feedId, published_at: savedAt, content: "" } });
+        state.put({ entryId: id, status, starred, updated: false });
+      });
+    };
+    request.onsuccess = () => { request.result.close(); resolve(); };
+    request.onerror = () => reject(request.error);
+  });
+  // Read links had left the old queue; a starred one is still in Saved.
+  assert.deepEqual(await getEntryLabels(), new Map([[5, { later: savedAt }]]));
+});
+
 test("claims commit sending state and recover previously sending mutations", async () => {
   assert.deepEqual(await claimEntryMutations(), []);
   const queued = await queueEntryMutations([entry(1, { status: "read" })], [read(1)]);

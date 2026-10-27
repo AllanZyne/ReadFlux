@@ -68,7 +68,8 @@ test("article rows align full-width titles with right-aligned time and status ma
   assert.match(styles, /\.storySource\{[^}]*gap:5px;[^}]*font-size:10px\}/);
   assert.match(styles, /\.story \.sourceIcon\{width:14px;height:14px;[^}]*font-size:7px\}/);
   assert.match(styles, /\.story:not\(\.read\) \.storyStatus>i\{background:var\(--mint\)\}/);
-  assert.match(styles, /\.story\.read\.updated:not\(\.starred\) \.storyStatus>i\{background:#10b981\}/);
+  // Saved outranks Read later, which outranks Updated.
+  assert.match(styles, /\.story\.read\.updated:not\(\.starred\):not\(\.later\) \.storyStatus>i\{background:#10b981\}/);
   assert.match(styles, /\.story\.starred \.storyStatus>i\{background:var\(--yellow\)\}/);
   assert.match(styles, /\.shell\[data-theme="day"\] \.story\.starred \.storyStatus>i\{background:#eab308\}/);
   assert.match(styles, /\.shell\[data-theme="night"\] \.story\.starred \.storyStatus>i\{background:#facc15\}/);

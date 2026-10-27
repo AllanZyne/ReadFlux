@@ -42,7 +42,8 @@ The primary product contract is:
   affect ranking.
 - In `Read later`, each entry ends with the Read later ticket: save it (star
   it and remove the tag) or remove the tag, and either way open the next entry
-  in the list on screen, or close the article when it was the last. The ticket
+  below it in the list on screen, or close the article when none is left below;
+  the queue never wraps to the top. The ticket
   previews only that next entry, not how long this one waited. The toast's
   undo restores the tag and star and reopens the entry. Other smart feeds show
   no ticket; the reader toolbar still adds and removes the tag.
@@ -150,6 +151,9 @@ or reading events. The only exception is the explicit AI action below.
 - The Read later tag is the local `later` entry label. Miniflux cannot set
   tags on an existing entry, so the tag stays in this browser; another device
   sees saved links only as starred entries in `Saved`.
+- The database upgrade to tags tagged the unread entries of the Read later
+  feed, the old queue, at their import time. Its read entries had already left
+  the queue.
 - A link that matches a synced entry tags that entry instead of importing a
   copy, preferring an entry already tagged, then a subscribed one.
 - Other links become Miniflux entries, imported with

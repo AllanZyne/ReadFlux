@@ -276,8 +276,17 @@ test("deciding on a Read later entry opens the next one and the toast can undo i
   assert.match(finish, /if \(next\) openStory\(next\);\s*else \{\s*navigateToList\(\);\s*setMobileView\("list"\);\s*\}/);
   assert.match(finish, /setReadLater\(story\.id, null\)/);
   assert.match(finish, /run: \(\) => \{\s*void setReadLater\(story\.id, taggedAt\);\s*if \(starring\) void toggleStarred\(\{ \.\.\.story, starred: true \}\);\s*openStory\(story\);/);
-  // The queue is the Read later list on screen.
-  assert.match(app, /if \(!selected \|\| !selectedReadLater \|\| mode !== "later"\) return null;\s*const index = visible\.findIndex/);
+  // The queue is the part of the Read later list below the open entry, so the last one never wraps.
+  assert.match(app, /if \(!selected \|\| !selectedReadLater \|\| mode !== "later"\) return null;[\s\S]*?return visible\.slice\(index \+ 1\)\s*\.find/);
+  assert.doesNotMatch(app, /visible\.slice\(0, Math\.max\(index, 0\)\)/);
+  // A tag added while Read later is open waits for the list refresh like a newly synced entry.
+  const setReadLater = app.slice(app.indexOf("const setReadLater = useCallback"), app.indexOf("const toggleReadLater"));
+  assert.match(setReadLater, /if \(taggedAt !== null && modeRef\.current === "later" && inScope && !capturedVisibleOrder\.current\?\.includes\(entryId\)\) \{\s*if \(visibleEmptyRef\.current\) setListReadSnapshot[\s\S]*?else setPendingNew\(\(count\) => count \+ 1\);/);
+  // Enter and Space on the toolbar, the ticket, and the toast's undo stay with their buttons.
+  assert.match(app, /function keepButtonKeysFromReader\(event: React\.KeyboardEvent\) \{\s*if \(\(event\.key === "Enter" \|\| event\.key === " "\) && event\.target instanceof HTMLButtonElement\) event\.stopPropagation\(\);/);
+  assert.match(app, /\{t\("reader\.backToArticles"\)\}<\/button><div onKeyDown=\{keepButtonKeysFromReader\}>/);
+  assert.match(app, /\{toast\.action && <button type="button" onKeyDown=\{keepButtonKeysFromReader\}/);
+  assert.match(app.slice(app.indexOf("function ReadLaterTicket("), app.indexOf("type AiSettingsStatus")), /onKeyDown=\{keepButtonKeysFromReader\}/);
   // An action keeps the toast up long enough to reach it.
   assert.match(app, /toastTimer\.current = window\.setTimeout\(\(\) => setToast\(null\), action \? 6000 : 2200\)/);
   assert.match(app, /\{toast\.action && <button type="button"/);

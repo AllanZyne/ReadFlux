@@ -164,6 +164,14 @@ type Topic = { kind: "category" | "feed"; id: number } | null;
  * read or not, until its tag is removed.
  */
 const unreadOnlyApplies = (mode: ListMode) => mode !== "updated" && mode !== "later";
+
+/**
+ * Lets Enter and Space activate a focused button without also reaching the
+ * reader's window shortcuts (open original, scroll, next article).
+ */
+function keepButtonKeysFromReader(event: React.KeyboardEvent) {
+  if ((event.key === "Enter" || event.key === " ") && event.target instanceof HTMLButtonElement) event.stopPropagation();
+}
 type TopicSelection = {
   term: string;
   top: number;
@@ -876,11 +884,7 @@ function AiSummaryPanel({
     className="aiSummary"
     aria-labelledby="ai-summary-title"
     aria-busy={pending}
-    onKeyDown={(event) => {
-      // Let Enter and Space activate the panel's own buttons without also
-      // reaching the reader's global shortcuts (open original, scroll).
-      if ((event.key === "Enter" || event.key === " ") && event.target instanceof HTMLButtonElement) event.stopPropagation();
-    }}
+    onKeyDown={keepButtonKeysFromReader}
   >
     <header>
       <i className="bi bi-stars" aria-hidden="true" />
@@ -1059,10 +1063,7 @@ function ReadLaterTicket({
   return <section
     className={`readLaterTicket ${tagged ? "" : "untagged"}`}
     aria-labelledby="read-later-ticket-title"
-    onKeyDown={(event) => {
-      // Keep Enter and Space on these buttons away from the reader shortcuts.
-      if ((event.key === "Enter" || event.key === " ") && event.target instanceof HTMLButtonElement) event.stopPropagation();
-    }}
+    onKeyDown={keepButtonKeysFromReader}
   >
     <div className="readLaterStub">
       <h3 id="read-later-ticket-title"><i className="bi bi-ticket-perforated" aria-hidden="true" />{t("sidebar.later")}</h3>
@@ -3246,8 +3247,9 @@ export default function App() {
     && (selectedReadLater || readLaterFeedIds.has(selected.feed_id));
   const nextReadLater = useMemo(() => {
     if (!selected || !selectedReadLater || mode !== "later") return null;
+    // Only entries below the open one; the last entry closes rather than wrapping to the top.
     const index = visible.findIndex((story) => story.id === selected.id);
-    return [...visible.slice(index + 1), ...visible.slice(0, Math.max(index, 0))]
+    return visible.slice(index + 1)
       .find((story) => story.id !== selected.id && hasEntryLabel(entryLabels, story.id, "later")) ?? null;
   }, [entryLabels, mode, selected, selectedReadLater, visible]);
   const deferredSelectedId = useDeferredValue(selectedId);
@@ -3390,6 +3392,18 @@ export default function App() {
     setEntryLabels((current) => withEntryLabel(current, "later", change));
     try {
       await putEntryLabels("later", change);
+      // An entry tagged while Read later is open joins it as newly synced entries do.
+      const entry = entriesRef.current.find((item) => item.id === entryId);
+      const currentTopic = topicRef.current;
+      const inScope = entry !== undefined && (
+        currentTopic?.kind === "feed" ? entry.feed_id === currentTopic.id
+          : currentTopic?.kind === "category" ? feedsRef.current.find((feed) => feed.id === entry.feed_id)?.category?.id === currentTopic.id
+            : true
+      );
+      if (taggedAt !== null && modeRef.current === "later" && inScope && !capturedVisibleOrder.current?.includes(entryId)) {
+        if (visibleEmptyRef.current) setListReadSnapshot((current) => new Map(current).set(entryId, entry.status));
+        else setPendingNew((count) => count + 1);
+      }
       return true;
     } catch {
       setEntryLabels((current) => withEntryLabel(current, "later", restore));
@@ -4246,7 +4260,7 @@ export default function App() {
               const depth = target.scrollHeight <= target.clientHeight ? 1 : target.scrollTop / (target.scrollHeight - target.clientHeight);
               activeEvent.current.scrollDepth = Math.max(activeEvent.current.scrollDepth, Math.min(1, depth));
             }}>
-              <div className="readerToolbar"><button className="mobileBack" onClick={() => { navigateToList(); setMobileView("list"); }}><i className="bi bi-chevron-left" aria-hidden="true" />{t("reader.backToArticles")}</button><div>
+              <div className="readerToolbar"><button className="mobileBack" onClick={() => { navigateToList(); setMobileView("list"); }}><i className="bi bi-chevron-left" aria-hidden="true" />{t("reader.backToArticles")}</button><div onKeyDown={keepButtonKeysFromReader}>
                 <button title={t(selected.status === "read" ? "reader.markUnread" : "reader.markRead")} aria-label={t(selected.status === "read" ? "reader.markUnread" : "reader.markRead")} onClick={() => toggleRead(selected)}><i className={`bi ${selected.status === "read" ? "bi-circle" : "bi-circle-fill"}`} aria-hidden="true" /></button>
                 <button className={selected.starred ? "pressed" : ""} title={t(selected.starred ? "reader.unsave" : "reader.save")} aria-label={t(selected.starred ? "reader.unsave" : "reader.save")} aria-pressed={selected.starred} onClick={() => void toggleStarred(selected)}><i className={`bi ${selected.starred ? "bi-star-fill" : "bi-star"}`} aria-hidden="true" /></button>
                 <button className={selectedReadLater ? "pressed" : ""} title={t(selectedReadLater ? "readLater.remove" : "readLater.save")} aria-label={t(selectedReadLater ? "readLater.remove" : "readLater.save")} aria-pressed={selectedReadLater} onClick={() => void toggleReadLater(selected)}><i className={`bi ${selectedReadLater ? "bi-bookmark-fill" : "bi-bookmark"}`} aria-hidden="true" /></button>
@@ -4465,7 +4479,7 @@ export default function App() {
         syncBusy={loading}
         notify={notify}
       />}
-      {toast && <div className="toast" role="status">✓　{toast.message}{toast.action && <button type="button" onClick={() => {
+      {toast && <div className="toast" role="status">✓　{toast.message}{toast.action && <button type="button" onKeyDown={keepButtonKeysFromReader} onClick={() => {
         const { run } = toast.action!;
         window.clearTimeout(toastTimer.current);
         setToast(null);

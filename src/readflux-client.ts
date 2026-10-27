@@ -14,6 +14,7 @@ import {
 } from "./ai-client.ts";
 import type { EntryLabel, EntryLabelChange, EntryLabels, EntryLabelTimes } from "./entry-labels.ts";
 import { isSupportedLanguage, type SupportedLanguage } from "./languages.ts";
+import { isReadLaterFeedURL } from "./read-later.ts";
 
 export type ConnectionConfig = {
   url: string;
@@ -374,7 +375,8 @@ function openDb(): Promise<IDBDatabase> {
         labels.createIndex("label", "label");
         // Updated used to be a flag on the article state.
         const migratedAt = new Date().toISOString();
-        const cursorRequest = request.transaction!.objectStore(ARTICLE_STATE).openCursor();
+        const transaction = request.transaction!;
+        const cursorRequest = transaction.objectStore(ARTICLE_STATE).openCursor();
         cursorRequest.onsuccess = () => {
           const cursor = cursorRequest.result;
           if (!cursor) return;
@@ -383,11 +385,41 @@ function openDb(): Promise<IDBDatabase> {
           if (updated !== undefined) cursor.update(state);
           cursor.continue();
         };
+        backfillReadLaterQueue(transaction, labels, migratedAt);
       }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
+}
+
+/**
+ * Read later used to list the unread entries of its feed. Tag them, at the
+ * time each was saved, so the queue survives the move to tags in its order.
+ */
+function backfillReadLaterQueue(transaction: IDBTransaction, labels: IDBObjectStore, fallbackAt: string) {
+  const catalogRequest = transaction.objectStore(FEED_CATALOG).get("catalog");
+  catalogRequest.onsuccess = () => {
+    const catalog = catalogRequest.result as Partial<FeedCatalogRecord<{ id: number; feed_url?: string }>> | undefined;
+    const feedIds = new Set((catalog?.feeds ?? []).filter((feed) => isReadLaterFeedURL(feed.feed_url)).map((feed) => feed.id));
+    if (!feedIds.size) return;
+    const articleRequest = transaction.objectStore(ARTICLES).openCursor();
+    articleRequest.onsuccess = () => {
+      const cursor = articleRequest.result;
+      if (!cursor) return;
+      const { id, article } = cursor.value as { id: number; article: { feed_id?: number; published_at?: string } };
+      if (article.feed_id !== undefined && feedIds.has(article.feed_id)) {
+        const stateRequest = transaction.objectStore(ARTICLE_STATE).get(id);
+        stateRequest.onsuccess = () => {
+          if (((stateRequest.result as ArticleStateRecord | undefined)?.status ?? "unread") !== "unread") return;
+          const savedAt = Date.parse(article.published_at ?? "");
+          const addedAt = Number.isFinite(savedAt) ? new Date(savedAt).toISOString() : fallbackAt;
+          labels.put({ entryId: id, label: "later", addedAt } satisfies EntryLabelRecord);
+        };
+      }
+      cursor.continue();
+    };
+  };
 }
 
 function transactionComplete(transaction: IDBTransaction) {
