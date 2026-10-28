@@ -48,17 +48,23 @@ function wrapsBlock(node: Node): node is Element {
 
 /**
  * The innermost elements that hold text, in reading order. Text that sits
- * beside blocks is wrapped in a `<span>`, which is added to `wrappers`.
+ * beside blocks is wrapped in a `<span>`, which is added to `wrappers`. By
+ * default only text with letters counts, which is all translation needs.
  */
-export function collectTextBlocks(container: Element, blocks: Element[] = [], wrappers?: Set<Element>) {
+export function collectTextBlocks(
+  container: Element,
+  blocks: Element[] = [],
+  wrappers?: Set<Element>,
+  hasText: (node: Node) => boolean = hasWords,
+) {
   const children = [...container.childNodes];
   if (!children.some((child) => isBlock(child) || wrapsBlock(child))) {
-    if (hasWords(container)) blocks.push(container);
+    if (hasText(container)) blocks.push(container);
     return blocks;
   }
   let run: Node[] = [];
   const flush = () => {
-    if (run.some(hasWords)) {
+    if (run.some(hasText)) {
       const wrapper = container.ownerDocument.createElement("span");
       container.insertBefore(wrapper, run[0]);
       wrapper.append(...run);
@@ -70,7 +76,7 @@ export function collectTextBlocks(container: Element, blocks: Element[] = [], wr
   for (const child of children) {
     if (wrapsBlock(child)) {
       flush();
-      collectTextBlocks(child, blocks, wrappers);
+      collectTextBlocks(child, blocks, wrappers, hasText);
       continue;
     }
     if (!isBlock(child)) {
@@ -78,7 +84,7 @@ export function collectTextBlocks(container: Element, blocks: Element[] = [], wr
       continue;
     }
     flush();
-    if (!SKIPPED_BLOCKS.has(child.tagName)) collectTextBlocks(child, blocks, wrappers);
+    if (!SKIPPED_BLOCKS.has(child.tagName)) collectTextBlocks(child, blocks, wrappers, hasText);
   }
   flush();
   return blocks;

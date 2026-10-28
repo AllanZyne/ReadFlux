@@ -416,6 +416,7 @@ kbd{padding:2px 6px;border:1px solid #33423e;border-radius:4px;background:#1a252
 .articleChangeGone::after{content:"";position:absolute;inset:2px;border:1px solid var(--change-removed);border-radius:50%;transition:background-color .15s}
 .articleChangeGone:hover::after{background:var(--change-removed)}
 .articleChangeCount{margin-left:4px;color:var(--mint)}
+:is(.articleChange,.articleChangeAdded,.articleChangeCut,.articleChangeGone):focus-visible{outline:2px solid var(--mint);outline-offset:2px}
 .articleChangeTip{position:fixed;z-index:60;max-width:min(340px,calc(100vw - 24px));padding:7px 10px 8px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--text);font:13px/1.55 var(--font-geist-sans);box-shadow:0 8px 26px rgba(0,0,0,.18);pointer-events:none;transform:translate(-50%,calc(-100% - 8px))}
 .articleChangeTip.below{transform:translate(-50%,8px)}
 .articleChangeTip.start{transform:translate(0,calc(-100% - 8px))}

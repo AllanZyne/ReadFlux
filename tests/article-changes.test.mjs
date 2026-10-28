@@ -60,6 +60,30 @@ test("consecutive removed paragraphs share one marker", () => {
   assert.deepEqual(changes, [{ kind: "removed", before: 1, previous: ["Gone one entirely different.", "Gone two also unrelated."] }]);
 });
 
+test("without Intl.Segmenter, text is still compared by word", async () => {
+  const { Segmenter } = Intl;
+  delete Intl.Segmenter;
+  try {
+    const fallback = await import("../src/article-changes.ts?without-segmenter");
+    const edits = (previous, current) => fallback.diffText(previous, current).map((edit) => [current.slice(edit.start, edit.end), edit.previous]);
+    assert.deepEqual(edits("around 120 trains, 40,000 people", "around 310 trains, 95,000 people"), [["310", "120"], ["95,000", "40,000"]]);
+    assert.deepEqual(edits("天气很好", "天气不好"), [["不", "很"]]);
+  } finally {
+    Intl.Segmenter = Segmenter;
+  }
+});
+
+test("pairing blocks stops at its work limit and treats the article as rewritten", () => {
+  const previous = Array.from({ length: 300 }, (_, index) => `Old paragraph ${index} about apples and pears.`);
+  const current = Array.from({ length: 300 }, (_, index) => `New section ${index} covering rivers, hills, and roads.`);
+  assert.equal(diffBlocks(previous, current), null);
+});
+
+test("a block of numbers alone is compared", () => {
+  const changes = diffBlocks(["Passengers affected by the strike today.", "40,000"], ["Passengers affected by the strike today.", "95,000"]);
+  assert.deepEqual(changes, [{ kind: "changed", index: 1, edits: [{ start: 0, end: 6, previous: "40,000" }] }]);
+});
+
 test("a rewritten article shows no marks", () => {
   assert.equal(diffBlocks(["The original summary only."], ["A completely different full article body arrives instead of the summary."]), null);
   assert.equal(diffBlocks(["Something was here."], []), null);
@@ -80,9 +104,15 @@ test("titles split into unchanged text and marked parts", () => {
 });
 
 test("the reader shows changes only for the reading that clears the updated label", () => {
-  assert.match(app, /setChangeBase\(null\);\s*if \(config && hasEntryLabel\(entryLabels, story\.id, "updated"\)\) \{\s*void getEntryRevision\(story\.id\)/);
-  // A translation is rebuilt from the original nodes and shows no marks.
+  assert.match(app, /setChangeBase\(null\);\s*const changeRequest = \+\+changeBaseRequest\.current;\s*if \(config && hasEntryLabel\(entryLabels, story\.id, "updated"\)\) \{\s*void getEntryRevision\(story\.id\)/);
+  // A revision that loads after another article opened is dropped.
+  assert.match(app, /if \(revision && changeBaseRequest\.current === changeRequest\) setChangeBase\(revision\)/);
+  // A translation is rebuilt from the original nodes and shows no marks, in the title either.
   assert.match(app, /const bodyChanges = translatedContent \? null : articleChanges;/);
+  assert.match(app, /const shownTitleChanges = translatedContent \? null : titleChangeParts;/);
+  // The keyboard reaches marks, and the card describes the focused one.
+  assert.match(app, /root\.addEventListener\("focusin", focusIn\)/);
+  assert.match(app, /mark\.setAttribute\("aria-describedby", CHANGE_TIP_ID\)/);
   // Both versions go through the sanitizer before they are compared.
   assert.match(app, /markArticleChanges\(\s*safeHtml\(readerContent, minifluxURL, selectedImageMode\),\s*safeHtml\(readerChangeBase\.content, minifluxURL, selectedImageMode\),?\s*\)/);
   assert.match(app, /await labelUpdatedEntries\(detectedAt, readVersions\)/);

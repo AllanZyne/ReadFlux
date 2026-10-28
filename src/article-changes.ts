@@ -32,15 +32,33 @@ const MAX_COMPARED_CELLS = 2_000_000;
 const MIN_BLOCK_SIMILARITY = 0.3;
 /** Below this share of unchanged text the article was rewritten, and marks would cover it. */
 const MIN_KEPT_SHARE = 0.3;
+/** Pairing removed with added blocks compares every pair in a gap; past this many, it was rewritten. */
+const MAX_BLOCK_COMPARISONS = 50_000;
 
 type Token = { key: string; start: number; end: number; word: boolean };
+type Segment = { segment: string; index: number; isWordLike?: boolean };
 
-const segmenter = new Intl.Segmenter(undefined, { granularity: "word" });
+/** Without `Intl.Segmenter`, each Han character is a word and other words run to a space or punctuation. */
+const FALLBACK_SEGMENT = /\s+|\p{Script=Han}|[\p{L}\p{M}\p{N}_]+(?:[.,'’][\p{L}\p{M}\p{N}_]+)*|[^\s]/gu;
+
+let segmenter: Intl.Segmenter | null | undefined;
+
+function segments(text: string): Iterable<Segment> {
+  if (segmenter === undefined) {
+    segmenter = typeof Intl.Segmenter === "function" ? new Intl.Segmenter(undefined, { granularity: "word" }) : null;
+  }
+  if (segmenter) return segmenter.segment(text);
+  return [...text.matchAll(FALLBACK_SEGMENT)].map((match) => ({
+    segment: match[0],
+    index: match.index,
+    isWordLike: /[\p{L}\p{N}]/u.test(match[0]),
+  }));
+}
 
 /** Words, punctuation, and runs of white space, which all compare equal. */
 function tokenize(text: string): Token[] {
   const tokens: Token[] = [];
-  for (const { segment, index, isWordLike } of segmenter.segment(text)) {
+  for (const { segment, index, isWordLike } of segments(text)) {
     const space = !segment.trim();
     const last = tokens.at(-1);
     if (space && last?.key === " ") {
@@ -128,10 +146,9 @@ export function diffText(previous: string, current: string): TextEdit[] | null {
   return edits;
 }
 
-function similarity(a: string, b: string) {
-  const words = (text: string) => new Set(tokenize(text).filter((token) => token.word).map((token) => token.key.toLowerCase()));
-  const left = words(a);
-  const right = words(b);
+const wordSet = (text: string) => new Set(tokenize(text).filter((token) => token.word).map((token) => token.key.toLowerCase()));
+
+function similarity(left: ReadonlySet<string>, right: ReadonlySet<string>) {
   let shared = 0;
   left.forEach((word) => { if (right.has(word)) shared += 1; });
   return shared / Math.max(left.size, right.size, 1);
@@ -147,6 +164,15 @@ export function diffBlocks(previous: readonly string[], current: readonly string
   const currentKeys = current.map(collapse);
   const pairs = commonSubsequence(previousKeys, currentKeys);
   if (!pairs) return null;
+  // Each block is split into words once, however many blocks it is compared with.
+  const previousWords = new Map<number, ReadonlySet<string>>();
+  const currentWords = new Map<number, ReadonlySet<string>>();
+  const wordsOf = (cache: Map<number, ReadonlySet<string>>, keys: string[], index: number) => {
+    let words = cache.get(index);
+    if (!words) cache.set(index, words = wordSet(keys[index]));
+    return words;
+  };
+  let comparisons = 0;
   const changes: BlockChange[] = [];
   let changedLength = 0;
   const removed = (before: number, text: string) => {
@@ -164,11 +190,15 @@ export function diffBlocks(previous: readonly string[], current: readonly string
     let next = pi + 1;
     // Unpaired removals stay where they were: after the last block paired in this gap.
     let removedBefore = pj + 1;
+    // One block replaced by one, as in a table cell of numbers, is an edit whatever its words.
+    const oneForOne = i - next === 1 && j - pj - 1 === 1;
     for (let index = pj + 1; index < j; index += 1) {
-      let best = -1;
+      let best = oneForOne ? next : -1;
       let bestScore = MIN_BLOCK_SIMILARITY;
-      for (let k = next; k < i; k += 1) {
-        const score = similarity(previousKeys[k], currentKeys[index]);
+      comparisons += i - next;
+      if (comparisons > MAX_BLOCK_COMPARISONS) return null;
+      for (let k = next; k < i && !oneForOne; k += 1) {
+        const score = similarity(wordsOf(previousWords, previousKeys, k), wordsOf(currentWords, currentKeys, index));
         if (score > bestScore) {
           best = k;
           bestScore = score;
@@ -229,10 +259,12 @@ function textNodes(block: Element): Text[] {
   return nodes;
 }
 
+/** Marks take focus so the keyboard can reach the card that hover and touch open. */
 function changeMark(document: Document, tag: "ins" | "span", className: string, change: string, previous: string) {
   const mark = document.createElement(tag);
   mark.className = className;
   mark.dataset.change = change;
+  mark.tabIndex = 0;
   if (previous) mark.dataset.previous = previous;
   return mark;
 }
@@ -277,10 +309,13 @@ function markEdits(nodes: Text[], edits: readonly TextEdit[]) {
   }
 }
 
+/** Unlike translation, a block of numbers alone, such as a table cell, can change too. */
+const hasComparedText = (node: Node) => /[\p{L}\p{N}]/u.test(node.textContent ?? "");
+
 function parseBlocks(html: string) {
   const document = new DOMParser().parseFromString(html, "text/html");
   const wrappers = new Set<Element>();
-  const blocks = collectTextBlocks(document.body, [], wrappers);
+  const blocks = collectTextBlocks(document.body, [], wrappers, hasComparedText);
   return { document, blocks, wrappers };
 }
 
@@ -310,6 +345,7 @@ export function markArticleChanges(currentHtml: string, previousHtml: string): M
       const block = current.blocks[change.index];
       block.classList.add("articleChangeAdded");
       block.setAttribute("data-change", "added-block");
+      block.setAttribute("tabindex", "0");
       continue;
     }
     const marker = changeMark(current.document, "span", "articleChangeGone", "removed-block", change.previous.join("\n\n"));

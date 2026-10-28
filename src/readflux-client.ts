@@ -504,8 +504,10 @@ export async function putEntryLabels(label: EntryLabel, changes: Iterable<EntryL
 
 /**
  * Labels read entries whose content changed. Each keeps the version the user
- * last read: an entry that is still labeled keeps its saved revision through
- * further changes, and any other entry saves `previous` as its revision.
+ * last read: an entry that was not labeled saves `previous` as its revision,
+ * and an entry still labeled keeps its revision through further changes. A
+ * labeled entry without one, labeled before revisions existed, gets none
+ * until its label clears, since its cached version may never have been read.
  */
 export async function labelUpdatedEntries(addedAt: string, previous: Iterable<Omit<EntryRevision, "savedAt">>) {
   const records = [...previous];
@@ -520,10 +522,6 @@ export async function labelUpdatedEntries(addedAt: string, previous: Iterable<Om
     const labelRequest = labels.get([entryId, "updated" satisfies EntryLabel]);
     labelRequest.onsuccess = () => {
       if (!labelRequest.result) revisions.put(revision);
-      else {
-        const revisionRequest = revisions.getKey(entryId);
-        revisionRequest.onsuccess = () => { if (revisionRequest.result === undefined) revisions.put(revision); };
-      }
       labels.put({ entryId, label: "updated", addedAt } satisfies EntryLabelRecord);
     };
   });

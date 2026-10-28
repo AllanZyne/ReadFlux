@@ -646,8 +646,8 @@ function ChangedText({ parts }: { parts: TextPart[] }) {
   return <>{parts.map((part, index) => !part.change
     ? part.text
     : part.change === "removed"
-      ? <span key={index} className="articleChangeCut" data-change="removed" data-previous={part.previous} />
-      : <ins key={index} className="articleChange" data-change={part.change} data-previous={part.previous}>{part.text}</ins>)}</>;
+      ? <span key={index} className="articleChangeCut" tabIndex={0} data-change="removed" data-previous={part.previous} />
+      : <ins key={index} className="articleChange" tabIndex={0} data-change={part.change} data-previous={part.previous}>{part.text}</ins>)}</>;
 }
 
 function ArticleMetadata({
@@ -684,6 +684,8 @@ function ArticleMetadata({
 
 type ChangeTip = { change: string; previous: string; x: number; y: number; below: boolean; start: boolean };
 
+const CHANGE_TIP_ID = "articleChangeTip";
+
 /**
  * The card for a change mark: what a changed word replaced, or what was
  * removed. A mouse shows it on hover; touch shows it on a tap, except on a
@@ -707,17 +709,26 @@ function ArticleChangeTip({ container, t }: { container: React.RefObject<HTMLEle
     const root = container.current;
     if (!root) return;
     let touch = false;
+    let described: HTMLElement | null = null;
     const markAt = (target: EventTarget | null) => target instanceof Element ? target.closest<HTMLElement>("[data-change]") : null;
-    const show = (mark: HTMLElement, x: number, y: number) => {
+    /** Without a pointer, as on focus, the card anchors on the mark's first line. */
+    const show = (mark: HTMLElement, pointer?: { x: number; y: number }) => {
       const rects = [...mark.getClientRects()];
+      const first = rects[0] ?? mark.getBoundingClientRect();
       const block = mark.dataset.change === "added-block";
       // A wrapped mark anchors on the line under the pointer; a whole paragraph on the pointer itself.
-      const rect = block
-        ? new DOMRect(x, y - 10, 0, 20)
-        : rects.find((box) => y >= box.top - 2 && y <= box.bottom + 2) ?? rects[0] ?? mark.getBoundingClientRect();
+      const rect = !pointer
+        ? (block ? new DOMRect(first.left, first.top, 0, Math.min(first.height, 24)) : first)
+        : block
+          ? new DOMRect(pointer.x, pointer.y - 10, 0, 20)
+          : rects.find((box) => pointer.y >= box.top - 2 && pointer.y <= box.bottom + 2) ?? first;
+      described?.removeAttribute("aria-describedby");
+      described = mark;
+      mark.setAttribute("aria-describedby", CHANGE_TIP_ID);
       const below = rect.top < 140;
-      // A removed paragraph's marker sits in the margin, so its card opens toward the text.
-      const start = mark.dataset.change === "removed-block";
+      // A removed paragraph's marker sits in the margin, and a focused paragraph starts at its edge,
+      // so their cards open toward the text.
+      const start = mark.dataset.change === "removed-block" || (!pointer && block);
       setTip({
         change: mark.dataset.change ?? "",
         previous: mark.dataset.previous ?? "",
@@ -727,31 +738,54 @@ function ArticleChangeTip({ container, t }: { container: React.RefObject<HTMLEle
         start,
       });
     };
-    const hide = () => setTip(null);
+    const hide = () => {
+      described?.removeAttribute("aria-describedby");
+      described = null;
+      setTip(null);
+    };
     const over = (event: MouseEvent) => {
       if (touch) return;
       const mark = markAt(event.target);
-      if (mark) show(mark, event.clientX, event.clientY);
+      if (mark) show(mark, { x: event.clientX, y: event.clientY });
       else hide();
     };
     const pointerDown = (event: PointerEvent) => { touch = event.pointerType !== "mouse"; };
     const click = (event: MouseEvent) => {
       if (!touch) return;
       const mark = event.target instanceof Element && !event.target.closest("a[href]") ? markAt(event.target) : null;
-      if (mark) show(mark, event.clientX, event.clientY);
+      if (mark) show(mark, { x: event.clientX, y: event.clientY });
+      else hide();
+    };
+    const focusIn = (event: FocusEvent) => {
+      const mark = event.target instanceof HTMLElement && event.target.matches("[data-change]") ? event.target : null;
+      if (mark) show(mark);
+      else hide();
+    };
+    const focusOut = (event: FocusEvent) => { if (event.target === described) hide(); };
+    const keyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && described) hide(); };
+    // Focusing a mark can scroll it into view; a focused mark keeps its card.
+    const scroll = () => {
+      if (described && document.activeElement === described) show(described);
       else hide();
     };
     root.addEventListener("mouseover", over);
     root.addEventListener("mouseleave", hide);
     root.addEventListener("pointerdown", pointerDown, true);
     root.addEventListener("click", click);
-    root.addEventListener("scroll", hide, { passive: true });
+    root.addEventListener("focusin", focusIn);
+    root.addEventListener("focusout", focusOut);
+    root.addEventListener("keydown", keyDown);
+    root.addEventListener("scroll", scroll, { passive: true });
     return () => {
+      described?.removeAttribute("aria-describedby");
       root.removeEventListener("mouseover", over);
       root.removeEventListener("mouseleave", hide);
       root.removeEventListener("pointerdown", pointerDown, true);
       root.removeEventListener("click", click);
-      root.removeEventListener("scroll", hide);
+      root.removeEventListener("focusin", focusIn);
+      root.removeEventListener("focusout", focusOut);
+      root.removeEventListener("keydown", keyDown);
+      root.removeEventListener("scroll", scroll);
     };
   }, [container]);
 
@@ -762,7 +796,7 @@ function ArticleChangeTip({ container, t }: { container: React.RefObject<HTMLEle
     : tip.change === "replaced"
       ? t("reader.changeBefore")
       : t(tip.change === "added-block" ? "reader.changeAddedParagraph" : "reader.changeAdded");
-  return <div ref={card} className={`articleChangeTip ${tip.below ? "below" : ""} ${tip.start ? "start" : ""}`} role="tooltip" style={{ left: tip.x, top: tip.y }}>
+  return <div ref={card} id={CHANGE_TIP_ID} className={`articleChangeTip ${tip.below ? "below" : ""} ${tip.start ? "start" : ""}`} role="tooltip" style={{ left: tip.x, top: tip.y }}>
     <small>{label}</small>
     {tip.previous && tip.change !== "inserted" && tip.change !== "added-block" && tip.previous.split("\n\n").map((text, index) => removed
       ? <del key={index}>{text}</del>
@@ -2193,6 +2227,8 @@ export default function App() {
   const [entryLabels, setEntryLabels] = useState<EntryLabels>(() => new Map());
   // The version last read of the open article, while it shows what changed.
   const [changeBase, setChangeBase] = useState<EntryRevision | null>(null);
+  // Counts opened articles, so a revision loads only into the reading that asked for it.
+  const changeBaseRequest = useRef(0);
   const [listOrderVersion, setListOrderVersion] = useState(0);
   const [renderedStoryCount, setRenderedStoryCount] = useState(STORY_RENDER_BATCH_SIZE);
   const [referrerScopeState, setReferrerScopeState] = useState({ url: "", scope: "" });
@@ -3427,8 +3463,10 @@ export default function App() {
     () => readerChangeBase ? titleChanges(readerChangeBase.title, readerTitle) : null,
     [readerChangeBase, readerTitle],
   );
+  // A translation shows no marks. A rewritten body shows none, but a changed title still does.
   const bodyChanges = translatedContent ? null : articleChanges;
-  const changeCount = (bodyChanges?.count ?? 0) + (titleChangeParts?.filter((part) => part.change).length ?? 0);
+  const shownTitleChanges = translatedContent ? null : titleChangeParts;
+  const changeCount = (bodyChanges?.count ?? 0) + (shownTitleChanges?.filter((part) => part.change).length ?? 0);
 
   const copyAiSummary = async () => {
     if (!aiSummary) return;
@@ -3676,9 +3714,10 @@ export default function App() {
     });
     // Changes show for this reading only: opening the article clears its label.
     setChangeBase(null);
+    const changeRequest = ++changeBaseRequest.current;
     if (config && hasEntryLabel(entryLabels, story.id, "updated")) {
       void getEntryRevision(story.id).then((revision) => {
-        if (revision) setChangeBase(revision);
+        if (revision && changeBaseRequest.current === changeRequest) setChangeBase(revision);
       }).catch(() => undefined);
       const clearUpdated = [[story.id, null]] as const;
       void putEntryLabels("updated", clearUpdated).catch(() => undefined);
@@ -4424,7 +4463,7 @@ export default function App() {
                   onToggle={(term) => void toggleTopicInterest(term)}
                   t={t}
                 />}
-                titleChanges={titleChangeParts}
+                titleChanges={shownTitleChanges}
                 changeCount={changeCount}
                 t={t}
               />

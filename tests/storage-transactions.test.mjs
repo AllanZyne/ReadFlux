@@ -84,6 +84,17 @@ test("an updated entry keeps the version last read until its label clears", asyn
   assert.equal(await getEntryRevision(1), null);
 });
 
+test("an entry labeled before revisions existed saves none until its label clears", async () => {
+  const at = "2026-10-27T08:00:00.000Z";
+  await putEntryLabels("updated", [[3, at]]);
+  // Its cached version may never have been read, so it is no baseline.
+  await labelUpdatedEntries(at, [{ entryId: 3, title: "Unread title", content: "Unread body" }]);
+  assert.equal(await getEntryRevision(3), null);
+  await putEntryLabels("updated", [[3, null]]);
+  await labelUpdatedEntries(at, [{ entryId: 3, title: "Read title", content: "Read body" }]);
+  assert.equal((await getEntryRevision(3))?.content, "Read body");
+});
+
 test("entry labels commit per label without changing article state", async () => {
   const entries = [entry(1, { status: "read", starred: true }), entry(2)];
   const at = "2026-10-27T08:00:00.000Z";
