@@ -286,6 +286,30 @@ test("score breakdowns list every matched topic", () => {
   assert.equal(breakdown.matchedTerms.length, 4);
 });
 
+test("followed topics match whole words in ranking text", () => {
+  const profile = {
+    sources: new Map(),
+    sourceBaseline: null,
+    words: new Map(["ai", "c++", "rust", "é", "模型"].map((term) => [term, 1])),
+    negatives: new Map(),
+  };
+  const matched = (text) => scoreRecommendation({
+    feedId: 1,
+    text,
+    publishedAt: "2026-08-14T00:00:00.000Z",
+    starred: false,
+    now: Date.parse("2026-08-14T00:00:00.000Z"),
+    profile,
+  }).matchedTerms.sort();
+  assert.deepEqual(matched("Said rusty trains"), []);
+  assert.deepEqual(matched("rusty, then Rust."), ["rust"]);
+  assert.deepEqual(matched("AI"), ["ai"]);
+  assert.deepEqual(matched("c++20 and c++"), ["c++"]);
+  assert.deepEqual(matched("café é"), ["é"]);
+  assert.deepEqual(matched("𝐀ai ai𝐀 😀ai😀"), ["ai"]);
+  assert.deepEqual(matched("大语言模型"), ["模型"]);
+});
+
 test("followed topics that are seen in Today but skipped lose weight", () => {
   const now = Date.parse("2026-08-14T02:00:00.000Z");
   const follow = { id: "follow", term: "rust", interested: true, updatedAt: "2026-08-13T00:00:00.000Z" };
@@ -546,7 +570,8 @@ test("new exposure items carry feed and publication metadata for open-rate attri
 
 test("the Today snapshot captures exposures with events so background pulls do not rescore", () => {
   assert.match(appSource, /const recommendationSnapshot = useMemo\(\(\) => \(\{[\s\S]*?exposures: recommendationExposures,[\s\S]*?\}\), \[activeTimeZone, hideRead, listOrderVersion, listReadSnapshot, mode, query, topic\]\)/);
-  assert.match(appSource, /deriveInterestProfile\([\s\S]*?exposures: recommendationSnapshot\.exposures,[\s\S]*?entryFeedIds:/);
+  assert.match(appSource, /exposures: snapshotExposures, now: snapshotNow \} = recommendationSnapshot;/);
+  assert.match(appSource, /deriveInterestProfile\([\s\S]*?exposures: snapshotExposures,[\s\S]*?entryFeedIds:/);
   assert.match(appSource, /feedId: story\.feed_id,\s*publishedAt: story\.published_at,/);
 });
 

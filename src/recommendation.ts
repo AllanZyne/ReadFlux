@@ -125,8 +125,20 @@ export function isEngagedReadingEvent(
   return readingEventQuality(event) > 0;
 }
 
-function attributedOpenKey(rankingId: string, entryId: number) {
-  return `${rankingId}\n${entryId}`;
+/**
+ * Entries opened from each Today exposure. Every list change replays every
+ * exposure item, so items are checked by exposure and entry ID rather than
+ * through a per-item string key.
+ */
+function attributedOpensByExposure(events: ReadingEvent[]) {
+  const opens = new Map<string, Set<number>>();
+  events.forEach((event) => {
+    if (!event.rankingId || event.exposedRank === undefined) return;
+    const entryIds = opens.get(event.rankingId) ?? new Set<number>();
+    entryIds.add(event.entryId);
+    opens.set(event.rankingId, entryIds);
+  });
+  return opens;
 }
 
 export function deriveSourceAffinities(
@@ -145,7 +157,7 @@ export function deriveSourceAffinities(
     return current;
   };
   const latestStarMark = new Map<number, { at: number; starred: boolean }>();
-  const attributedOpens = new Set<string>();
+  const attributedOpens = attributedOpensByExposure(events);
 
   events.forEach((event) => {
     if (event.starredAt) {
@@ -154,9 +166,6 @@ export function deriveSourceAffinities(
       if (Number.isFinite(starredAt) && (!current || starredAt > current.at)) {
         latestStarMark.set(event.entryId, { at: starredAt, starred: event.starred === true });
       }
-    }
-    if (event.rankingId && event.exposedRank !== undefined) {
-      attributedOpens.add(attributedOpenKey(event.rankingId, event.entryId));
     }
     const openedAt = new Date(event.openedAt).getTime();
     if (!Number.isFinite(openedAt)) return;
@@ -171,10 +180,11 @@ export function deriveSourceAffinities(
     if (!Number.isFinite(createdAt)) return;
     const weight = recencyWeight(createdAt, now);
     const seen = exposure.seenEntryIds ? new Set(exposure.seenEntryIds) : null;
+    const openedIds = attributedOpens.get(exposure.id);
     exposure.items.forEach((item) => {
       const feedId = item.feedId ?? options.entryFeedIds?.get(item.entryId);
       if (feedId === undefined) return;
-      const opened = attributedOpens.has(attributedOpenKey(exposure.id, item.entryId));
+      const opened = openedIds?.has(item.entryId) === true;
       if (seen && !opened && !seen.has(item.entryId)) return;
       const current = totalsFor(feedId);
       // Exposures without viewport tracking estimate examination from rank.
@@ -346,11 +356,10 @@ export function deriveTopicAffinities(
     return mentioned;
   };
   const totals = new Map([...followed].map((term) => [term, { readingWeight: 0, readingQuality: 0, impressions: 0, opens: 0 }]));
-  const attributedOpens = new Set<string>();
+  const attributedOpens = attributedOpensByExposure(events);
   // As for feeds, open rates carry no signal until some Today open is attributed.
   let openRateKnown = false;
   events.forEach((event) => {
-    if (event.rankingId && event.exposedRank !== undefined) attributedOpens.add(attributedOpenKey(event.rankingId, event.entryId));
     const openedAt = new Date(event.openedAt).getTime();
     if (!Number.isFinite(openedAt)) return;
     const weight = recencyWeight(openedAt, now);
@@ -365,8 +374,9 @@ export function deriveTopicAffinities(
     if (!Number.isFinite(createdAt)) return;
     const weight = recencyWeight(createdAt, now);
     const seen = exposure.seenEntryIds ? new Set(exposure.seenEntryIds) : null;
+    const openedIds = attributedOpens.get(exposure.id);
     exposure.items.forEach((item) => {
-      const opened = attributedOpens.has(attributedOpenKey(exposure.id, item.entryId));
+      const opened = openedIds?.has(item.entryId) === true;
       if (seen && !opened && !seen.has(item.entryId)) return;
       if (opened) openRateKnown = true;
       mentionsOf(item.entryId).forEach((term) => {
@@ -448,12 +458,32 @@ export function scoreRecommendation(input: {
   };
 }
 
-/** Chinese terms match as substrings; other terms need word boundaries. Expects normalized text. */
+const WORD_CHARACTER = /^[\p{L}\p{N}]$/u;
+
+function isWordCodePoint(codePoint: number | undefined) {
+  return codePoint !== undefined && WORD_CHARACTER.test(String.fromCodePoint(codePoint));
+}
+
+function codePointBefore(text: string, index: number) {
+  if (index <= 0) return undefined;
+  const pair = index >= 2 ? text.codePointAt(index - 2)! : 0;
+  return pair > 0xFFFF ? pair : text.charCodeAt(index - 1);
+}
+
+/**
+ * Chinese terms match as substrings; other terms need word boundaries. Expects normalized text.
+ * Every article is matched against every followed topic on each list change, so
+ * this scans with indexOf instead of an unanchored Unicode regular expression.
+ */
 function termMatcher(term: string) {
   if (/\p{Script=Han}/u.test(term)) return (text: string) => text.includes(term);
-  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, "u");
-  return (text: string) => pattern.test(text);
+  if (!term) return () => false;
+  return (text: string) => {
+    for (let index = text.indexOf(term); index >= 0; index = text.indexOf(term, index + 1)) {
+      if (!isWordCodePoint(codePointBefore(text, index)) && !isWordCodePoint(text.codePointAt(index + term.length))) return true;
+    }
+    return false;
+  };
 }
 
 function termMatchersForProfile(profile: InterestProfile) {
