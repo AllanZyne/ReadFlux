@@ -2793,16 +2793,20 @@ export default function App() {
     now: syncedAt?.getTime() ?? todayClock,
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [activeTimeZone, hideRead, listOrderVersion, listReadSnapshot, mode, query, topic]);
+  // Keyed on the snapshot's inputs rather than the snapshot itself: switching
+  // lists with nothing read or synced in between keeps the profile and every
+  // score, instead of rescoring the whole history.
+  const { entries: snapshotEntries, events: snapshotEvents, exposures: snapshotExposures, now: snapshotNow } = recommendationSnapshot;
   const interest = useMemo(() => deriveInterestProfile(
-    recommendationSnapshot.events,
-    recommendationSnapshot.entries.filter((entry) => entry.starred).map((entry) => ({ feedId: entry.feed_id, entryId: entry.id })),
-    recommendationSnapshot.now,
+    snapshotEvents,
+    snapshotEntries.filter((entry) => entry.starred).map((entry) => ({ feedId: entry.feed_id, entryId: entry.id })),
+    snapshotNow,
     {
-      exposures: recommendationSnapshot.exposures,
-      entryFeedIds: new Map(recommendationSnapshot.entries.map((entry) => [entry.id, entry.feed_id])),
-      entryTexts: new Map(recommendationSnapshot.entries.map((entry) => [entry.id, storyTextForEntry(entry).recommendationText])),
+      exposures: snapshotExposures,
+      entryFeedIds: new Map(snapshotEntries.map((entry) => [entry.id, entry.feed_id])),
+      entryTexts: new Map(snapshotEntries.map((entry) => [entry.id, storyTextForEntry(entry).recommendationText])),
     },
-  ), [recommendationSnapshot]);
+  ), [snapshotEntries, snapshotEvents, snapshotExposures, snapshotNow]);
 
   const projectStories = useMemo(() => createStoryProjector<Entry, Story>((entry) => {
     const feed = entry.feed ?? feedMap.get(entry.feed_id);
@@ -2825,7 +2829,7 @@ export default function App() {
       text: story.recommendationText,
       publishedAt: story.published_at,
       starred: story.starred,
-      now: recommendationSnapshot.now,
+      now: snapshotNow,
       profile: interest,
     });
     return {
@@ -2833,7 +2837,7 @@ export default function App() {
       score: scoreBreakdown.score,
       scoreBreakdown,
     };
-  }), [feedMap, interest, readLaterFeedIds, recommendationSnapshot, t]);
+  }), [feedMap, interest, readLaterFeedIds, snapshotNow, t]);
   const stories = useMemo<Story[]>(() => projectStories(entries), [entries, projectStories]);
   // The Read later feed's icon would label every saved link with one site.
   const storyIcon = (feedId: number) => readLaterFeedIds.has(feedId) ? undefined : feedIcons.get(feedId);

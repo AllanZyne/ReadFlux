@@ -9,6 +9,10 @@ export type StoryText = {
 };
 
 const STORY_TEXT_CACHE_LIMIT = 5_000;
+// Projections walk every synced entry. A history larger than the bounded cache
+// would evict each text just before it is needed again, so entries that are
+// still alive keep theirs here.
+const storyTextByEntry = new WeakMap<StoryTextSource, StoryTextSource & { text: StoryText }>();
 const storyTextCache = new Map<string, Map<string, StoryText>>();
 let storyTextCacheEntries = 0;
 
@@ -22,6 +26,14 @@ const toText = (html: string) => html
   .trim();
 
 export function storyTextForEntry(entry: StoryTextSource) {
+  const own = storyTextByEntry.get(entry);
+  if (own && own.content === entry.content && own.title === entry.title) return own.text;
+  const text = cachedStoryText(entry);
+  storyTextByEntry.set(entry, { content: entry.content, title: entry.title, text });
+  return text;
+}
+
+function cachedStoryText(entry: StoryTextSource) {
   const cachedByTitle = storyTextCache.get(entry.content);
   const cached = cachedByTitle?.get(entry.title);
   if (cached) return cached;

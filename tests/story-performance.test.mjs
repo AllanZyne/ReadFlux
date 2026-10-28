@@ -56,6 +56,13 @@ test("article text extraction is reused until title or content changes", () => {
   assert.equal(first.recommendationText, "A title Hello & goodbye");
 });
 
+test("article text extraction stays cached across histories larger than the shared cache", () => {
+  const entries = Array.from({ length: 6_000 }, (_, id) => ({ title: `Large ${id}`, content: `<p>Body ${id}</p>` }));
+  const first = entries.map(storyTextForEntry);
+  const second = entries.map(storyTextForEntry);
+  second.forEach((text, index) => assert.strictEqual(text, first[index]));
+});
+
 test("live article updates reuse scores and untouched rows until list refresh", () => {
   let evaluations = 0;
   const derive = (entry) => {
