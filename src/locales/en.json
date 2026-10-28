@@ -345,7 +345,13 @@
     "previous": "← Previous",
     "next": "Next →",
     "select": "Select an article",
-    "selectHint": "Reading behavior starts shaping Today only after you open an article."
+    "selectHint": "Reading behavior starts shaping Today only after you open an article.",
+    "changeCount_one": "{{count}} change",
+    "changeCount_other": "{{count}} changes",
+    "changeBefore": "Before",
+    "changeAdded": "Added in this update",
+    "changeAddedParagraph": "Paragraph added in this update",
+    "changeRemoved": "Removed here"
   },
   "readLater": {
     "menuLabel": "Link to {{host}}",

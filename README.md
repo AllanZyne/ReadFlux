@@ -12,7 +12,8 @@ The complete synced history remains available in **All**.
   updates, ordered by time period, unread status, and local recommendations
 - **All** contains the complete synced history in reverse publication order
 - **Updated** tracks previously read articles whose content changed since they
-  were last opened
+  were last opened. Opening one lightly marks what changed since you read it;
+  hover a mark, or tap it on touch screens, to see what was there before
 - **Read later** keeps any article you tag, and links you save from articles,
   until you remove the tag
 - An **Unread only** list filter replaces a separate unread destination
@@ -42,9 +43,10 @@ ReadFlux has no application server:
 
 - The Miniflux URL, API key, timezone, and preferences are stored only in
   this browser's `localStorage`.
-- Article content, article state, Updated and Read later labels, feed
-  metadata, sync state, reading events, ranking exposures, and pending Miniflux
-  writes are stored in IndexedDB.
+- Article content, article state, Updated and Read later labels, the version
+  you last read of each updated article, feed metadata, sync state, reading
+  events, ranking exposures, and pending Miniflux writes are stored in
+  IndexedDB.
 - The browser sends requests directly to your Miniflux server.
 - The repository and build output contain no credentials.
 - Article text leaves the browser only when you click **Summarize** or

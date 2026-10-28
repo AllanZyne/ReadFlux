@@ -345,7 +345,13 @@
     "previous": "← Précédent",
     "next": "Suivant →",
     "select": "Sélectionnez un article",
-    "selectHint": "Le comportement de lecture ne façonne Aujourd’hui qu’après l’ouverture d’un article."
+    "selectHint": "Le comportement de lecture ne façonne Aujourd’hui qu’après l’ouverture d’un article.",
+    "changeCount_one": "{{count}} modification",
+    "changeCount_other": "{{count}} modifications",
+    "changeBefore": "Avant",
+    "changeAdded": "Ajouté par cette mise à jour",
+    "changeAddedParagraph": "Paragraphe ajouté par cette mise à jour",
+    "changeRemoved": "Supprimé ici"
   },
   "readLater": {
     "menuLabel": "Lien vers {{host}}",

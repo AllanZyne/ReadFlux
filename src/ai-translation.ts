@@ -46,11 +46,15 @@ function wrapsBlock(node: Node): node is Element {
     && node.querySelector(BLOCK_SELECTOR) !== null;
 }
 
-function collectBlocks(container: Element, blocks: Element[]) {
+/**
+ * The innermost elements that hold text, in reading order. Text that sits
+ * beside blocks is wrapped in a `<span>`, which is added to `wrappers`.
+ */
+export function collectTextBlocks(container: Element, blocks: Element[] = [], wrappers?: Set<Element>) {
   const children = [...container.childNodes];
   if (!children.some((child) => isBlock(child) || wrapsBlock(child))) {
     if (hasWords(container)) blocks.push(container);
-    return;
+    return blocks;
   }
   let run: Node[] = [];
   const flush = () => {
@@ -59,13 +63,14 @@ function collectBlocks(container: Element, blocks: Element[]) {
       container.insertBefore(wrapper, run[0]);
       wrapper.append(...run);
       blocks.push(wrapper);
+      wrappers?.add(wrapper);
     }
     run = [];
   };
   for (const child of children) {
     if (wrapsBlock(child)) {
       flush();
-      collectBlocks(child, blocks);
+      collectTextBlocks(child, blocks, wrappers);
       continue;
     }
     if (!isBlock(child)) {
@@ -73,9 +78,10 @@ function collectBlocks(container: Element, blocks: Element[]) {
       continue;
     }
     flush();
-    if (!SKIPPED_BLOCKS.has(child.tagName)) collectBlocks(child, blocks);
+    if (!SKIPPED_BLOCKS.has(child.tagName)) collectTextBlocks(child, blocks, wrappers);
   }
   flush();
+  return blocks;
 }
 
 function encodeChildren(node: Node, block: Pick<TranslationBlock, "nodes" | "atomic">): string {
@@ -102,9 +108,7 @@ function encodeChildren(node: Node, block: Pick<TranslationBlock, "nodes" | "ato
 
 export function prepareTranslation(html: string): TranslationDocument {
   const document = new DOMParser().parseFromString(html, "text/html");
-  const elements: Element[] = [];
-  collectBlocks(document.body, elements);
-  const blocks = elements.map((element) => {
+  const blocks = collectTextBlocks(document.body).map((element) => {
     const block: TranslationBlock = { element, source: "", nodes: [], atomic: [] };
     block.source = encodeChildren(element, block).trim();
     element.classList.add(TRANSLATION_PENDING_CLASS);

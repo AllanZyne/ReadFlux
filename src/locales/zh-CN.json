@@ -345,7 +345,13 @@
     "previous": "← 上一篇",
     "next": "下一篇 →",
     "select": "选择一篇文章",
-    "selectHint": "打开文章后，真实阅读行为才会用于调整“今天”。"
+    "selectHint": "打开文章后，真实阅读行为才会用于调整“今天”。",
+    "changeCount_one": "{{count}} 处修改",
+    "changeCount_other": "{{count}} 处修改",
+    "changeBefore": "之前",
+    "changeAdded": "本次更新新增",
+    "changeAddedParagraph": "本次更新新增的段落",
+    "changeRemoved": "这里删除了"
   },
   "readLater": {
     "menuLabel": "指向 {{host}} 的链接",
