@@ -1,4 +1,4 @@
-import { CSSProperties, FormEvent, memo, ReactNode, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { CSSProperties, FormEvent, memo, ReactNode, startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import {
@@ -12,6 +12,7 @@ import {
   updateFeedImageLoadingMode,
   type ImageLoadingMode,
 } from "./article-images";
+import { markArticleChanges, titleChanges, type TextPart } from "./article-changes";
 import { articleMediaURL, isWeiboLivePhotoURL, youtubeEmbedURL } from "./article-content";
 import {
   AI_EFFORTS,
@@ -72,13 +73,16 @@ import {
   getCachedFeedIcons,
   getConnection,
   getEntryLabels,
+  getEntryRevision,
   getEntrySyncState,
+  type EntryRevision,
   getProfileSettings,
   getRankingExposures,
   getReadingEvents,
   getRemoteRankingExposures,
   getRemoteReadingEvents,
   getWebDavConfig,
+  labelUpdatedEntries,
   MinifluxRequestError,
   MinifluxSyncInterval,
   minifluxFetch,
@@ -87,6 +91,7 @@ import {
   markAllReadingEventMonthsDirty,
   normalizeReadingEventOpenedAt,
   patchReadingEvent,
+  pruneEntryRevisions,
   putCachedEntries,
   putCachedFeedIcons,
   putEntryLabels,
@@ -636,6 +641,15 @@ function compactAuthors(authors: string, t: TFunction) {
   return t("reader.authorsMore", { first: names[0], count: names.length - 1 });
 }
 
+/** Text with its change marks, which carry the replaced or removed text for the hover card. */
+function ChangedText({ parts }: { parts: TextPart[] }) {
+  return <>{parts.map((part, index) => !part.change
+    ? part.text
+    : part.change === "removed"
+      ? <span key={index} className="articleChangeCut" tabIndex={0} data-change="removed" data-previous={part.previous} />
+      : <ins key={index} className="articleChange" tabIndex={0} data-change={part.change} data-previous={part.previous}>{part.text}</ins>)}</>;
+}
+
 function ArticleMetadata({
   story,
   feedIcon,
@@ -643,6 +657,8 @@ function ArticleMetadata({
   onReadingTick,
   onTextSelection,
   topics,
+  titleChanges,
+  changeCount,
   t,
 }: {
   story: Story;
@@ -651,6 +667,8 @@ function ArticleMetadata({
   onReadingTick: () => number;
   onTextSelection: (text: string, rect: DOMRect) => void;
   topics?: ReactNode;
+  titleChanges?: TextPart[] | null;
+  changeCount?: number;
   t: TFunction;
 }) {
   useEffect(() => {
@@ -661,7 +679,129 @@ function ArticleMetadata({
   return <header className="articleHead"><div><h2
     onMouseUp={(event) => captureTextSelection(event.currentTarget, onTextSelection)}
     onTouchEnd={(event) => captureTextSelection(event.currentTarget, onTextSelection)}
-  >{story.title}</h2><p><SourceIcon src={feedIcon}>{story.mark}</SourceIcon><span className="articleAuthor" title={story.author || story.source}>{compactAuthors(story.author || story.source, t)}</span>· {formatZonedDateTime(story.published_at, timeZone)} · {t("feed.minutes", { count: story.reading_time || 1 })}{topics}</p></div></header>;
+  >{titleChanges ? <ChangedText parts={titleChanges} /> : story.title}</h2><p><SourceIcon src={feedIcon}>{story.mark}</SourceIcon><span className="articleAuthor" title={story.author || story.source}>{compactAuthors(story.author || story.source, t)}</span>· {formatZonedDateTime(story.published_at, timeZone)} · {t("feed.minutes", { count: story.reading_time || 1 })}{changeCount ? <> · <span className="articleChangeCount">{t("reader.changeCount", { count: changeCount })}</span></> : null}{topics}</p></div></header>;
+}
+
+type ChangeTip = { change: string; previous: string; x: number; y: number; below: boolean; start: boolean };
+
+const CHANGE_TIP_ID = "articleChangeTip";
+
+/**
+ * The card for a change mark: what a changed word replaced, or what was
+ * removed. A mouse shows it on hover; touch shows it on a tap, except on a
+ * link, which keeps its own menu.
+ */
+function ArticleChangeTip({ container, t }: { container: React.RefObject<HTMLElement | null>; t: TFunction }) {
+  const [tip, setTip] = useState<ChangeTip | null>(null);
+  const card = useRef<HTMLDivElement>(null);
+
+  // Keep the card inside the window once its width is known.
+  useLayoutEffect(() => {
+    const element = card.current;
+    if (!element || !tip) return;
+    const width = element.offsetWidth;
+    const left = tip.start ? tip.x : tip.x - width / 2;
+    const shift = Math.min(0, window.innerWidth - 8 - (left + width)) || Math.max(0, 8 - left);
+    element.style.marginLeft = `${shift}px`;
+  }, [tip]);
+
+  useEffect(() => {
+    const root = container.current;
+    if (!root) return;
+    let touch = false;
+    let described: HTMLElement | null = null;
+    const markAt = (target: EventTarget | null) => target instanceof Element ? target.closest<HTMLElement>("[data-change]") : null;
+    /** Without a pointer, as on focus, the card anchors on the mark's first line. */
+    const show = (mark: HTMLElement, pointer?: { x: number; y: number }) => {
+      const rects = [...mark.getClientRects()];
+      const first = rects[0] ?? mark.getBoundingClientRect();
+      const block = mark.dataset.change === "added-block";
+      // A wrapped mark anchors on the line under the pointer; a whole paragraph on the pointer itself.
+      const rect = !pointer
+        ? (block ? new DOMRect(first.left, first.top, 0, Math.min(first.height, 24)) : first)
+        : block
+          ? new DOMRect(pointer.x, pointer.y - 10, 0, 20)
+          : rects.find((box) => pointer.y >= box.top - 2 && pointer.y <= box.bottom + 2) ?? first;
+      described?.removeAttribute("aria-describedby");
+      described = mark;
+      mark.setAttribute("aria-describedby", CHANGE_TIP_ID);
+      const below = rect.top < 140;
+      // A removed paragraph's marker sits in the margin, and a focused paragraph starts at its edge,
+      // so their cards open toward the text.
+      const start = mark.dataset.change === "removed-block" || (!pointer && block);
+      setTip({
+        change: mark.dataset.change ?? "",
+        previous: mark.dataset.previous ?? "",
+        x: start ? rect.left - 4 : rect.left + rect.width / 2,
+        y: below ? rect.bottom : rect.top,
+        below,
+        start,
+      });
+    };
+    const hide = () => {
+      described?.removeAttribute("aria-describedby");
+      described = null;
+      setTip(null);
+    };
+    const over = (event: MouseEvent) => {
+      if (touch) return;
+      const mark = markAt(event.target);
+      if (mark) show(mark, { x: event.clientX, y: event.clientY });
+      else hide();
+    };
+    const pointerDown = (event: PointerEvent) => { touch = event.pointerType !== "mouse"; };
+    const click = (event: MouseEvent) => {
+      if (!touch) return;
+      const mark = event.target instanceof Element && !event.target.closest("a[href]") ? markAt(event.target) : null;
+      if (mark) show(mark, { x: event.clientX, y: event.clientY });
+      else hide();
+    };
+    const focusIn = (event: FocusEvent) => {
+      const mark = event.target instanceof HTMLElement && event.target.matches("[data-change]") ? event.target : null;
+      if (mark) show(mark);
+      else hide();
+    };
+    const focusOut = (event: FocusEvent) => { if (event.target === described) hide(); };
+    const keyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && described) hide(); };
+    // Focusing a mark can scroll it into view; a focused mark keeps its card.
+    const scroll = () => {
+      if (described && document.activeElement === described) show(described);
+      else hide();
+    };
+    root.addEventListener("mouseover", over);
+    root.addEventListener("mouseleave", hide);
+    root.addEventListener("pointerdown", pointerDown, true);
+    root.addEventListener("click", click);
+    root.addEventListener("focusin", focusIn);
+    root.addEventListener("focusout", focusOut);
+    root.addEventListener("keydown", keyDown);
+    root.addEventListener("scroll", scroll, { passive: true });
+    return () => {
+      described?.removeAttribute("aria-describedby");
+      root.removeEventListener("mouseover", over);
+      root.removeEventListener("mouseleave", hide);
+      root.removeEventListener("pointerdown", pointerDown, true);
+      root.removeEventListener("click", click);
+      root.removeEventListener("focusin", focusIn);
+      root.removeEventListener("focusout", focusOut);
+      root.removeEventListener("keydown", keyDown);
+      root.removeEventListener("scroll", scroll);
+    };
+  }, [container]);
+
+  if (!tip) return null;
+  const removed = tip.change === "removed" || tip.change === "removed-block";
+  const label = removed
+    ? t("reader.changeRemoved")
+    : tip.change === "replaced"
+      ? t("reader.changeBefore")
+      : t(tip.change === "added-block" ? "reader.changeAddedParagraph" : "reader.changeAdded");
+  return <div ref={card} id={CHANGE_TIP_ID} className={`articleChangeTip ${tip.below ? "below" : ""} ${tip.start ? "start" : ""}`} role="tooltip" style={{ left: tip.x, top: tip.y }}>
+    <small>{label}</small>
+    {tip.previous && tip.change !== "inserted" && tip.change !== "added-block" && tip.previous.split("\n\n").map((text, index) => removed
+      ? <del key={index}>{text}</del>
+      : <p key={index}>{text}</p>)}
+  </div>;
 }
 
 /** Candidate topics as byline hashtags; following one adds it to the interest profile. */
@@ -719,6 +859,7 @@ function articleLinkFromClick(event: React.MouseEvent<HTMLElement>, articleURL: 
 
 const ArticleBody = memo(function ArticleBody({
   content,
+  markedHtml,
   articleURL,
   minifluxURL,
   imageMode,
@@ -727,6 +868,8 @@ const ArticleBody = memo(function ArticleBody({
   t,
 }: {
   content: string;
+  /** Sanitized `content` with its change marks, shown instead of it. */
+  markedHtml?: string;
   articleURL: string;
   minifluxURL: string;
   imageMode: ImageLoadingMode;
@@ -735,8 +878,8 @@ const ArticleBody = memo(function ArticleBody({
   t: TFunction;
 }) {
   const markup = useMemo(() => ({
-    __html: safeHtml(content, minifluxURL, imageMode),
-  }), [content, minifluxURL, imageMode]);
+    __html: markedHtml ?? safeHtml(content, minifluxURL, imageMode),
+  }), [markedHtml, content, minifluxURL, imageMode]);
   const container = useRef<HTMLDivElement>(null);
 
   // Images already decoded from cache may finish before the load listener sees them.
@@ -749,7 +892,7 @@ const ArticleBody = memo(function ArticleBody({
   // Image load and error events do not bubble; React delivers them to ancestors only in the capture phase.
   return <div
     ref={container}
-    className="body articleContent"
+    className={`body articleContent ${markedHtml ? "articleChanges" : ""}`}
     onLoadCapture={handleArticleImageLoad}
     onErrorCapture={(event) => handleArticleImageError(event, t)}
     onClick={(event) => {
@@ -2082,6 +2225,10 @@ export default function App() {
   const [pendingNew, setPendingNew] = useState(0);
   const [activeCandidates, setActiveCandidates] = useState<{ entryId: number; terms: string[]; loading: boolean } | null>(null);
   const [entryLabels, setEntryLabels] = useState<EntryLabels>(() => new Map());
+  // The version last read of the open article, while it shows what changed.
+  const [changeBase, setChangeBase] = useState<EntryRevision | null>(null);
+  // Counts opened articles, so a revision loads only into the reading that asked for it.
+  const changeBaseRequest = useRef(0);
   const [listOrderVersion, setListOrderVersion] = useState(0);
   const [renderedStoryCount, setRenderedStoryCount] = useState(STORY_RENDER_BATCH_SIZE);
   const [referrerScopeState, setReferrerScopeState] = useState({ url: "", scope: "" });
@@ -2387,13 +2534,17 @@ export default function App() {
   const mergeEntryBatch = useCallback(async (batch: Entry[]) => {
     if (!config || !batch.length) return;
     const protectedBatch = protectPendingEntryMutations(batch, pendingEntryMutationsRef.current);
-    const { entries: mergedEntries, mergedBatch, updatedIds } = mergeSyncedEntries(entriesRef.current, protectedBatch);
+    const cachedEntries = entriesRef.current;
+    const { entries: mergedEntries, mergedBatch, updatedIds } = mergeSyncedEntries(cachedEntries, protectedBatch);
     replaceEntries(mergedEntries);
     if (updatedIds.size) {
       const detectedAt = new Date().toISOString();
       const changes = [...updatedIds].map((id) => [id, detectedAt] as const);
+      const readVersions = cachedEntries
+        .filter((entry) => updatedIds.has(entry.id))
+        .map((entry) => ({ entryId: entry.id, title: entry.title, content: entry.content }));
       try {
-        await putEntryLabels("updated", changes);
+        await labelUpdatedEntries(detectedAt, readVersions);
       } catch { /* update-state persistence is best-effort */ }
       setEntryLabels((current) => withEntryLabel(current, "updated", changes));
     }
@@ -2495,6 +2646,7 @@ export default function App() {
         setListOrderVersion((version) => version + 1);
       }
       if (initialCacheHydration) {
+        void pruneEntryRevisions().catch(() => undefined);
         sourceSnapshotInitialized.current = false;
         if (cached.length) captureSourceSnapshot(cached, labels);
         else setSourceSnapshot({ statuses: new Map(), labels: new Map() });
@@ -3296,6 +3448,25 @@ export default function App() {
   const aiSummaryBusy = aiSummary?.status === "loading" || aiSummary?.status === "streaming";
   const aiTranslating = aiTranslation !== null && aiTranslation.status !== "done";
   const translatedContent = aiTranslation?.showing && aiTranslation.html ? aiTranslation.html : null;
+  // What changed since the version last read. A translation shows no marks.
+  const readerChangeBase = changeBase && readerSelected?.id === changeBase.entryId ? changeBase : null;
+  const readerContent = readerSelected?.content ?? "";
+  const readerTitle = readerSelected?.title ?? "";
+  const minifluxURL = config?.url ?? "";
+  const articleChanges = useMemo(() => readerChangeBase && readerContent
+    ? markArticleChanges(
+        safeHtml(readerContent, minifluxURL, selectedImageMode),
+        safeHtml(readerChangeBase.content, minifluxURL, selectedImageMode),
+      )
+    : null, [readerChangeBase, readerContent, minifluxURL, selectedImageMode]);
+  const titleChangeParts = useMemo(
+    () => readerChangeBase ? titleChanges(readerChangeBase.title, readerTitle) : null,
+    [readerChangeBase, readerTitle],
+  );
+  // A translation shows no marks. A rewritten body shows none, but a changed title still does.
+  const bodyChanges = translatedContent ? null : articleChanges;
+  const shownTitleChanges = translatedContent ? null : titleChangeParts;
+  const changeCount = (bodyChanges?.count ?? 0) + (shownTitleChanges?.filter((part) => part.change).length ?? 0);
 
   const copyAiSummary = async () => {
     if (!aiSummary) return;
@@ -3541,7 +3712,13 @@ export default function App() {
         setActiveCandidates({ entryId: story.id, terms: [], loading: false });
       }
     });
+    // Changes show for this reading only: opening the article clears its label.
+    setChangeBase(null);
+    const changeRequest = ++changeBaseRequest.current;
     if (config && hasEntryLabel(entryLabels, story.id, "updated")) {
+      void getEntryRevision(story.id).then((revision) => {
+        if (revision && changeBaseRequest.current === changeRequest) setChangeBase(revision);
+      }).catch(() => undefined);
       const clearUpdated = [[story.id, null]] as const;
       void putEntryLabels("updated", clearUpdated).catch(() => undefined);
       startTransition(() => {
@@ -4286,6 +4463,8 @@ export default function App() {
                   onToggle={(term) => void toggleTopicInterest(term)}
                   t={t}
                 />}
+                titleChanges={shownTitleChanges}
+                changeCount={changeCount}
                 t={t}
               />
               {aiConfig && <AiArticleControls
@@ -4314,6 +4493,7 @@ export default function App() {
                     />}
                     <ArticleBody
                       content={translatedContent ?? readerSelected.content}
+                      markedHtml={bodyChanges?.html}
                       articleURL={readerSelected.url}
                       minifluxURL={config.url}
                       imageMode={selectedImageMode}
@@ -4346,6 +4526,7 @@ export default function App() {
                 t={t}
               />}
             </div>
+            {changeCount > 0 && <ArticleChangeTip container={readerRef} t={t} />}
             {topicSelection && <>
               <div className="topicSelectionBackdrop" role="presentation" onMouseDown={() => dismissTopicSelection()} />
               <section

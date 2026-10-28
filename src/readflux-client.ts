@@ -176,7 +176,7 @@ export type WebDavConfig = {
 const LOCAL_CONFIG = "readflux.miniflux.local";
 const PREFERENCES = "readflux.preferences";
 const DB_NAME = "readflux-profile";
-const DB_VERSION = 11;
+const DB_VERSION = 12;
 const EVENTS = "reading-events";
 const SETTINGS = "settings";
 const ARTICLES = "articles";
@@ -199,6 +199,7 @@ const WEBDAV_DIRTY_EXPOSURE_MONTHS = "webdav-dirty-exposure-months";
 const AI_CONFIG = "readflux.ai";
 const AI_RESULTS = "ai-results";
 const ENTRY_LABELS = "labels";
+const ENTRY_REVISIONS = "revisions";
 
 type CacheableEntry = {
   id: number;
@@ -221,6 +222,14 @@ type EntryLabelRecord = {
   entryId: number;
   label: EntryLabel;
   addedAt: string;
+};
+
+/** The version of an updated entry that the user last read, compared with the current one. */
+export type EntryRevision = {
+  entryId: number;
+  title: string;
+  content: string;
+  savedAt: string;
 };
 
 type FeedCatalogRecord<F = unknown, C = unknown> = CachedFeedCatalog<F, C> & {
@@ -387,6 +396,7 @@ function openDb(): Promise<IDBDatabase> {
         };
         backfillReadLaterQueue(transaction, labels, migratedAt);
       }
+      if (!db.objectStoreNames.contains(ENTRY_REVISIONS)) db.createObjectStore(ENTRY_REVISIONS, { keyPath: "entryId" });
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -487,6 +497,70 @@ export async function putEntryLabels(label: EntryLabel, changes: Iterable<EntryL
   });
   try {
     await transactionComplete(transaction);
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Labels read entries whose content changed. Each keeps the version the user
+ * last read: an entry that was not labeled saves `previous` as its revision,
+ * and an entry still labeled keeps its revision through further changes. A
+ * labeled entry without one, labeled before revisions existed, gets none
+ * until its label clears, since its cached version may never have been read.
+ */
+export async function labelUpdatedEntries(addedAt: string, previous: Iterable<Omit<EntryRevision, "savedAt">>) {
+  const records = [...previous];
+  if (!records.length) return;
+  const db = await openDb();
+  const transaction = db.transaction([ENTRY_LABELS, ENTRY_REVISIONS], "readwrite");
+  const labels = transaction.objectStore(ENTRY_LABELS);
+  const revisions = transaction.objectStore(ENTRY_REVISIONS);
+  const completed = transactionComplete(transaction);
+  records.forEach(({ entryId, title, content }) => {
+    const revision: EntryRevision = { entryId, title, content, savedAt: addedAt };
+    const labelRequest = labels.get([entryId, "updated" satisfies EntryLabel]);
+    labelRequest.onsuccess = () => {
+      if (!labelRequest.result) revisions.put(revision);
+      labels.put({ entryId, label: "updated", addedAt } satisfies EntryLabelRecord);
+    };
+  });
+  try {
+    await completed;
+  } finally {
+    db.close();
+  }
+}
+
+export async function getEntryRevision(entryId: number): Promise<EntryRevision | null> {
+  const db = await openDb();
+  const revision = await requestResult(db.transaction(ENTRY_REVISIONS).objectStore(ENTRY_REVISIONS).get(entryId)) as EntryRevision | undefined;
+  db.close();
+  return revision ?? null;
+}
+
+/**
+ * Drops revisions of entries no longer labeled updated. They are kept until
+ * the next start rather than when the label clears, so undoing a mark-read
+ * that cleared the label still finds them.
+ */
+export async function pruneEntryRevisions() {
+  const db = await openDb();
+  const transaction = db.transaction([ENTRY_LABELS, ENTRY_REVISIONS], "readwrite");
+  const labels = transaction.objectStore(ENTRY_LABELS);
+  const completed = transactionComplete(transaction);
+  const cursorRequest = transaction.objectStore(ENTRY_REVISIONS).openCursor();
+  cursorRequest.onsuccess = () => {
+    const cursor = cursorRequest.result;
+    if (!cursor) return;
+    const labelRequest = labels.getKey([cursor.key as number, "updated" satisfies EntryLabel]);
+    labelRequest.onsuccess = () => {
+      if (labelRequest.result === undefined) cursor.delete();
+      cursor.continue();
+    };
+  };
+  try {
+    await completed;
   } finally {
     db.close();
   }
@@ -636,13 +710,14 @@ export async function saveEntrySyncState(state: EntrySyncState) {
 }
 
 /**
- * Clears the synced cache. Updated labels describe that cache and go with it;
- * Read later tags are the user's own and stay for the entries synced again.
+ * Clears the synced cache. Updated labels and their revisions describe that
+ * cache and go with it; Read later tags are the user's own and stay for the
+ * entries synced again.
  */
 export async function resetEntrySync() {
   const db = await openDb();
-  const transaction = db.transaction([ARTICLES, ARTICLE_STATE, FEED_ICONS, FEED_CATALOG, SYNC_STATE, ENTRY_LABELS], "readwrite");
-  [ARTICLES, ARTICLE_STATE, FEED_ICONS, FEED_CATALOG, SYNC_STATE].forEach((storeName) => {
+  const transaction = db.transaction([ARTICLES, ARTICLE_STATE, FEED_ICONS, FEED_CATALOG, SYNC_STATE, ENTRY_LABELS, ENTRY_REVISIONS], "readwrite");
+  [ARTICLES, ARTICLE_STATE, FEED_ICONS, FEED_CATALOG, SYNC_STATE, ENTRY_REVISIONS].forEach((storeName) => {
     transaction.objectStore(storeName).clear();
   });
   const cursorRequest = transaction.objectStore(ENTRY_LABELS).index("label").openCursor("updated" satisfies EntryLabel);

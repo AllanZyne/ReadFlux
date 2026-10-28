@@ -8,7 +8,10 @@ import {
   getCachedFeedIcons,
   getEntryLabels,
   getEntryMutations,
+  getEntryRevision,
   getProfileSettings,
+  labelUpdatedEntries,
+  pruneEntryRevisions,
   putCachedEntries,
   putEntryLabels,
   queueEntryMutations,
@@ -52,6 +55,44 @@ test("profile settings can be loaded and normalized without browser localStorage
     if (descriptor) Object.defineProperty(globalThis, "localStorage", descriptor);
     else delete globalThis.localStorage;
   }
+});
+
+test("an updated entry keeps the version last read until its label clears", async () => {
+  const first = "2026-10-26T08:00:00.000Z";
+  const second = "2026-10-27T08:00:00.000Z";
+  await labelUpdatedEntries(first, [{ entryId: 1, title: "Read title", content: "Read body" }]);
+  assert.deepEqual(await getEntryLabels(), new Map([[1, { updated: first }]]));
+
+  // A second change before reading keeps comparing with what was read.
+  await labelUpdatedEntries(second, [{ entryId: 1, title: "Unread title", content: "Unread body" }]);
+  assert.deepEqual(await getEntryLabels(), new Map([[1, { updated: second }]]));
+  assert.deepEqual(await getEntryRevision(1), { entryId: 1, title: "Read title", content: "Read body", savedAt: first });
+
+  // Reopening clears the label; the revision stays for an undo until pruned.
+  await putEntryLabels("updated", [[1, null]]);
+  assert.equal((await getEntryRevision(1))?.content, "Read body");
+  await labelUpdatedEntries(second, [{ entryId: 1, title: "Reread title", content: "Reread body" }]);
+  assert.equal((await getEntryRevision(1))?.content, "Reread body");
+
+  await labelUpdatedEntries(second, [{ entryId: 2, title: "Other", content: "Other body" }]);
+  await putEntryLabels("updated", [[2, null]]);
+  await pruneEntryRevisions();
+  assert.equal((await getEntryRevision(1))?.content, "Reread body");
+  assert.equal(await getEntryRevision(2), null);
+
+  await resetEntrySync();
+  assert.equal(await getEntryRevision(1), null);
+});
+
+test("an entry labeled before revisions existed saves none until its label clears", async () => {
+  const at = "2026-10-27T08:00:00.000Z";
+  await putEntryLabels("updated", [[3, at]]);
+  // Its cached version may never have been read, so it is no baseline.
+  await labelUpdatedEntries(at, [{ entryId: 3, title: "Unread title", content: "Unread body" }]);
+  assert.equal(await getEntryRevision(3), null);
+  await putEntryLabels("updated", [[3, null]]);
+  await labelUpdatedEntries(at, [{ entryId: 3, title: "Read title", content: "Read body" }]);
+  assert.equal((await getEntryRevision(3))?.content, "Read body");
 });
 
 test("entry labels commit per label without changing article state", async () => {

@@ -23,6 +23,14 @@ The primary product contract is:
   publication time, newest first.
 - `Updated` contains previously read entries whose content changed after they
   were cached, and clears an entry's update label when it is reopened.
+- Reopening an updated entry marks what changed since the version last read,
+  for that reading only. The body is the current version: changed words get a
+  faint tint, an added paragraph a margin line, a removal inside a paragraph a
+  thin bar, and a removed paragraph a hollow margin dot. Hovering a mark,
+  tapping it on touch, or focusing it with the keyboard shows what it
+  replaced; old text never appears inline. The byline shows the change count.
+  The article list does not change. A translation shows no marks, and an
+  article whose text was mostly rewritten shows none in its body.
 - `Read later` contains every entry carrying the local `later` label, read or
   not, newest label first. Any article can be tagged from the reader toolbar,
   and a link in an article from its link menu. The only way out is removing
@@ -85,6 +93,8 @@ The primary product contract is:
   reuse, and cancellation.
 - `src/entry-labels.ts`: the local `updated` and `later` entry labels and pure
   helpers to change and compare them.
+- `src/article-changes.ts`: block and word comparison of an updated entry with
+  the version last read, and the change marks added to sanitized article HTML.
 - `src/read-later.ts`: Read later feed discovery and creation, entry import,
   and pure link URL and title helpers.
 - `public/readflux-read-later.xml`: the empty Atom file the Read later feed
@@ -109,6 +119,14 @@ build variable unless the user explicitly changes the architecture.
   marking the entry read clears it, and resetting sync deletes it. `later`
   belongs to the user: only removing the tag clears it, resetting sync keeps
   it, and it is neither sent to Miniflux nor synced through WebDAV.
+- Entry revisions: IndexedDB `revisions`, the title and content an updated
+  entry had when the user last read it. Sync saves one when it adds the
+  `updated` label and keeps it while the label stays, so further changes still
+  compare with what was read. An entry labeled before revisions existed gets
+  none until its label clears, since its cached version may never have been
+  read. Startup prunes revisions whose label is gone,
+  which lets an undo that restores the label find them; resetting sync deletes
+  them. They never leave the browser.
 - Optional WebDAV connection and stable client identity: localStorage.
 - Category and subscriptions-section collapse state: localStorage.
 - Optional AI provider connection: localStorage. Saved AI summaries and
